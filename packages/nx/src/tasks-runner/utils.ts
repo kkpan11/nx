@@ -113,8 +113,27 @@ export function expandDependencyConfigSyntaxSugar(
 const patternResultCache = new WeakMap<
   string[],
   // Map< Pattern, Dependency Configs >
-  Map<string, NormalizedTargetDependencyConfig[]>
+  Map<string, string[]>
 >();
+
+function findMatchingTargets(pattern: string, allTargetNames: string[]) {
+  let cache = patternResultCache.get(allTargetNames);
+  if (!cache) {
+    cache = new Map();
+    patternResultCache.set(allTargetNames, cache);
+  }
+
+  const cachedResult = cache.get(pattern);
+  if (cachedResult) {
+    return cachedResult;
+  }
+
+  const matcher = minimatch.filter(pattern);
+
+  const matchingTargets = allTargetNames.filter((t) => matcher(t));
+  cache.set(pattern, matchingTargets);
+  return matchingTargets;
+}
 
 export function expandWildcardTargetConfiguration(
   dependencyConfig: NormalizedTargetDependencyConfig,
@@ -123,26 +142,17 @@ export function expandWildcardTargetConfiguration(
   if (!isGlobPattern(dependencyConfig.target)) {
     return [dependencyConfig];
   }
-  let cache = patternResultCache.get(allTargetNames);
-  if (!cache) {
-    cache = new Map();
-    patternResultCache.set(allTargetNames, cache);
-  }
-  const cachedResult = cache.get(dependencyConfig.target);
-  if (cachedResult) {
-    return cachedResult;
-  }
 
-  const matcher = minimatch.filter(dependencyConfig.target);
+  const matchingTargets = findMatchingTargets(
+    dependencyConfig.target,
+    allTargetNames
+  );
 
-  const matchingTargets = allTargetNames.filter((t) => matcher(t));
-
-  const result = matchingTargets.map((t) => ({
-    ...dependencyConfig,
+  return matchingTargets.map((t) => ({
     target: t,
+    projects: dependencyConfig.projects,
+    dependencies: dependencyConfig.dependencies,
   }));
-  cache.set(dependencyConfig.target, result);
-  return result;
 }
 
 export function readProjectAndTargetFromTargetString(
@@ -195,7 +205,6 @@ export function normalizeTargetDependencyWithStringProjects(
     } else if (dependencyConfig.projects === 'dependencies') {
       dependencyConfig.dependencies = true;
       delete dependencyConfig.projects;
-      return;
       /** LERNA SUPPORT END - Remove in v20 */
     } else {
       dependencyConfig.projects = [dependencyConfig.projects];
@@ -323,19 +332,22 @@ export function getOutputsForTargetAndConfiguration(
   if (targetConfiguration?.outputs) {
     validateOutputs(targetConfiguration.outputs);
 
-    return targetConfiguration.outputs
-      .map((output: string) => {
-        return interpolate(output, {
-          projectRoot: node.data.root,
-          projectName: node.name,
-          project: { ...node.data, name: node.name }, // this is legacy
-          options,
-        });
-      })
-      .filter(
-        (output) =>
-          !!output && !output.match(/{(projectRoot|workspaceRoot|(options.*))}/)
-      );
+    const result = new Set<string>();
+    for (const output of targetConfiguration.outputs) {
+      const interpolatedOutput = interpolate(output, {
+        projectRoot: node.data.root,
+        projectName: node.name,
+        project: { ...node.data, name: node.name }, // this is legacy
+        options,
+      });
+      if (
+        !!interpolatedOutput &&
+        !interpolatedOutput.match(/{(projectRoot|workspaceRoot|(options.*))}/)
+      ) {
+        result.add(interpolatedOutput);
+      }
+    }
+    return Array.from(result);
   }
 
   // Keep backwards compatibility in case `outputs` doesn't exist
