@@ -1,21 +1,21 @@
+import type { BuilderOutput } from '@angular-devkit/architect';
 import type { ExecutorContext } from '@nx/devkit';
-import type { DependentBuildableProjectNode } from '@nx/js/src/utils/buildable-libs-utils';
-import { createBuilderContext } from 'nx/src/adapter/ngcli-adapter';
-import { gte } from 'semver';
-import { getInstalledAngularVersionInfo } from '../utilities/angular-version-utils';
+import type { DependentBuildableProjectNode } from '@nx/js/internal';
 import { createTmpTsConfigForBuildableLibs } from '../utilities/buildable-libs';
+import { assertPackageIsInstalled } from '../utilities/builder-package';
 import {
   loadIndexHtmlTransformer,
   loadPlugins,
 } from '../utilities/esbuild-extensions';
 import type { ApplicationExecutorOptions } from './schema';
+import { normalizeOptions } from './utils/normalize-options';
 import { validateOptions } from './utils/validate-options';
-import type { buildApplication as buildApplicationFn } from '@angular-devkit/build-angular';
+import { createBuilderContext } from '@nx/devkit/ngcli-adapter';
 
 export default async function* applicationExecutor(
   options: ApplicationExecutorOptions,
   context: ExecutorContext
-): ReturnType<typeof buildApplicationFn> {
+): AsyncIterable<BuilderOutput> {
   validateOptions(options);
 
   const {
@@ -23,7 +23,7 @@ export default async function* applicationExecutor(
     plugins: pluginPaths,
     indexHtmlTransformer: indexHtmlTransformerPath,
     ...delegateExecutorOptions
-  } = options;
+  } = normalizeOptions(options);
 
   let dependencies: DependentBuildableProjectNode[];
 
@@ -42,27 +42,19 @@ export default async function* applicationExecutor(
     ? await loadIndexHtmlTransformer(indexHtmlTransformerPath, options.tsConfig)
     : undefined;
 
-  const { buildApplication } = await import('@angular-devkit/build-angular');
   const builderContext = await createBuilderContext(
     {
-      builderName: 'application',
+      builderName: '@nx/angular:application',
       description: 'Build an application.',
       optionSchema: require('./schema.json'),
     },
     context
   );
 
-  const { version: angularVersion } = getInstalledAngularVersionInfo();
-  if (gte(angularVersion, '17.1.0')) {
-    return yield* buildApplication(delegateExecutorOptions, builderContext, {
-      codePlugins: plugins,
-      indexHtmlTransformer,
-    });
-  }
-
-  return yield* buildApplication(
-    delegateExecutorOptions,
-    builderContext,
-    plugins
-  );
+  assertPackageIsInstalled('@angular/build', '@nx/angular:application');
+  const { buildApplication } = await import('@angular/build');
+  return yield* buildApplication(delegateExecutorOptions, builderContext, {
+    codePlugins: plugins,
+    indexHtmlTransformer,
+  });
 }

@@ -1,23 +1,24 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import {
   readJson,
   readProjectConfiguration,
   Tree,
   updateJson,
+  writeJson,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { Linter } from '@nx/eslint';
 import { nxVersion } from '../../utils/versions';
 import libraryGenerator from './library';
 import { Schema } from './schema';
 
-describe('lib', () => {
+describe('library', () => {
   let tree: Tree;
+  let envBackup: string | undefined;
 
   let defaultSchema: Schema = {
-    name: 'myLib',
-    linter: Linter.EsLint,
+    directory: 'my-lib',
+    linter: 'eslint',
     skipFormat: false,
     skipTsConfig: false,
     unitTestRunner: 'vitest',
@@ -26,6 +27,8 @@ describe('lib', () => {
   };
 
   beforeEach(() => {
+    envBackup = process.env.ESLINT_USE_FLAT_CONFIG;
+    delete process.env.ESLINT_USE_FLAT_CONFIG;
     tree = createTreeWithEmptyWorkspace();
     updateJson(tree, '/package.json', (json) => {
       json.devDependencies = {
@@ -35,6 +38,14 @@ describe('lib', () => {
       };
       return json;
     });
+  });
+
+  afterEach(() => {
+    if (envBackup === undefined) {
+      delete process.env.ESLINT_USE_FLAT_CONFIG;
+    } else {
+      process.env.ESLINT_USE_FLAT_CONFIG = envBackup;
+    }
   });
 
   it('should add vite types to tsconfigs and generate correct vite.config.ts file', async () => {
@@ -66,17 +77,27 @@ describe('lib', () => {
     );
   });
 
-  it('should add vue, vite and vitest to package.json', async () => {
-    await libraryGenerator(tree, defaultSchema);
-    expect(readJson(tree, '/package.json')).toMatchSnapshot();
-    expect(tree.read('my-lib/tsconfig.lib.json', 'utf-8')).toMatchSnapshot();
+  it('should add vue and vitest to package.json when non-buildable', async () => {
+    // Force the v9 flat-config lane. Jest's pnpm hoisting can resolve
+    // `require('eslint')` to a v8 copy in the workspace store, which would
+    // otherwise make `useFlatConfig` route the fresh-install lane through
+    // the v8/v7 stack and not match the v9/v8 snapshot.
+    const original = process.env.ESLINT_USE_FLAT_CONFIG;
+    process.env.ESLINT_USE_FLAT_CONFIG = 'true';
+    try {
+      await libraryGenerator(tree, defaultSchema);
+      expect(readJson(tree, '/package.json')).toMatchSnapshot();
+      expect(tree.read('my-lib/tsconfig.lib.json', 'utf-8')).toMatchSnapshot();
+    } finally {
+      process.env.ESLINT_USE_FLAT_CONFIG = original;
+    }
   });
 
   it('should update root tsconfig.base.json', async () => {
     await libraryGenerator(tree, defaultSchema);
     const tsconfigJson = readJson(tree, '/tsconfig.base.json');
     expect(tsconfigJson.compilerOptions.paths['@proj/my-lib']).toEqual([
-      'my-lib/src/index.ts',
+      './my-lib/src/index.ts',
     ]);
   });
 
@@ -88,7 +109,7 @@ describe('lib', () => {
     expect(tree.exists('tsconfig.base.json')).toEqual(true);
     const tsconfigJson = readJson(tree, 'tsconfig.base.json');
     expect(tsconfigJson.compilerOptions.paths['@proj/my-lib']).toEqual([
-      'my-lib/src/index.ts',
+      './my-lib/src/index.ts',
     ]);
   });
 
@@ -101,7 +122,7 @@ describe('lib', () => {
     await libraryGenerator(tree, defaultSchema);
     const tsconfigJson = readJson(tree, '/tsconfig.base.json');
     expect(tsconfigJson.compilerOptions.paths['@proj/my-lib']).toEqual([
-      'my-lib/src/index.ts',
+      './my-lib/src/index.ts',
     ]);
   });
 
@@ -144,13 +165,12 @@ describe('lib', () => {
     expect(tree.exists('my-lib/src/index.ts')).toBeTruthy();
     expect(tree.exists('my-lib/src/lib/my-lib.vue')).toBeTruthy();
     expect(tree.exists('my-lib/src/lib/my-lib.spec.ts')).toBeTruthy();
-    const eslintJson = readJson(tree, 'my-lib/.eslintrc.json');
-    expect(eslintJson).toMatchSnapshot();
+    expect(tree.exists('my-lib/eslint.config.mjs')).toBeTruthy();
   });
 
-  it('should support eslint flat config', async () => {
+  it('should support eslint flat config CJS', async () => {
     tree.write(
-      'eslint.config.js',
+      'eslint.config.cjs',
       `const { FlatCompat } = require('@eslint/eslintrc');
 const nxEslintPlugin = require('@nx/eslint-plugin');
 const js = require('@eslint/js');
@@ -207,10 +227,80 @@ module.exports = [
 
     await libraryGenerator(tree, defaultSchema);
 
-    const eslintJson = tree.read('my-lib/eslint.config.js', 'utf-8');
+    const eslintJson = tree.read('my-lib/eslint.config.cjs', 'utf-8');
     expect(eslintJson).toMatchSnapshot();
     // assert **/*.vue was added to override in base eslint config
-    const eslintBaseJson = tree.read('eslint.config.js', 'utf-8');
+    const eslintBaseJson = tree.read('eslint.config.cjs', 'utf-8');
+    expect(eslintBaseJson).toContain(
+      `files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.vue'],`
+    );
+  });
+
+  it('should support eslint flat config ESM', async () => {
+    tree.write(
+      'eslint.config.mjs',
+      `import { FlatCompat } from '@eslint/eslintrc';
+        import { dirname } from 'path';
+        import { fileURLToPath } from 'url';
+        import js from '@eslint/js';
+        import nx from '@nx/eslint-plugin';
+        import baseConfig from '../eslint.config.mjs';
+
+        const compat = new FlatCompat({
+          baseDirectory: dirname(fileURLToPath(import.meta.url)),
+          recommendedConfig: js.configs.recommended,
+        });
+        
+        export default [
+        { plugins: { '@nx': nxEslintPlugin } },
+  {
+    files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
+    rules: {
+      '@nx/enforce-module-boundaries': [
+        'error',
+        {
+          enforceBuildableLibDependency: true,
+          allow: [],
+          depConstraints: [
+            {
+              sourceTag: '*',
+              onlyDependOnLibsWithTags: ['*'],
+            },
+          ],
+        },
+      ],
+    },
+  },
+  ...compat.config({ extends: ['plugin:@nx/typescript'] }).map((config) => ({
+    ...config,
+    files: ['**/*.ts', '**/*.tsx'],
+    rules: {
+      ...config.rules,
+    },
+  })),
+  ...compat.config({ extends: ['plugin:@nx/javascript'] }).map((config) => ({
+    ...config,
+    files: ['**/*.js', '**/*.jsx'],
+    rules: {
+      ...config.rules,
+    },
+  })),
+  ...compat.config({ env: { jest: true } }).map((config) => ({
+    ...config,
+    files: ['**/*.spec.ts', '**/*.spec.tsx', '**/*.spec.js', '**/*.spec.jsx'],
+    rules: {
+      ...config.rules,
+    },
+  })),
+]`
+    );
+
+    await libraryGenerator(tree, defaultSchema);
+
+    const eslintJson = tree.read('my-lib/eslint.config.mjs', 'utf-8');
+    expect(eslintJson).toMatchSnapshot();
+    // assert **/*.vue was added to override in base eslint config
+    const eslintBaseJson = tree.read('eslint.config.mjs', 'utf-8');
     expect(eslintBaseJson).toContain(
       `files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.vue'],`
     );
@@ -220,7 +310,8 @@ module.exports = [
     it('should update tags and implicitDependencies', async () => {
       await libraryGenerator(tree, {
         ...defaultSchema,
-        directory: 'myDir',
+        name: 'my-dir-my-lib',
+        directory: 'my-dir/my-lib',
         tags: 'one',
       });
       const myLib = readProjectConfiguration(tree, 'my-dir-my-lib');
@@ -232,8 +323,8 @@ module.exports = [
 
       await libraryGenerator(tree, {
         ...defaultSchema,
-        name: 'myLib2',
-        directory: 'myDir',
+        name: 'my-dir-my-lib2',
+        directory: 'my-dir/my-lib2',
         tags: 'one,two',
       });
 
@@ -246,7 +337,11 @@ module.exports = [
     });
 
     it('should generate files', async () => {
-      await libraryGenerator(tree, { ...defaultSchema, directory: 'myDir' });
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        name: 'my-dir-my-lib',
+        directory: 'my-dir/my-lib',
+      });
       expect(tree.exists('my-dir/my-lib/src/index.ts')).toBeTruthy();
       expect(
         tree.exists('my-dir/my-lib/src/lib/my-dir-my-lib.vue')
@@ -257,17 +352,26 @@ module.exports = [
     });
 
     it('should update project configurations', async () => {
-      await libraryGenerator(tree, { ...defaultSchema, directory: 'myDir' });
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        name: 'my-dir-my-lib',
+        directory: 'my-dir/my-lib',
+      });
       const config = readProjectConfiguration(tree, 'my-dir-my-lib');
 
       expect(config.root).toEqual('my-dir/my-lib');
     });
 
     it('should update root tsconfig.base.json', async () => {
-      await libraryGenerator(tree, { ...defaultSchema, directory: 'myDir' });
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        name: 'my-dir-my-lib',
+        importPath: '@proj/my-dir/my-lib',
+        directory: 'my-dir/my-lib',
+      });
       const tsconfigJson = readJson(tree, '/tsconfig.base.json');
       expect(tsconfigJson.compilerOptions.paths['@proj/my-dir/my-lib']).toEqual(
-        ['my-dir/my-lib/src/index.ts']
+        ['./my-dir/my-lib/src/index.ts']
       );
       expect(
         tsconfigJson.compilerOptions.paths['my-dir-my-lib/*']
@@ -275,7 +379,10 @@ module.exports = [
     });
 
     it('should create a local tsconfig.json', async () => {
-      await libraryGenerator(tree, { ...defaultSchema, directory: 'myDir' });
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        directory: 'my-dir/my-lib',
+      });
 
       const tsconfigJson = readJson(tree, 'my-dir/my-lib/tsconfig.json');
       expect(tsconfigJson).toMatchSnapshot();
@@ -358,7 +465,7 @@ module.exports = [
       await libraryGenerator(tree, {
         ...defaultSchema,
         publishable: true,
-        directory: 'myDir',
+        directory: 'my-dir/my-lib',
         importPath: '@myorg/lib',
       });
       const packageJson = readJson(tree, 'my-dir/my-lib/package.json');
@@ -373,7 +480,7 @@ module.exports = [
     it('should fail if the same importPath has already been used', async () => {
       await libraryGenerator(tree, {
         ...defaultSchema,
-        name: 'myLib1',
+        directory: 'my-lib1',
         publishable: true,
         importPath: '@myorg/lib',
       });
@@ -381,7 +488,7 @@ module.exports = [
       try {
         await libraryGenerator(tree, {
           ...defaultSchema,
-          name: 'myLib2',
+          directory: 'myLib2',
           publishable: true,
           importPath: '@myorg/lib',
         });
@@ -409,6 +516,7 @@ module.exports = [
 
   describe('--setParserOptionsProject', () => {
     it('should set the parserOptions.project in the eslintrc.json file', async () => {
+      process.env.ESLINT_USE_FLAT_CONFIG = 'false';
       await libraryGenerator(tree, {
         ...defaultSchema,
         setParserOptionsProject: true,
@@ -419,6 +527,316 @@ module.exports = [
         'my-lib/tsconfig.*?.json',
       ]);
       expect(eslintConfig.overrides[0].files).toContain('*.vue');
+    });
+  });
+
+  describe('TS solution setup', () => {
+    beforeEach(() => {
+      tree = createTreeWithEmptyWorkspace();
+      updateJson(tree, 'package.json', (json) => {
+        json.workspaces = ['packages/*', 'apps/*'];
+        return json;
+      });
+      writeJson(tree, 'tsconfig.base.json', {
+        compilerOptions: {
+          composite: true,
+          declaration: true,
+          customConditions: ['@proj/source'],
+        },
+      });
+      writeJson(tree, 'tsconfig.json', {
+        extends: './tsconfig.base.json',
+        files: [],
+        references: [],
+      });
+    });
+
+    it('should add project references when using TS solution', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        setParserOptionsProject: true,
+        linter: 'eslint',
+        useProjectJson: false,
+      });
+
+      expect(tree.read('my-lib/vite.config.ts', 'utf-8')).toMatchInlineSnapshot(
+        `null`
+      );
+
+      expect(readJson(tree, 'tsconfig.json').references).toMatchInlineSnapshot(`
+        [
+          {
+            "path": "./my-lib",
+          },
+        ]
+      `);
+      // Make sure keys are in idiomatic order
+      expect(Object.keys(readJson(tree, 'my-lib/package.json')))
+        .toMatchInlineSnapshot(`
+        [
+          "name",
+          "version",
+          "module",
+          "types",
+          "exports",
+          "nx",
+        ]
+      `);
+      expect(tree.read('my-lib/package.json', 'utf-8')).toMatchInlineSnapshot(`
+        "{
+          "name": "@proj/my-lib",
+          "version": "0.0.1",
+          "module": "./src/index.ts",
+          "types": "./src/index.ts",
+          "exports": {
+            ".": {
+              "types": "./src/index.ts",
+              "import": "./src/index.ts",
+              "default": "./src/index.ts"
+            },
+            "./package.json": "./package.json"
+          },
+          "nx": {
+            "targets": {
+              "lint": {
+                "executor": "@nx/eslint:lint"
+              },
+              "test": {
+                "executor": "@nx/vitest:test",
+                "outputs": [
+                  "{options.reportsDirectory}"
+                ],
+                "options": {
+                  "reportsDirectory": "coverage/my-lib"
+                }
+              }
+            }
+          }
+        }
+        "
+      `);
+      expect(readJson(tree, 'my-lib/tsconfig.json')).toMatchInlineSnapshot(`
+        {
+          "extends": "../tsconfig.base.json",
+          "files": [],
+          "include": [],
+          "references": [
+            {
+              "path": "./tsconfig.lib.json",
+            },
+            {
+              "path": "./tsconfig.spec.json",
+            },
+          ],
+        }
+      `);
+      expect(readJson(tree, 'my-lib/tsconfig.lib.json')).toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "jsx": "preserve",
+            "jsxImportSource": "vue",
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "outDir": "dist",
+            "resolveJsonModule": true,
+            "rootDir": "src",
+            "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
+            "types": [
+              "vite/client",
+            ],
+          },
+          "exclude": [
+            "out-tsc",
+            "dist",
+            "src/**/__tests__/*",
+            "src/**/*.spec.vue",
+            "src/**/*.test.vue",
+            "vite.config.ts",
+            "vite.config.mts",
+            "vitest.config.ts",
+            "vitest.config.mts",
+            "src/**/*.test.ts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.tsx",
+            "src/**/*.spec.tsx",
+            "src/**/*.test.js",
+            "src/**/*.spec.js",
+            "src/**/*.test.jsx",
+            "src/**/*.spec.jsx",
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+          ],
+          "extends": "../tsconfig.base.json",
+          "include": [
+            "src/**/*.js",
+            "src/**/*.jsx",
+            "src/**/*.ts",
+            "src/**/*.tsx",
+            "src/**/*.vue",
+          ],
+        }
+      `);
+      expect(readJson(tree, 'my-lib/tsconfig.spec.json'))
+        .toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "jsx": "preserve",
+            "jsxImportSource": "vue",
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "outDir": "./out-tsc/vitest",
+            "resolveJsonModule": true,
+            "types": [
+              "vitest/globals",
+              "vitest/importMeta",
+              "vite/client",
+              "node",
+              "vitest",
+            ],
+          },
+          "extends": "../tsconfig.base.json",
+          "include": [
+            "vite.config.ts",
+            "vite.config.mts",
+            "vitest.config.ts",
+            "vitest.config.mts",
+            "src/**/*.test.ts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.tsx",
+            "src/**/*.spec.tsx",
+            "src/**/*.test.js",
+            "src/**/*.spec.js",
+            "src/**/*.test.jsx",
+            "src/**/*.spec.jsx",
+            "src/**/*.d.ts",
+          ],
+          "references": [
+            {
+              "path": "./tsconfig.lib.json",
+            },
+          ],
+        }
+      `);
+    });
+
+    it('should create a correct package.json for buildable libraries', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        setParserOptionsProject: true,
+        linter: 'eslint',
+        addPlugin: true,
+        useProjectJson: false,
+        bundler: 'vite',
+        skipFormat: true,
+      });
+
+      expect(tree.read('my-lib/package.json', 'utf-8')).toMatchInlineSnapshot(`
+        "{
+          "name": "@proj/my-lib",
+          "version": "0.0.1",
+          "type": "module",
+          "main": "./dist/index.js",
+          "module": "./dist/index.js",
+          "types": "./dist/index.d.ts",
+          "exports": {
+            "./package.json": "./package.json",
+            ".": {
+              "@proj/source": "./src/index.ts",
+              "types": "./dist/index.d.ts",
+              "import": "./dist/index.js",
+              "default": "./dist/index.js"
+            }
+          }
+        }
+        "
+      `);
+    });
+
+    it('should not set the custom condition in exports when it does not exist in tsconfig.base.json', async () => {
+      updateJson(tree, 'tsconfig.base.json', (json) => {
+        delete json.compilerOptions.customConditions;
+        return json;
+      });
+
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        setParserOptionsProject: true,
+        linter: 'eslint',
+        addPlugin: true,
+        useProjectJson: false,
+        bundler: 'vite',
+        skipFormat: true,
+      });
+
+      expect(
+        readJson(tree, 'my-lib/package.json').exports['.']
+      ).not.toHaveProperty('development');
+    });
+
+    it('should set "nx.name" in package.json when the user provides a name that is different than the package name', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        directory: 'my-lib',
+        name: 'my-lib', // import path contains the npm scope, so it would be different
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      expect(readJson(tree, 'my-lib/package.json').nx).toStrictEqual({
+        name: 'my-lib',
+      });
+    });
+
+    it('should not set "nx.name" in package.json when the provided name matches the package name', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        directory: 'my-lib',
+        name: '@proj/my-lib',
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      expect(readJson(tree, 'my-lib/package.json').nx).toBeUndefined();
+    });
+
+    it('should not set "nx.name" in package.json when the user does not provide a name', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema, // defaultSchema has no name
+        directory: 'my-lib',
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      expect(readJson(tree, 'my-lib/package.json').nx).toBeUndefined();
+    });
+
+    it('should generate project.json if useProjectJson is true', async () => {
+      await libraryGenerator(tree, {
+        ...defaultSchema,
+        linter: 'eslint',
+        addPlugin: true,
+        useProjectJson: true,
+        skipFormat: true,
+      });
+
+      expect(tree.exists('my-lib/project.json')).toBeTruthy();
+      expect(readProjectConfiguration(tree, '@proj/my-lib'))
+        .toMatchInlineSnapshot(`
+        {
+          "$schema": "../node_modules/nx/schemas/project-schema.json",
+          "name": "@proj/my-lib",
+          "projectType": "library",
+          "root": "my-lib",
+          "sourceRoot": "my-lib/src",
+          "tags": [],
+          "targets": {},
+        }
+      `);
+      expect(readJson(tree, 'my-lib/package.json').nx).toBeUndefined();
     });
   });
 });

@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from '@storybook/react';
+import type { Meta, StoryObj } from '@storybook/react-webpack5';
 import {
   TargetConfigurationDetailsListItem,
   TargetConfigurationDetailsListItemProps,
@@ -103,14 +103,6 @@ export const Simple: Story = {
             executor: 'nx:run-commands',
             outputs: ['{workspaceRoot}/build/packages/jest'],
             options: { command: 'node ./scripts/copy-readme.js jest' },
-            configurations: {},
-          },
-          'add-extra-dependencies': {
-            executor: 'nx:run-commands',
-            options: {
-              command:
-                'node ./scripts/add-dependency-to-build.js jest @nrwl/jest',
-            },
             configurations: {},
           },
           lint: {

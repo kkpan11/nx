@@ -1,0 +1,159 @@
+---
+title: Nx with Node.js
+description: Nx scales your Node.js monorepo with caching, distributed task execution, and affected-only builds.
+sidebar:
+  label: Introduction
+weight: 2
+filter: 'type:References'
+---
+
+[Node.js](https://nodejs.org/) is a JavaScript runtime for building servers, CLIs, and backend services. Nx scales your Node monorepo with caching, distributed task execution, and affected-only builds.
+
+The Node plugin contains generators and executors to manage Node applications within an Nx workspace.
+
+## Requirements
+
+Below is a reference table that matches the most recent major versions of Nx to the versions of Node.js that they officially support, and are tested against.
+
+The Nx policy is to support the LTS versions (i.e. actively maintained even numbered versions) of Node.js, but we will only remove support for older versions in a major version of Nx to avoid unexpected disruption. We may add support for newer LTS versions in a minor version of Nx as long as it would not break existing projects.
+
+{% aside type="note" title="Other Node.js versions" %}
+Other versions of Node.js **may** still work without issue for these versions of Nx. Those include versions which are already EOL, or odd version numbers (e.g. 23), which Node.js actively discourages using in production.
+{% /aside %}
+
+{% aside type="note" title="Node 26" %}
+Node 26 is on the Current release track and enters LTS in October 2026. Nx tests against it in CI and supports it today.
+{% /aside %}
+
+| Nx Version     | Node Version                   |
+| -------------- | ------------------------------ |
+| 23.x (current) | 26.x, 24.x, ^22.12.0           |
+| 22.x           | 26.x, 24.x, ^22.12.0, ^20.19.0 |
+| 21.x           | 24.x, ^22.12.0, ^20.19.0       |
+| 20.x           | 22.x, 20.x, 18.x               |
+
+We intentionally do not include an `"engines"` field in the `package.json` file for Nx in order to allow for user flexibility, but this table should be considered the official compatibility matrix.
+
+This table will be updated from time to time to reflect the latest versions of Node.js that are supported. If you encounter issues with Nx, please make sure you are using a supported version of Node.js before filing an issue.
+
+## Setting up @nx/node
+
+### Installation
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/node` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+{% /aside %}
+
+In any Nx workspace, you can install `@nx/node` by running the following command:
+
+```shell
+nx add @nx/node
+```
+
+This will install the correct version of `@nx/node`.
+
+## Using the @nx/node plugin
+
+### Creating applications
+
+You can add a new application with the following:
+
+```shell
+nx g @nx/node:application apps/my-new-app
+```
+
+You can run your application with `nx serve my-new-app`, which starts it in watch mode.
+
+### Creating libraries
+
+Node libraries are a good way to separate features within your organization. To create a Node library run the following command:
+
+```shell
+nx g @nx/node:lib libs/my-new-lib
+
+# If you want the library to be buildable or publishable to npm
+nx g @nx/node:lib libs/my-new-lib --buildable
+nx g @nx/node:lib libs/my-new-lib \
+--publishable \
+--importPath=@myorg/my-new-lib
+```
+
+## Using node
+
+### Testing projects
+
+You can run unit tests with:
+
+```shell
+nx test my-new-app
+nx test my-new-lib
+```
+
+Replace `my-new-app` with the name or your project. This command works for both applications and libraries.
+
+### Building projects
+
+Node applications can be build with:
+
+```shell
+nx build my-new-app
+```
+
+And if you generated a library with `--buildable`, then you can build a library as well:
+
+```shell
+nx build my-new-lib
+```
+
+The output is in the `dist` folder. You can customize the output folder by setting `outputPath` in the project's `project.json` file.
+
+### Application proxies
+
+Generating Node applications has an option to configure other projects in the workspace to proxy API requests. This can be done by passing the `--frontendProject` with the project name you wish to enable proxy support for.
+
+```shell
+nx g @nx/node:application apps/my-new-app \
+--frontendProject my-react-app
+```
+
+### Debugging
+
+#### VSCode integration
+
+When generating Node applications, Nx automatically creates a VSCode debugging configuration:
+
+- **Automatic setup**: A `.vscode/launch.json` file is created with pre-configured debugging settings.
+- **Smart port allocation**: Debug ports are automatically assigned starting from 9229, preventing conflicts between multiple applications.
+- **Source map support**: Webpack configurations include `devtoolModuleFilenameTemplate` for accurate source mapping.
+- **Multi-format support**: Supports debugging `.js`, `.mjs`, and `.cjs` output files.
+
+To debug your Node application in VSCode:
+
+1. Open your workspace in VSCode.
+2. Set breakpoints in your TypeScript source files.
+3. Go to the Debug panel `(Ctrl+Shift+D)`.
+4. Select "Debug `{your-app-name}` with Nx" from the dropdown.
+5. Click the play button or press `F5`.
+
+The debugger will automatically:
+
+- Start your application with `nx serve`.
+- Attach to the Node.js debugger on the allocated port.
+- Map compiled JavaScript back to your TypeScript source files.
+
+#### Manual debugging
+
+For advanced debugging scenarios, you can manually configure the debug port by setting the port option in the `serve` target in the project.json, or by running the serve command with `--port <number>`.
+
+For additional information on Node.js debugging, see the [Node.js debugging getting started guide](https://nodejs.org/en/docs/guides/debugging-getting-started/#inspector-clients).
+
+## More documentation
+
+- [Using Cypress](/docs/technologies/test-tools/cypress/introduction)
+- [Using Jest](/docs/technologies/test-tools/jest/introduction)
+
+## Set up CI for your Node.js monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).

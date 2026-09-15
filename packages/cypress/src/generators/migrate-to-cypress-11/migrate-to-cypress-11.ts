@@ -1,7 +1,4 @@
-import {
-  assertMinimumCypressVersion,
-  installedCypressVersion,
-} from '../../utils/cypress-version';
+import { forEachExecutorOptions } from '@nx/devkit/internal';
 import {
   formatFiles,
   installPackagesTask,
@@ -14,8 +11,11 @@ import {
   updateJson,
   updateProjectConfiguration,
 } from '@nx/devkit';
-import { forEachExecutorOptions } from '@nx/devkit/src/generators/executor-options-utils';
 import { CypressExecutorOptions } from '../../executors/cypress/cypress.impl';
+import {
+  assertMinimumCypressVersion,
+  getInstalledCypressMajorVersion,
+} from '../../utils/versions';
 import {
   addConfigToTsConfig,
   createNewCypressConfig,
@@ -119,7 +119,7 @@ https://nx.dev/cypress/v10-migration-guide
 
 export async function migrateCypressProject(tree: Tree) {
   assertMinimumCypressVersion(8);
-  if (installedCypressVersion() >= 10) {
+  if (getInstalledCypressMajorVersion(tree) >= 10) {
     logger.info('NX This workspace is already using Cypress v10+');
     return;
   }

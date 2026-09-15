@@ -1,6 +1,6 @@
 use crate::native::project_graph::types::{Project, ProjectGraph};
 use crate::native::tasks::types::Task;
-use crate::native::types::{Input, NxJson};
+use crate::native::types::{Input, JsInputs, NxJson};
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -47,34 +47,61 @@ pub(super) fn get_inputs_for_dependency<'a>(
     nx_json: &'a NxJson,
     named_input: &'a Input,
 ) -> anyhow::Result<Option<SplitInputs<'a>>> {
-    let Input::Inputs { input, .. } = named_input else {
-        return Ok(None);
-    };
+    match named_input {
+        Input::Inputs { input, .. } => {
+            let inputs = get_named_inputs(nx_json, project);
+            let (self_inputs, deps_outputs): (Vec<Input>, Vec<Input>) =
+                expand_named_input(input, &inputs)?
+                    .into_iter()
+                    .partition(|i| !(matches!(i, Input::DepsOutputs { .. })));
+            let deps_inputs = vec![Input::Inputs {
+                input,
+                dependencies: true,
+            }];
 
-    let inputs = get_named_inputs(nx_json, project);
-    let (self_inputs, deps_outputs): (Vec<Input>, Vec<Input>) = expand_named_input(input, &inputs)?
-        .into_iter()
-        .partition(|i| !(matches!(i, Input::DepsOutputs { .. })));
-    let deps_inputs = vec![Input::Inputs {
-        input,
-        dependencies: true,
-    }];
+            Ok(Some(SplitInputs {
+                deps_outputs,
+                deps_inputs,
+                self_inputs,
+                project_inputs: vec![],
+            }))
+        }
+        Input::FileSet {
+            fileset,
+            dependencies: true,
+        } => {
+            // For dependency filesets, we apply the same fileset to the dependency
+            // and continue recursively with the same pattern
+            let self_inputs = vec![Input::FileSet {
+                fileset,
+                dependencies: false,
+            }];
+            let deps_inputs = vec![Input::FileSet {
+                fileset,
+                dependencies: true,
+            }];
 
-    Ok(Some(SplitInputs {
-        deps_outputs,
-        deps_inputs,
-        self_inputs,
-        project_inputs: vec![],
-    }))
+            Ok(Some(SplitInputs {
+                deps_outputs: vec![],
+                deps_inputs,
+                self_inputs,
+                project_inputs: vec![],
+            }))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn split_inputs_into_self_and_deps<'a>(
     inputs: Option<Vec<Input<'a>>>,
-    named_inputs: HashMap<&str, Vec<Input<'a>>>,
+    named_inputs: NamedInputs<'a>,
 ) -> anyhow::Result<SplitInputs<'a>> {
     let inputs = inputs.unwrap_or_else(|| {
         vec![
-            Input::FileSet("{projectRoot}/**/*"),
+            Input::FileSet {
+                fileset: "{projectRoot}/**/*",
+                dependencies: false,
+            },
             Input::Inputs {
                 input: "default",
                 dependencies: true,
@@ -96,16 +123,24 @@ fn split_inputs_into_self_and_deps<'a>(
                 Input::Inputs {
                     dependencies: true, ..
                 } => acc.0.push(input),
+                Input::FileSet {
+                    dependencies: true, ..
+                } => acc.0.push(input),
                 Input::Inputs {
                     dependencies: false,
                     ..
                 }
                 | Input::String(_)
-                | Input::FileSet(_)
+                | Input::FileSet {
+                    dependencies: false,
+                    ..
+                }
                 | Input::Runtime(_)
                 | Input::Environment(_)
                 | Input::DepsOutputs { .. }
-                | Input::ExternalDependency(_) => {
+                | Input::ExternalDependency(_)
+                | Input::WorkingDirectory(_)
+                | Input::Json { .. } => {
                     acc.1.push(input);
                 }
                 Input::Projects { .. } => {
@@ -117,7 +152,7 @@ fn split_inputs_into_self_and_deps<'a>(
         },
     );
 
-    let expanded_inputs = expand_single_project_inputs(&self_inputs, &named_inputs)?;
+    let expanded_inputs = expand_single_project_inputs(self_inputs, &named_inputs)?;
 
     let (self_inputs, deps_outputs): (Vec<_>, Vec<_>) = expanded_inputs
         .into_iter()
@@ -132,8 +167,8 @@ fn split_inputs_into_self_and_deps<'a>(
 }
 
 pub(super) fn expand_single_project_inputs<'a>(
-    inputs: &Vec<Input<'a>>,
-    named_inputs: &HashMap<&str, Vec<Input<'a>>>,
+    inputs: impl IntoIterator<Item = Input<'a>>,
+    named_inputs: &NamedInputs<'a>,
 ) -> anyhow::Result<Vec<Input<'a>>> {
     let mut expanded = vec![];
 
@@ -144,20 +179,29 @@ pub(super) fn expand_single_project_inputs<'a>(
                     anyhow::bail!("namedInputs definitions cannot start with ^");
                 }
 
-                if named_inputs.get(s).is_some() {
+                if named_inputs.contains(s) {
                     expanded.extend(expand_named_input(s, named_inputs)?);
                 } else {
                     validate_file_set(s)?;
-                    expanded.push(Input::FileSet(s));
+                    expanded.push(Input::FileSet {
+                        fileset: s,
+                        dependencies: false,
+                    });
                 }
             }
             Input::Inputs {
                 input,
                 dependencies: false,
             } => expanded.extend(expand_named_input(input, named_inputs)?),
-            Input::FileSet(fileset) => {
+            Input::FileSet {
+                fileset,
+                dependencies: false,
+            } => {
                 validate_file_set(fileset)?;
-                expanded.push(Input::FileSet(fileset));
+                expanded.push(Input::FileSet {
+                    fileset,
+                    dependencies: false,
+                });
             }
             Input::Runtime(runtime) => expanded.push(Input::Runtime(runtime)),
             Input::Environment(env) => expanded.push(Input::Environment(env)),
@@ -168,11 +212,27 @@ pub(super) fn expand_single_project_inputs<'a>(
                 transitive,
                 dependent_tasks_output_files,
             } => expanded.push(Input::DepsOutputs {
-                transitive: *transitive,
+                transitive,
                 dependent_tasks_output_files,
             }),
+            Input::WorkingDirectory(mode) => expanded.push(Input::WorkingDirectory(mode)),
+            Input::Json {
+                json,
+                fields,
+                exclude_fields,
+            } => {
+                validate_file_set(json)?;
+                expanded.push(Input::Json {
+                    json,
+                    fields,
+                    exclude_fields,
+                });
+            }
             Input::Projects { .. }
             | Input::Inputs {
+                dependencies: true, ..
+            }
+            | Input::FileSet {
                 dependencies: true, ..
             } => {
                 anyhow::bail!(
@@ -208,29 +268,167 @@ If "{file_set}" is a named input, make sure it is defined in nx.json.
 
 pub(super) fn expand_named_input<'a>(
     input: &str,
-    named_inputs: &HashMap<&str, Vec<Input<'a>>>,
+    named_inputs: &NamedInputs<'a>,
 ) -> anyhow::Result<Vec<Input<'a>>> {
-    if named_inputs.get(input).is_none() {
-        anyhow::bail!("Input '{}' is not defined", input)
-    } else {
-        expand_single_project_inputs(&named_inputs[input], named_inputs)
+    match named_inputs.resolve(input) {
+        Some(NamedInput::Configured(inputs)) => {
+            expand_single_project_inputs(inputs.iter().map(Input::from), named_inputs)
+        }
+        Some(NamedInput::BuiltInDefault) => Ok(vec![Input::FileSet {
+            fileset: "{projectRoot}/**/*",
+            dependencies: false,
+        }]),
+        None => anyhow::bail!("Input '{}' is not defined", input),
     }
 }
 
-pub(super) fn get_named_inputs<'a>(
-    nx_json: &'a NxJson,
-    project: &'a Project,
-) -> HashMap<&'a str, Vec<Input<'a>>> {
-    let mut collected_named_inputs: HashMap<&str, Vec<Input>> = HashMap::new();
+/// The definition a name resolves to, so the built-in `default` fallback is
+/// expressed in one place rather than re-tested at each call site.
+enum NamedInput<'a> {
+    Configured(&'a Vec<JsInputs>),
+    BuiltInDefault,
+}
 
-    collected_named_inputs.insert("default", vec![Input::FileSet("{projectRoot}/**/*")]);
+/// Look up only the requested definition, borrowing the immutable maps instead
+/// of rebuilding and parsing every named input on each dependency visit.
+/// An explicitly empty definition overrides both workspace and built-in values.
+pub(super) struct NamedInputs<'a> {
+    workspace: Option<&'a HashMap<String, Vec<JsInputs>>>,
+    project: Option<&'a HashMap<String, Vec<JsInputs>>>,
+}
 
-    let iterable_structs = [&nx_json.named_inputs, &project.named_inputs];
-    for named_inputs in iterable_structs.into_iter().flatten() {
-        for (key, val) in named_inputs.iter() {
-            collected_named_inputs.insert(key.as_ref(), val.iter().map(|v| v.into()).collect());
+impl<'a> NamedInputs<'a> {
+    fn resolve(&self, name: &str) -> Option<NamedInput<'a>> {
+        let configured = self
+            .project
+            .and_then(|inputs| inputs.get(name))
+            .or_else(|| self.workspace.and_then(|inputs| inputs.get(name)));
+        match configured {
+            Some(inputs) => Some(NamedInput::Configured(inputs)),
+            None if name == "default" => Some(NamedInput::BuiltInDefault),
+            None => None,
         }
     }
 
-    collected_named_inputs
+    fn contains(&self, name: &str) -> bool {
+        self.resolve(name).is_some()
+    }
+}
+
+pub(super) fn get_named_inputs<'a>(nx_json: &'a NxJson, project: &'a Project) -> NamedInputs<'a> {
+    NamedInputs {
+        workspace: nx_json.named_inputs.as_ref(),
+        project: project.named_inputs.as_ref(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use napi::bindgen_prelude::Either9;
+
+    fn strings(values: &[&str]) -> Vec<JsInputs> {
+        values.iter().map(|v| Either9::B(v.to_string())).collect()
+    }
+
+    #[test]
+    fn nested_definitions_use_project_overrides_and_keep_order() {
+        let nx_json = NxJson {
+            named_inputs: Some(HashMap::from([
+                (
+                    "default".into(),
+                    strings(&["shared", "{workspaceRoot}/nx.json"]),
+                ),
+                ("shared".into(), strings(&["{projectRoot}/workspace.ts"])),
+                ("unused".into(), strings(&["^invalid"])),
+            ])),
+        };
+        let project = Project {
+            named_inputs: Some(HashMap::from([(
+                "shared".into(),
+                strings(&["{projectRoot}/project.ts", "!{projectRoot}/spec.ts"]),
+            )])),
+            ..Default::default()
+        };
+        let inputs = expand_named_input("default", &get_named_inputs(&nx_json, &project)).unwrap();
+        let files: Vec<_> = inputs
+            .iter()
+            .map(|input| match input {
+                Input::FileSet {
+                    fileset,
+                    dependencies: false,
+                } => *fileset,
+                other => panic!("Unexpected input {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "{projectRoot}/project.ts",
+                "!{projectRoot}/spec.ts",
+                "{workspaceRoot}/nx.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn default_fallback_and_explicit_empty_overrides_are_distinct() {
+        let mut nx_json = NxJson { named_inputs: None };
+        let mut project = Project::default();
+        assert!(matches!(
+            expand_named_input("default", &get_named_inputs(&nx_json, &project))
+                .unwrap()
+                .as_slice(),
+            [Input::FileSet {
+                fileset: "{projectRoot}/**/*",
+                dependencies: false
+            }]
+        ));
+        nx_json.named_inputs = Some(HashMap::from([("default".into(), vec![])]));
+        assert!(
+            expand_named_input("default", &get_named_inputs(&nx_json, &project))
+                .unwrap()
+                .is_empty()
+        );
+        nx_json.named_inputs = Some(HashMap::from([(
+            "default".into(),
+            strings(&["{workspaceRoot}/file"]),
+        )]));
+        project.named_inputs = Some(HashMap::from([("default".into(), vec![])]));
+        assert!(
+            expand_named_input("default", &get_named_inputs(&nx_json, &project))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn missing_and_invalid_definitions_keep_their_errors() {
+        let nx_json = NxJson {
+            named_inputs: Some(HashMap::from([
+                ("dependency".into(), strings(&["^default"])),
+                ("bad-file".into(), strings(&["src/file.ts"])),
+            ])),
+        };
+        let project = Project::default();
+        let named = get_named_inputs(&nx_json, &project);
+        assert_eq!(
+            expand_named_input("missing", &named)
+                .unwrap_err()
+                .to_string(),
+            "Input 'missing' is not defined"
+        );
+        assert_eq!(
+            expand_named_input("dependency", &named)
+                .unwrap_err()
+                .to_string(),
+            "namedInputs definitions can only refer to other namedInputs definitions within the same project."
+        );
+        assert!(
+            expand_named_input("bad-file", &named)
+                .unwrap_err()
+                .to_string()
+                .starts_with("\"src/file.ts\" is an invalid fileset.")
+        );
+    }
 }

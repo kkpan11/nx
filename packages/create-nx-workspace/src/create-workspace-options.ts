@@ -1,11 +1,26 @@
 import { NxCloud } from './utils/nx/nx-cloud';
+import type { CompletionMessageKey } from './utils/nx/messages';
 import { PackageManager } from './utils/package-manager';
 
 export interface CreateWorkspaceOptions {
   name: string; // Workspace name (e.g. org name)
+  /**
+   * @description Override the working directory for workspace creation.
+   * When set, the workspace is created under this directory instead of process.cwd().
+   * Used when the user provides "." or an absolute path as the workspace name.
+   */
+  workingDir?: string;
+  /**
+   * @description Scaffold into the current directory in place. Set when the
+   * user passes "." / "./". Relaxes the empty-directory guard, so existing
+   * files in the cwd that collide with generated files are overwritten.
+   */
+  useCurrentDir?: boolean;
   packageManager: PackageManager; // Package manager to use
   nxCloud: NxCloud; // Enable Nx Cloud
   useGitHub?: boolean; // Will you be using GitHub as your git hosting provider?
+  template?: string; // GitHub template repository URL (e.g., https://github.com/nrwl/react-template)
+  completionMessageKey?: CompletionMessageKey; // Key for the completion message to show at the end
   /**
    * @description Enable interactive mode with presets
    * @default true
@@ -21,10 +36,63 @@ export interface CreateWorkspaceOptions {
    * @default false
    */
   skipGit?: boolean; // Skip initializing a git repository
+  /**
+   * @description Skip pushing to GitHub via gh CLI
+   * @default false
+   */
+  skipGitHubPush?: boolean; // Skip pushing to GitHub via gh CLI
+  /**
+   * @description Enable verbose logging
+   * @default false
+   */
+  verbose?: boolean; // Enable verbose logging
   commit?: {
     name: string; // Name to use for the initial commit
     email: string; // Email to use for the initial commit
     message: string; // Message to use for the initial commit
   };
   cliName?: string; // Name of the CLI, used when displaying outputs. e.g. nx, Nx
+  aiAgents?: Agent[]; // List of AI agents to configure
+  /**
+   * @description Skip cloud connection (deferred - show banner but don't write nxCloudId)
+   * @default false
+   */
+  skipCloudConnect?: boolean;
+  /**
+   * @description Set neverConnectToCloud in nx.json (full opt-out)
+   * @default false
+   */
+  neverConnectToCloud?: boolean;
+  /**
+   * @description Whether GitHub CLI (gh) is available on the system (for telemetry)
+   */
+  ghAvailable?: boolean;
+  /**
+   * @description Enable or disable usage analytics
+   */
+  analytics?: boolean;
+  /**
+   * @description Trust third-party presets without prompting for confirmation.
+   * Useful for automated workflows where the preset publisher is already trusted.
+   * @default false
+   */
+  trustThirdPartyPreset?: boolean;
 }
+
+export const supportedAgents = [
+  'claude',
+  'codex',
+  'copilot',
+  'cursor',
+  'gemini',
+  'opencode',
+] as const;
+export type Agent = (typeof supportedAgents)[number];
+export const agentDisplayMap: Record<Agent, string> = {
+  claude: 'Claude Code',
+  gemini: 'Gemini',
+  codex: 'OpenAI Codex',
+  copilot: 'GitHub Copilot for VSCode',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+};

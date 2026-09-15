@@ -1,11 +1,18 @@
+import { MenuItem } from '@nx/nx-dev-models-menu';
 import { outputFileSync } from 'fs-extra';
-import { bold, h, lines as mdLines, strikethrough } from 'markdown-factory';
+import {
+  bold,
+  code,
+  h2,
+  lines as mdLines,
+  strikethrough,
+  table,
+} from 'markdown-factory';
 import { join } from 'path';
 import { format, resolveConfig } from 'prettier';
-import { MenuItem } from '@nx/nx-dev/models-menu';
-import yargs, { CommandModule } from 'yargs';
+import { CommandModule } from 'yargs';
+import { stripVTControlCharacters } from 'node:util';
 
-const stripAnsi = require('strip-ansi');
 const importFresh = require('import-fresh');
 
 export function sortAlphabeticallyFunction(a: string, b: string): number {
@@ -38,7 +45,10 @@ export async function generateMarkdownFile(
   const filePath = join(outputDirectory, `${templateObject.name}.md`);
   outputFileSync(
     filePath,
-    await formatWithPrettier(filePath, stripAnsi(templateObject.template))
+    await formatWithPrettier(
+      filePath,
+      stripVTControlCharacters(templateObject.template)
+    )
   );
 }
 
@@ -121,16 +131,30 @@ export async function formatWithPrettier(filePath: string, content: string) {
   return format(content, options);
 }
 
+export function wrapLinks(content: string): string {
+  const urlRegex = /(https?:\/\/)[^\s]+[a-zA-Z][a-zA-Z]/g;
+  const links = content.match(urlRegex) || [];
+  for (const link of links) {
+    const wrappedLink = `[${link}](${link.replace('https://nx.dev', '')})`;
+    content = content.replace(link, wrappedLink);
+  }
+  return content;
+}
+
 export function formatDescription(
   description: string,
   deprecated: boolean | string
 ) {
+  const updatedDescription = wrapLinks(description);
   if (!deprecated) {
-    return description;
+    return updatedDescription;
+  }
+  if (!description) {
+    return `${bold('Deprecated:')} ${deprecated}`;
   }
   return deprecated === true
-    ? `${bold('Deprecated:')} ${description}`
-    : mdLines(`${bold('Deprecated:')} ${deprecated}`, description);
+    ? `${bold('Deprecated:')} ${updatedDescription}`
+    : mdLines(`${bold('Deprecated:')} ${deprecated}`, updatedDescription);
 }
 
 export function getCommands(command: any) {
@@ -138,7 +162,7 @@ export function getCommands(command: any) {
 }
 
 export interface ParsedCommandOption {
-  name: string;
+  name: string[];
   type: string;
   description: string;
   default: string;
@@ -218,7 +242,7 @@ export async function parseCommand(
     deprecated: command.deprecated,
     options:
       Object.keys(builderDescriptions).map((key) => ({
-        name: key,
+        name: [key, ...(builderOptions.alias[key] || [])],
         description: builderDescriptions[key]
           ? builderDescriptions[key].replace('__yargsString__:', '')
           : '',
@@ -236,41 +260,51 @@ export function generateOptionsMarkdown(
   command: ParsedCommand,
   extraHeadingLevels = 0
 ): string {
-  const lines: string[] = [];
+  type FieldName = 'name' | 'type' | 'description';
+  const items: Record<FieldName, string>[] = [];
+  const optionsField = command.subcommands?.length ? 'Shared Option' : 'Option';
+  const fields: { field: FieldName; label: string }[] = [
+    { field: 'name', label: optionsField },
+    { field: 'type', label: 'Type' },
+    { field: 'description', label: 'Description' },
+  ];
   if (Array.isArray(command.options) && !!command.options.length) {
-    lines.push(
-      h(
-        2 + extraHeadingLevels,
-        command.subcommands?.length ? 'Shared Options' : 'Options'
-      )
-    );
-
     command.options
-      .sort((a, b) => sortAlphabeticallyFunction(a.name, b.name))
+      .sort((a, b) => sortAlphabeticallyFunction(a.name[0], b.name[0]))
       .filter(({ hidden }) => !hidden)
       .forEach((option) => {
-        lines.push(
-          h(
-            3 + extraHeadingLevels,
-            option.deprecated ? strikethrough(option.name) : option.name
-          )
+        function nameAliases(aliases) {
+          return aliases.map((alias) => code('--' + alias)).join(', ');
+        }
+        const name = option.deprecated
+          ? strikethrough(nameAliases(option.name))
+          : nameAliases(option.name);
+        let description = formatDescription(
+          option.description,
+          option.deprecated
         );
-        if (option.type !== undefined && option.type !== '') {
-          lines.push(`Type: \`${option.type}\``);
-        }
+        let type = option.type;
         if (option.choices !== undefined) {
-          const choices = option.choices
-            .map((c: any) => JSON.stringify(c).replace(/"/g, ''))
+          type = option.choices
+            .map((c: any) => '`' + JSON.stringify(c).replace(/"/g, '') + '`')
             .join(', ');
-          lines.push(`Choices: [${choices}]`);
         }
-        if (option.default !== undefined && option.default !== '') {
-          lines.push(
-            `Default: \`${JSON.stringify(option.default).replace(/"/g, '')}\``
-          );
+        if (option.default !== undefined) {
+          description += ` (Default: \`${JSON.stringify(option.default).replace(
+            /"/g,
+            ''
+          )}\`)`;
         }
-        lines.push(formatDescription(option.description, option.deprecated));
+        if (
+          (option.name[0] === 'version' &&
+            option.description === 'Show version number') ||
+          (option.name[0] === 'help' && option.description === 'Show help')
+        ) {
+          // Add . to the end of the built-in description for consistency with our other descriptions
+          description = `${description}.`;
+        }
+        items.push({ name, type, description });
       });
   }
-  return mdLines(lines);
+  return h2('Options', table(items, fields));
 }

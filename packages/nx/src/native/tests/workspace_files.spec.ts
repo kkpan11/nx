@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { readJsonFile } from '../../utils/fileutils';
 import { cacheDirectoryForWorkspace } from '../../utils/cache-directory';
 
-describe('workspace files', () => {
+describe('Workspace Context', () => {
   function createParseConfigurationsFunction(tempDir: string) {
     return async (filenames: string[]) => {
       const res = {};
@@ -187,6 +187,49 @@ describe('workspace files', () => {
     `);
   });
 
+  describe('hashing', () => {
+    let context: WorkspaceContext;
+    let fs: TempFs;
+
+    beforeEach(async () => {
+      fs = new TempFs('workspace-files');
+
+      const files = {};
+      for (let i = 0; i < 1000; i++) {
+        files[`file${i}.txt`] = i.toString();
+      }
+
+      await fs.createFiles(files);
+
+      context = new WorkspaceContext(
+        fs.tempDir,
+        cacheDirectoryForWorkspace(fs.tempDir)
+      );
+    });
+
+    it('should hash consistently when nothing changes', () => {
+      let hash = context.hashFilesMatchingGlob(['**/*.txt']);
+      for (let i = 0; i < 100; i++) {
+        const newContext = new WorkspaceContext(
+          fs.tempDir,
+          cacheDirectoryForWorkspace(fs.tempDir)
+        );
+        expect(newContext.hashFilesMatchingGlob(['**/*.txt'])).toEqual(hash);
+      }
+    });
+
+    it('should hash differently if a file is renamed', () => {
+      let hash1 = context.hashFilesMatchingGlob(['**/*.txt']);
+      const newContext = new WorkspaceContext(
+        fs.tempDir,
+        cacheDirectoryForWorkspace(fs.tempDir)
+      );
+      fs.renameFile('file0.txt', 'file00.txt');
+      let hash2 = newContext.hashFilesMatchingGlob(['**/*.txt']);
+      expect(hash1).not.toEqual(hash2);
+    });
+  });
+
   describe('globbing', () => {
     let context: WorkspaceContext;
     let fs: TempFs;
@@ -316,4 +359,33 @@ describe('workspace files', () => {
   //     expect(() => getWorkspaceFilesNative(fs.tempDir, globs)).not.toThrow();
   //   });
   // });
+});
+
+describe('WorkspaceContext.ready', () => {
+  it('resolves once the files exist without blocking the event loop while the walk runs', async () => {
+    const { WorkspaceContext } = require('../index');
+    const { TempFs } = require('../../internal-testing-utils/temp-fs');
+    const fs = new TempFs('workspace-context-ready');
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 4000; i++)
+      files[`dir-${i % 40}/file-${i}.ts`] = `export const v${i} = ${i};`;
+    await fs.createFiles(files);
+    const ctx = new WorkspaceContext(
+      fs.tempDir,
+      fs.tempDir + '/.nx/workspace-data'
+    );
+
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 1);
+    try {
+      await ctx.ready();
+      expect(ctx.glob(['dir-3/**']).length).toBe(100);
+      // A blocked loop cannot run timers; the walk of 4000 files is long enough
+      // for at least one tick to land while it runs.
+      expect(ticks).toBeGreaterThan(0);
+    } finally {
+      clearInterval(timer);
+      fs.cleanup();
+    }
+  });
 });

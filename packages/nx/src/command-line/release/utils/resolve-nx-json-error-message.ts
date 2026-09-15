@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { relative } from 'node:path';
-import { joinPathFragments, workspaceRoot } from '../../../devkit-exports';
+import { handleImport } from '../../../utils/handle-import';
+import { joinPathFragments } from '../../../utils/path';
+import { workspaceRoot } from '../../../utils/workspace-root';
 
 export async function resolveNxJsonConfigErrorMessage(
   propPath: string[]
@@ -19,7 +21,7 @@ export async function resolveNxJsonConfigErrorMessage(
         ? `, line ${errorLines.startLine}`
         : `, lines ${errorLines.startLine}-${errorLines.endLine}`;
   }
-  return nxJsonMessage;
+  return nxJsonMessage + '.';
 }
 
 async function getJsonConfigLinesForErrorMessage(
@@ -27,7 +29,7 @@ async function getJsonConfigLinesForErrorMessage(
   jsonPath: string[]
 ): Promise<{ startLine: number; endLine: number } | null> {
   try {
-    const jsonParser = await import('jsonc-parser');
+    const jsonParser = await handleImport('jsonc-parser');
     const rootNode = jsonParser.parseTree(rawConfig);
     const node = jsonParser.findNodeAtLocation(rootNode, jsonPath);
     return computeJsonLineNumbers(rawConfig, node?.offset, node?.length);

@@ -1,25 +1,26 @@
 import { existsSync, statSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
-import { eslintFlatConfigFilenames } from './flat-config';
+import {
+  baseEslintConfigFilenames,
+  eslintFlatConfigFilenames,
+  eslintrcFilenames,
+} from './flat-config';
 
 export const ESLINT_FLAT_CONFIG_FILENAMES = eslintFlatConfigFilenames;
 
-export const ESLINT_OLD_CONFIG_FILENAMES = [
-  '.eslintrc',
-  '.eslintrc.js',
-  '.eslintrc.cjs',
-  '.eslintrc.yaml',
-  '.eslintrc.yml',
-  '.eslintrc.json',
-];
+export const ESLINT_OLD_CONFIG_FILENAMES = eslintrcFilenames;
 
 export const ESLINT_CONFIG_FILENAMES = [
   ...ESLINT_OLD_CONFIG_FILENAMES,
   ...ESLINT_FLAT_CONFIG_FILENAMES,
 ];
 
+export const BASE_ESLINT_CONFIG_FILENAMES = baseEslintConfigFilenames;
+
 export const baseEsLintConfigFile = '.eslintrc.base.json';
-export const baseEsLintFlatConfigFile = 'eslint.base.config.js';
+export const baseEsLintFlatConfigFile = 'eslint.base.config.mjs';
+// Make sure we can handle previous file extension as well for migrations or custom generators.
+export const legacyBaseEsLintFlatConfigFile = 'eslint.base.config.js';
 
 export function isFlatConfig(configFilePath: string): boolean {
   const configFileName = basename(configFilePath);
@@ -40,7 +41,6 @@ export function findFlatConfigFile(
       ESLINT_FLAT_CONFIG_FILENAMES
     );
     if (configFilePath) {
-      console.log(`Found eslint flat config file at: ${configFilePath}`);
       return configFilePath;
     }
     if (currentDir === workspaceRoot) {

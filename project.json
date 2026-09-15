@@ -4,10 +4,29 @@
   "targets": {
     "local-registry": {
       "executor": "@nx/js:verdaccio",
+      "inputs": [
+        "{workspaceRoot}/.verdaccio/**/*",
+        { "externalDependencies": ["verdaccio"] }
+      ],
       "options": {
         "port": 4873,
         "config": ".verdaccio/config.yml",
-        "storage": "build/local-registry/storage"
+        "storage": "dist/local-registry/storage",
+        "clear": false
+      }
+    },
+    "local-registry-e2e": {
+      "executor": "@nx/js:verdaccio",
+      "inputs": [
+        "{workspaceRoot}/.verdaccio/**/*",
+        { "externalDependencies": ["verdaccio"] }
+      ],
+      "options": {
+        "port": 4873,
+        "config": ".verdaccio/config.yml",
+        "storage": "dist/local-registry/storage",
+        "clear": false,
+        "location": "none"
       }
     },
     "populate-local-registry-storage": {
@@ -15,16 +34,64 @@
       "inputs": [
         {
           "input": "production",
-          "projects": [
-            "*",
-            "!nx-dev",
-            "!typedoc-theme",
-            "!tools-documentation-create-embeddings"
-          ]
+          "projects": ["tag:npm:public"]
+        },
+        {
+          "input": "production",
+          "projects": ["tag:maven:dev.nx.maven"]
+        },
+        "{workspaceRoot}/scripts/local-registry",
+        "native"
+      ],
+      "dependsOn": [
+        "local-registry-e2e",
+        {
+          "target": "build",
+          "projects": ["tag:npm:public"]
         }
       ],
       "command": "node ./scripts/local-registry/run-populate-storage.mjs",
-      "outputs": ["{workspaceRoot}/build/local-registry/storage"]
+      "outputs": ["{workspaceRoot}/dist/local-registry/storage"]
+    },
+    "nx-release": {
+      "dependsOn": [
+        {
+          "target": "build",
+          "projects": ["tag:npm:public"]
+        }
+      ],
+      "command": "tsx ./scripts/nx-release.ts"
+    },
+    "start-docker-registry": {
+      "continuous": true,
+      "command": "docker run --rm -p 5000:5000 --name local-docker-registry registry:2"
+    },
+    "check-format:quick": {
+      "parallelism": false
+    },
+    "lint": {
+      "dependsOn": ["@nx/nx-source:lint-pnpm-lock"],
+      "cache": true,
+      "inputs": ["{projectRoot}/pnpm-lock.yaml"]
+    },
+    "lint-pnpm-lock": {
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/pnpm-lock.yaml",
+        "{workspaceRoot}/eslint.config.mjs",
+        "{workspaceRoot}/tsconfig.json",
+        "{workspaceRoot}/tools/eslint-rules/**/*"
+      ]
+    },
+    "prepush": {
+      "dependsOn": [
+        "nx:format-native",
+        "nx:lint-native",
+        "check-commit",
+        "check-format:quick",
+        "check-lock-files",
+        "astro-docs:format"
+      ]
     }
   }
 }

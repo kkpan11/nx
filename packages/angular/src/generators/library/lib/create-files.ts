@@ -4,9 +4,11 @@ import {
   joinPathFragments,
   names,
   offsetFromRoot,
+  updateJson,
 } from '@nx/devkit';
 import { getRootTsConfigFileName } from '@nx/js';
-import { lt, parse } from 'semver';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { parse } from 'semver';
 import { UnitTestRunner } from '../../../utils/test-runners';
 import type { AngularProjectConfiguration } from '../../../utils/types';
 import { getInstalledAngularVersion } from '../../utils/version-utils';
@@ -28,7 +30,13 @@ export function createFiles(
 
   const version = getInstalledAngularVersion(tree);
   const { major, minor } = parse(version);
-  const disableModernClassFieldsBehavior = lt(version, '18.1.0-rc.0');
+
+  const componentType = options.componentOptions.type
+    ? names(options.componentOptions.type).className
+    : '';
+  const componentFileSuffix = options.componentOptions.type
+    ? `.${options.componentOptions.type}`
+    : '';
 
   const substitutions = {
     libName: options.libraryOptions.name,
@@ -44,7 +52,9 @@ export function createFiles(
     importPath: options.libraryOptions.importPath,
     rootOffset,
     angularPeerDepVersion: `^${major}.${minor}.0`,
-    disableModernClassFieldsBehavior,
+    componentType,
+    componentFileSuffix,
+    moduleTypeSeparator: options.libraryOptions.moduleTypeSeparator,
     tpl: '',
   };
 
@@ -54,6 +64,14 @@ export function createFiles(
     options.libraryOptions.projectRoot,
     substitutions
   );
+
+  if (options.libraryOptions.buildable && !options.libraryOptions.publishable) {
+    updateJson(
+      tree,
+      joinPathFragments(options.libraryOptions.projectRoot, 'package.json'),
+      (json) => ({ ...json, private: true })
+    );
+  }
 
   if (options.libraryOptions.standalone) {
     generateFiles(
@@ -71,17 +89,17 @@ export function createFiles(
     );
 
     if (options.libraryOptions.skipModule) {
-      tree.delete(
-        joinPathFragments(
-          project.sourceRoot,
-          `lib/${options.libraryOptions.fileName}.module.ts`
-        )
-      );
+      tree.delete(options.libraryOptions.modulePath);
     }
   }
 
   if (!options.libraryOptions.routing) {
-    tree.delete(joinPathFragments(project.sourceRoot, `lib/lib.routes.ts`));
+    tree.delete(
+      joinPathFragments(
+        getProjectSourceRoot(project, tree),
+        `lib/lib.routes.ts`
+      )
+    );
   }
 
   if (

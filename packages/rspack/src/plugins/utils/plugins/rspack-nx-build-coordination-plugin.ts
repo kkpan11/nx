@@ -1,0 +1,113 @@
+import { exec } from 'child_process';
+import type { Compiler } from '@rspack/core';
+import { daemonClient, BatchFunctionRunner } from '@nx/devkit/internal';
+import { isDaemonEnabled, output } from '@nx/devkit';
+
+export class RspackNxBuildCoordinationPlugin {
+  private currentlyRunning: 'none' | 'nx-build' | 'rspack-build' = 'none';
+  private buildCmdProcess: ReturnType<typeof exec> | null = null;
+
+  constructor(
+    private readonly buildCmd: string,
+    skipInitialBuild?: boolean
+  ) {
+    if (!skipInitialBuild) {
+      this.buildChangedProjects();
+    }
+    if (isDaemonEnabled()) {
+      this.startWatchingBuildableLibs();
+    } else {
+      output.warn({
+        title:
+          'Nx Daemon is not enabled. Buildable libs will not be rebuilt on file changes.',
+      });
+    }
+  }
+
+  apply(compiler: Compiler) {
+    compiler.hooks.beforeCompile.tapPromise(
+      'IncrementalDevServerPlugin',
+      async () => {
+        while (this.currentlyRunning === 'nx-build') {
+          await sleep(50);
+        }
+        this.currentlyRunning = 'rspack-build';
+      }
+    );
+    compiler.hooks.done.tapPromise('IncrementalDevServerPlugin', async () => {
+      this.currentlyRunning = 'none';
+    });
+  }
+
+  async startWatchingBuildableLibs() {
+    const unregisterFileWatcher = await this.createFileWatcher();
+
+    process.on('exit', () => {
+      unregisterFileWatcher();
+    });
+  }
+
+  async buildChangedProjects() {
+    while (this.currentlyRunning === 'rspack-build') {
+      await sleep(50);
+    }
+    this.currentlyRunning = 'nx-build';
+    try {
+      return await new Promise<void>((res) => {
+        this.buildCmdProcess = exec(this.buildCmd, {
+          windowsHide: true,
+        });
+
+        this.buildCmdProcess.stdout.pipe(process.stdout);
+        this.buildCmdProcess.stderr.pipe(process.stderr);
+        this.buildCmdProcess.on('exit', () => {
+          res();
+        });
+        this.buildCmdProcess.on('error', () => {
+          res();
+        });
+      });
+    } finally {
+      this.currentlyRunning = 'none';
+      this.buildCmdProcess = null;
+    }
+  }
+
+  private createFileWatcher() {
+    const runner = new BatchFunctionRunner(() => this.buildChangedProjects());
+    return daemonClient.registerFileWatcher(
+      {
+        watchProjects: 'all',
+      },
+      (err, { changedProjects, changedFiles }) => {
+        if (err === 'reconnecting') {
+          // Silent - daemon restarts automatically on lockfile changes
+          return;
+        } else if (err === 'reconnected') {
+          // Silent - reconnection succeeded
+          return;
+        } else if (err === 'closed') {
+          output.error({
+            title: 'Failed to reconnect to daemon after multiple attempts',
+          });
+          process.exit(1);
+        } else if (err) {
+          output.error({
+            title: `Watch error: ${err?.message ?? 'Unknown'}`,
+          });
+        }
+
+        if (this.buildCmdProcess) {
+          this.buildCmdProcess.kill(2);
+          this.buildCmdProcess = null;
+        }
+        // Queue a build
+        runner.enqueue(changedProjects, changedFiles);
+      }
+    );
+  }
+}
+
+function sleep(time: number) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}

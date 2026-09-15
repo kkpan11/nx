@@ -1,3 +1,4 @@
+import { logShowProjectCommand } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   formatFiles,
@@ -6,51 +7,67 @@ import {
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
+import { assertSupportedNextVersion } from '../../utils/assert-supported-next-version';
 import { initGenerator as jsInitGenerator } from '@nx/js';
-import { setupTailwindGenerator } from '@nx/react';
 import {
+  testingLibraryDomVersion,
   testingLibraryReactVersion,
-  typesReactDomVersion,
-  typesReactVersion,
-} from '@nx/react/src/utils/versions';
+  getReactDependenciesVersionsToInstall,
+} from '@nx/react/internal';
 
 import { normalizeOptions } from './lib/normalize-options';
 import { Schema } from './schema';
 import { addE2e } from './lib/add-e2e';
 import { addJest } from './lib/add-jest';
+import { addVitest } from './lib/add-vitest';
 import { addProject } from './lib/add-project';
 import { createApplicationFiles } from './lib/create-application-files';
 import { setDefaults } from './lib/set-defaults';
-import { updateJestConfig } from './lib/update-jest-config';
 import { nextInitGenerator } from '../init/init';
 import { addStyleDependencies } from '../../utils/styles';
 import { addLinting } from './lib/add-linting';
 import { customServerGenerator } from '../custom-server/custom-server';
 import { updateCypressTsConfig } from './lib/update-cypress-tsconfig';
-import { showPossibleWarnings } from './lib/show-possible-warnings';
 import { tsLibVersion } from '../../utils/versions';
-import { logShowProjectCommand } from '@nx/devkit/src/utils/log-show-project-command';
+import {
+  addProjectToTsSolutionWorkspace,
+  shouldConfigureTsSolutionSetup,
+  updateTsconfigFiles,
+  sortPackageJsonFields,
+} from '@nx/js/internal';
+import { configureForSwc } from '../../utils/add-swc-to-custom-server';
+import { updateJestConfig } from '../../utils/jest-config-util';
+import { isNext14, isNext15 } from '../../utils/version-utils';
 
 export async function applicationGenerator(host: Tree, schema: Schema) {
   return await applicationGeneratorInternal(host, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
+    useProjectJson: true,
     ...schema,
   });
 }
 
 export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
+  assertSupportedNextVersion(host);
+
   const tasks: GeneratorCallback[] = [];
-  const options = await normalizeOptions(host, schema);
 
-  showPossibleWarnings(host, options);
-
+  const addTsPlugin = shouldConfigureTsSolutionSetup(
+    host,
+    schema.addPlugin,
+    schema.useTsSolution
+  );
   const jsInitTask = await jsInitGenerator(host, {
-    js: options.js,
-    skipPackageJson: options.skipPackageJson,
+    js: schema.js,
+    skipPackageJson: schema.skipPackageJson,
     skipFormat: true,
+    addTsPlugin,
+    formatter: schema.formatter,
+    platform: 'web',
   });
   tasks.push(jsInitTask);
+
+  const options = await normalizeOptions(host, schema);
 
   const nextTask = await nextInitGenerator(host, {
     ...options,
@@ -58,9 +75,18 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
   });
   tasks.push(nextTask);
 
-  createApplicationFiles(host, options);
+  await createApplicationFiles(host, options);
 
   addProject(host, options);
+
+  // If we are using the new TS solution
+  // We need to update the workspace file (package.json or pnpm-workspaces.yaml) to include the new project
+  if (options.isTsSolutionSetup) {
+    await addProjectToTsSolutionWorkspace(host, options.appProjectRoot);
+  }
+
+  const lintTask = await addLinting(host, options);
+  tasks.push(lintTask);
 
   const e2eTask = await addE2e(host, options);
   tasks.push(e2eTask);
@@ -68,16 +94,8 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
   const jestTask = await addJest(host, options);
   tasks.push(jestTask);
 
-  const lintTask = await addLinting(host, options);
-  tasks.push(lintTask);
-
-  if (options.style === 'tailwind') {
-    const tailwindTask = await setupTailwindGenerator(host, {
-      project: options.projectName,
-    });
-
-    tasks.push(tailwindTask);
-  }
+  const vitestTask = await addVitest(host, options);
+  tasks.push(vitestTask);
 
   const styledTask = addStyleDependencies(host, {
     style: options.style,
@@ -85,9 +103,14 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
   });
   tasks.push(styledTask);
 
-  updateJestConfig(host, options);
+  updateJestConfig(host, { ...options, projectRoot: options.appProjectRoot });
   updateCypressTsConfig(host, options);
   setDefaults(host, options);
+
+  if (options.swc) {
+    const swcTask = configureForSwc(host, options.appProjectRoot);
+    tasks.push(swcTask);
+  }
 
   if (options.customServer) {
     await customServerGenerator(host, {
@@ -97,23 +120,44 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
   }
 
   if (!options.skipPackageJson) {
+    const reactVersions = await getReactDependenciesVersionsToInstall(host);
     const devDependencies: Record<string, string> = {
-      '@types/react': typesReactVersion,
-      '@types/react-dom': typesReactDomVersion,
+      '@types/react': reactVersions['@types/react'],
+      '@types/react-dom': reactVersions['@types/react-dom'],
     };
 
-    if (schema.unitTestRunner && schema.unitTestRunner !== 'none') {
+    if (options.unitTestRunner && options.unitTestRunner !== 'none') {
       devDependencies['@testing-library/react'] = testingLibraryReactVersion;
+      devDependencies['@testing-library/dom'] = testingLibraryDomVersion;
     }
 
     tasks.push(
       addDependenciesToPackageJson(
         host,
         { tslib: tsLibVersion },
-        devDependencies
+        devDependencies,
+        undefined,
+        true
       )
     );
   }
+
+  updateTsconfigFiles(
+    host,
+    options.appProjectRoot,
+    'tsconfig.json',
+    {
+      jsx: 'preserve',
+      module: 'esnext',
+      moduleResolution: 'bundler',
+    },
+    options.linter === 'eslint'
+      ? ['.next', 'eslint.config.js', 'eslint.config.cjs', 'eslint.config.mjs']
+      : ['.next'],
+    options.src ? 'src' : '.'
+  );
+
+  sortPackageJsonFields(host, options.appProjectRoot);
 
   if (!options.skipFormat) {
     await formatFiles(host);

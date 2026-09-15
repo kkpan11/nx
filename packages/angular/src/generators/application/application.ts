@@ -1,4 +1,6 @@
+import { logShowProjectCommand } from '@nx/devkit/internal';
 import {
+  addDependenciesToPackageJson,
   formatFiles,
   GeneratorCallback,
   installPackagesTask,
@@ -8,41 +10,45 @@ import {
   updateNxJson,
 } from '@nx/devkit';
 import { initGenerator as jsInitGenerator } from '@nx/js';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
+import { convertToRspack } from '../convert-to-rspack/convert-to-rspack';
 import { angularInitGenerator } from '../init/init';
 import { setupSsr } from '../setup-ssr/setup-ssr';
-import { setupTailwindGenerator } from '../setup-tailwind/setup-tailwind';
 import { ensureAngularDependencies } from '../utils/ensure-angular-dependencies';
+import { assertNotUsingTsSolutionSetup } from '../utils/validations';
+import {
+  getInstalledAngularDevkitVersion,
+  versions,
+} from '../utils/version-utils';
 import {
   addE2e,
   addLinting,
   addProxyConfig,
+  addServeStaticTarget,
   addUnitTestRunner,
   createFiles,
   createProject,
-  enableStrictTypeChecking,
   normalizeOptions,
-  setApplicationStrictDefault,
   setGeneratorDefaults,
-  updateEditorTsConfig,
+  updateTsconfigFiles,
+  validateOptions,
 } from './lib';
 import type { Schema } from './schema';
-import { logShowProjectCommand } from '@nx/devkit/src/utils/log-show-project-command';
 
 export async function applicationGenerator(
   tree: Tree,
-  schema: Partial<Schema>
+  schema: Schema
 ): Promise<GeneratorCallback> {
-  return await applicationGeneratorInternal(tree, {
-    projectNameAndRootFormat: 'derived',
-    ...schema,
-  });
-}
+  assertSupportedAngularVersion(tree);
+  assertNotUsingTsSolutionSetup(tree, 'application');
+  validateOptions(tree, schema);
 
-export async function applicationGeneratorInternal(
-  tree: Tree,
-  schema: Partial<Schema>
-): Promise<GeneratorCallback> {
-  const options = await normalizeOptions(tree, schema);
+  const isRspack = schema.bundler === 'rspack';
+  if (isRspack) {
+    schema.bundler = 'webpack';
+  }
+
+  const options = await normalizeOptions(tree, schema, isRspack);
   const rootOffset = offsetFromRoot(options.appProjectRoot);
 
   await jsInitGenerator(tree, {
@@ -54,28 +60,26 @@ export async function applicationGeneratorInternal(
   await angularInitGenerator(tree, {
     ...options,
     skipFormat: true,
+    addPlugin: options.addPlugin,
   });
 
   if (!options.skipPackageJson) {
-    ensureAngularDependencies(tree);
+    ensureAngularDependencies(tree, options.zoneless);
   }
 
   createProject(tree, options);
 
   await createFiles(tree, options, rootOffset);
 
-  if (options.addTailwind) {
-    await setupTailwindGenerator(tree, {
-      project: options.name,
-      skipFormat: true,
-      skipPackageJson: options.skipPackageJson,
-    });
-  }
-
   await addLinting(tree, options);
-  await addUnitTestRunner(tree, options);
-  await addE2e(tree, options);
-  updateEditorTsConfig(tree, options);
+  const unitTestRunnerTask = await addUnitTestRunner(tree, options);
+  const e2ePort = await addE2e(tree, options);
+  addServeStaticTarget(
+    tree,
+    options,
+    options.e2eTestRunner !== 'none' ? e2ePort : options.port
+  );
+  updateTsconfigFiles(tree, options);
   setGeneratorDefaults(tree, options);
 
   if (options.rootProject) {
@@ -88,25 +92,52 @@ export async function applicationGeneratorInternal(
     addProxyConfig(tree, options);
   }
 
-  if (options.strict) {
-    enableStrictTypeChecking(tree, options);
-  } else {
-    setApplicationStrictDefault(tree, false);
-  }
-
   if (options.ssr) {
     await setupSsr(tree, {
       project: options.name,
       standalone: options.standalone,
       skipPackageJson: options.skipPackageJson,
+      isRspack,
     });
+  }
+
+  if (isRspack) {
+    await convertToRspack(tree, {
+      project: options.name,
+      skipInstall: options.skipPackageJson,
+      skipFormat: true,
+    });
+  }
+
+  if (!options.skipPackageJson) {
+    const devDependencies: Record<string, string> = {};
+    const packageVersions = versions(tree);
+    const angularDevkitVersion =
+      getInstalledAngularDevkitVersion(tree) ??
+      packageVersions.angularDevkitVersion;
+
+    if (options.bundler === 'esbuild') {
+      devDependencies['@angular/build'] = angularDevkitVersion;
+    } else if (isRspack) {
+      devDependencies['@angular/build'] = angularDevkitVersion;
+      devDependencies['@angular-devkit/build-angular'] = angularDevkitVersion;
+    } else {
+      devDependencies['@angular-devkit/build-angular'] = angularDevkitVersion;
+    }
+    if (options.style === 'less') {
+      devDependencies['less'] = packageVersions.lessVersion;
+    }
+    if (Object.keys(devDependencies).length) {
+      addDependenciesToPackageJson(tree, {}, devDependencies, undefined, true);
+    }
   }
 
   if (!options.skipFormat) {
     await formatFiles(tree);
   }
 
-  return () => {
+  return async () => {
+    await unitTestRunnerTask();
     installPackagesTask(tree);
     logShowProjectCommand(options.name);
   };

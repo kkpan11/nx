@@ -1,9 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc",
-    "module": "commonjs",
-    "types": ["jest", "node"]
+    "outDir": "out-tsc/spec",
+    "customConditions": ["@nx/nx-source"],
+    "types": ["jest", "node"],
+    "composite": true,
+    "rootDir": "."
   },
   "include": [
     "**/*.spec.ts",
@@ -18,6 +20,12 @@
     "**/*.test.jsx",
     "**/*.d.ts",
     "jest.config.ts",
-    "test-setup.ts"
+    "test-setup.ts",
+    "*.json"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.lib.json"
+    }
   ]
 }

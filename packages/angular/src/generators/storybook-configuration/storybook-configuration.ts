@@ -4,20 +4,19 @@ import {
   readProjectConfiguration,
   Tree,
 } from '@nx/devkit';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
 import { updateAppEditorTsConfigExcludedFiles } from '../utils/update-app-editor-tsconfig-excluded-files';
 import { assertCompatibleStorybookVersion } from './lib/assert-compatible-storybook-version';
 import { generateStories } from './lib/generate-stories';
 import { generateStorybookConfiguration } from './lib/generate-storybook-configuration';
-import { validateOptions } from './lib/validate-options';
 import type { StorybookConfigurationOptions } from './schema';
 
-// TODO(katerina): Nx 19 -> remove Cypress
 export async function storybookConfigurationGenerator(
   tree: Tree,
   options: StorybookConfigurationOptions
 ): Promise<GeneratorCallback> {
+  assertSupportedAngularVersion(tree);
   assertCompatibleStorybookVersion();
-  validateOptions(options);
 
   const storybookGeneratorInstallTask = await generateStorybookConfiguration(
     tree,

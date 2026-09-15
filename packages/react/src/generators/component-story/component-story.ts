@@ -6,13 +6,16 @@ import {
   normalizePath,
   Tree,
 } from '@nx/devkit';
+import { assertSupportedReactVersion } from '../../utils/assert-supported-react-version';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
 import type * as ts from 'typescript';
 import {
   findExportDeclarationsForJsx,
   getComponentNode,
 } from '../../utils/ast-utils';
-import { getDefaultsForComponent } from '../../utils/component-props';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { getComponentPropDefaults } from '../../utils/component-props';
+import { getUiFramework } from '../../utils/framework';
+import { join } from 'path';
 
 let tsModule: typeof import('typescript');
 
@@ -20,20 +23,28 @@ export interface CreateComponentStoriesFileSchema {
   project: string;
   componentPath: string;
   interactionTests?: boolean;
+  uiFramework?: string;
   skipFormat?: boolean;
 }
 
 export function createComponentStoriesFile(
   host: Tree,
-  { project, componentPath, interactionTests }: CreateComponentStoriesFileSchema
+  {
+    project,
+    componentPath,
+    interactionTests,
+    uiFramework,
+  }: CreateComponentStoriesFileSchema
 ) {
   if (!tsModule) {
     tsModule = ensureTypescript();
   }
   const proj = getProjects(host).get(project);
-  const sourceRoot = proj.sourceRoot;
 
-  const componentFilePath = joinPathFragments(sourceRoot, componentPath);
+  const componentFilePath = joinPathFragments(
+    getProjectSourceRoot(proj, host),
+    componentPath
+  );
 
   const componentDirectory = componentFilePath.replace(
     componentFilePath.slice(componentFilePath.lastIndexOf('/')),
@@ -76,6 +87,7 @@ export function createComponentStoriesFile(
           componentDirectory,
           name,
           interactionTests,
+          uiFramework,
           isPlainJs,
           componentNodes.length > 1
         );
@@ -93,6 +105,7 @@ export function createComponentStoriesFile(
       componentDirectory,
       name,
       interactionTests,
+      uiFramework,
       isPlainJs
     );
   }
@@ -105,17 +118,18 @@ export function findPropsAndGenerateFile(
   componentDirectory: string,
   name: string,
   interactionTests: boolean,
+  uiFramework: string,
   isPlainJs: boolean,
   fromNodeArray?: boolean
 ) {
-  const { propsTypeName, props, argTypes } = getDefaultsForComponent(
+  const { props, argTypes } = getComponentPropDefaults(
     sourceFile,
     cmpDeclaration
   );
 
   generateFiles(
     host,
-    joinPathFragments(__dirname, `./files${isPlainJs ? '/jsx' : '/tsx'}`),
+    join(__dirname, `./files${isPlainJs ? '/jsx' : '/tsx'}`),
     normalizePath(componentDirectory),
     {
       tmpl: '',
@@ -123,11 +137,11 @@ export function findPropsAndGenerateFile(
         ? `${name}--${(cmpDeclaration as any).name.text}`
         : name,
       componentImportFileName: name,
-      propsTypeName,
       props,
       argTypes,
       componentName: (cmpDeclaration as any).name.text,
       interactionTests,
+      uiFramework,
     }
   );
 }
@@ -136,9 +150,12 @@ export async function componentStoryGenerator(
   host: Tree,
   schema: CreateComponentStoriesFileSchema
 ) {
+  assertSupportedReactVersion(host);
+
   createComponentStoriesFile(host, {
     ...schema,
     interactionTests: schema.interactionTests ?? true,
+    uiFramework: schema.uiFramework ?? getUiFramework(host, schema.project),
   });
 
   if (!schema.skipFormat) {

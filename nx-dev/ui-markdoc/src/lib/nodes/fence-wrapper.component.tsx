@@ -1,5 +1,5 @@
 'use client';
-import { Fence, FenceProps } from '@nx/nx-dev/ui-fence';
+import { Fence, FenceProps } from '@nx/nx-dev-ui-fence';
 import { useRouter, usePathname, useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
@@ -34,7 +34,7 @@ export function FenceWrapper(props: FenceProps) {
   };
 
   return (
-    <div className="my-8 w-full">
+    <div className="w-full">
       <Fence {...modifiedProps} />
     </div>
   );

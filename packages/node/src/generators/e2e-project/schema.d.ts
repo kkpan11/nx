@@ -1,15 +1,13 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-
 export interface Schema {
   project: string;
   projectType: 'server' | 'cli';
   directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   name?: string;
   port?: number;
-  linter?: 'eslint' | 'none';
+  linter?: 'eslint' | 'oxlint' | 'none';
   rootProject?: boolean;
   isNest?: boolean;
   skipFormat?: boolean;
   addPlugin?: boolean;
+  useProjectJson?: boolean;
 }

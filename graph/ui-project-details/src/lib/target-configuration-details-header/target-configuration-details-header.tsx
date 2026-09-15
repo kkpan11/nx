@@ -1,7 +1,6 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type { TargetConfiguration } from '@nx/devkit';
-import { CopyToClipboardButton } from '@nx/graph/ui-components';
+import { CopyToClipboardButton, Tooltip } from '@nx/graph-ui-common';
 import {
   ChevronDownIcon,
   ChevronUpIcon,
@@ -9,17 +8,14 @@ import {
   PlayIcon,
 } from '@heroicons/react/24/outline';
 
-import {
-  AtomizerTooltip,
-  PropertyInfoTooltip,
-  Tooltip,
-} from '@nx/graph/ui-tooltips';
 import { twMerge } from 'tailwind-merge';
 import { Pill } from '../pill';
 import { TargetTechnologies } from '../target-technologies/target-technologies';
 import { SourceInfo } from '../source-info/source-info';
 import { getDisplayHeaderFromTargetConfiguration } from '../utils/get-display-header-from-target-configuration';
 import { TargetExecutor } from '../target-executor/target-executor';
+import { AtomizerTooltip } from '../tooltips/atomizer-tooltip';
+import { PropertyInfoTooltip } from '../tooltips/property-info-tooltip';
 
 export interface TargetConfigurationDetailsHeaderProps {
   isCollasped: boolean;
@@ -71,18 +67,21 @@ export const TargetConfigurationDetailsHeader = ({
           ? 'border-b bg-slate-50 dark:border-slate-700/60 dark:bg-slate-800'
           : ''
       )}
+      id={`target-${targetName}`}
       onClick={collapsable ? toggleCollapse : undefined}
     >
       <div className="flex items-center justify-between gap-4">
-        <div className="flex min-w-0 flex-1 items-center justify-between">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex w-full min-w-0 flex-1 items-center justify-between overflow-hidden">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             {collapsable &&
               (isCollasped ? (
                 <ChevronDownIcon className="h-3 w-3" />
               ) : (
                 <ChevronUpIcon className="h-3 w-3" />
               ))}
-            <h3 className="font-medium dark:text-slate-300">{targetName}</h3>
+            <h3 className="min-w-0 truncate font-medium dark:text-slate-300">
+              {targetName}
+            </h3>
             <TargetTechnologies
               technologies={targetConfiguration.metadata?.technologies}
               showTooltip={!isCollasped}
@@ -149,25 +148,32 @@ export const TargetConfigurationDetailsHeader = ({
                 </span>
               </Tooltip>
             )}
+            {(targetConfiguration as any).continuous && (
+              <Tooltip
+                openAction="hover"
+                strategy="fixed"
+                content={(<PropertyInfoTooltip type="continuous" />) as any}
+              >
+                <span className="inline-flex">
+                  <Pill text="Continuous" color="grey" />
+                </span>
+              </Tooltip>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <CopyToClipboardButton
             text={JSON.stringify(targetConfiguration, null, 2)}
-            tooltipText={!isCollasped ? 'Copy Target' : undefined}
+            tooltipText="Copy Target"
             tooltipAlignment="right"
-            className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-inset ring-slate-400/40 hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
+            className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-slate-400/40 ring-inset hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
           />
           {onViewInTaskGraph && (
             <button
-              className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-inset ring-slate-400/40 hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
-              // TODO: fix tooltip overflow in collapsed state
-              data-tooltip={isCollasped ? false : 'View in Task Graph'}
+              className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-slate-400/40 ring-inset hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
+              data-tooltip="View in Task Graph"
               data-tooltip-align-right
               onClick={(e) => {
-                if (isCollasped) {
-                  return;
-                }
                 e.stopPropagation();
                 onViewInTaskGraph({ projectName, targetName });
               }}
@@ -178,9 +184,8 @@ export const TargetConfigurationDetailsHeader = ({
 
           {onRunTarget && (
             <span
-              className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-inset ring-slate-400/40 hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
-              // TODO: fix tooltip overflow in collapsed state
-              data-tooltip={isCollasped ? false : 'Run Target'}
+              className="rounded-md bg-inherit p-1 text-sm text-slate-600 ring-1 ring-slate-400/40 ring-inset hover:bg-slate-200 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-700/60"
+              data-tooltip="Run Target"
               data-tooltip-align-right
             >
               <PlayIcon
@@ -195,7 +200,7 @@ export const TargetConfigurationDetailsHeader = ({
         </div>
       </div>
       {!isCollasped && (
-        <div className="ml-5 mt-2 text-sm">
+        <div className="mt-2 ml-5 text-sm">
           <div className="flex">
             <SourceInfo
               data={sourceMap[`targets.${targetName}`]}
@@ -205,7 +210,7 @@ export const TargetConfigurationDetailsHeader = ({
           </div>
           {targetName !== 'nx-release-publish' && (
             <div className="mt-2 text-right">
-              <code className="ml-4 rounded bg-gray-100 px-2 py-1 font-mono text-gray-800 dark:bg-gray-700 dark:text-gray-300">
+              <code className="ml-4 rounded-sm bg-gray-100 px-2 py-1 font-mono text-gray-800 dark:bg-gray-700 dark:text-gray-300">
                 nx run {projectName}:{targetName}
               </code>
               <span>

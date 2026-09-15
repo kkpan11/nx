@@ -1,7 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": ["dom", "dom.iterable", "es2021", "esnext"],
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "jsx": "preserve",
     "allowJs": true,
     "esModuleInterop": true,
@@ -12,12 +13,19 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "incremental": true,
+    "composite": true,
     "strictNullChecks": false,
+    "noImplicitAny": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
     "plugins": [
       {
         "name": "next"
       }
-    ]
+    ],
+    "ignoreDeprecations": "6.0"
   },
   "types": ["node", "jest"],
   "include": [
@@ -26,11 +34,36 @@
     "**/*.tsx",
     "next-env.d.ts",
     ".next/types/**/*.ts",
-    "../../dist/nx-dev/nx-dev/.next/types/**/*.ts"
+    "public/documentation/**/*.json",
+    "../../nx-dev/nx-dev/.next/types/**/*.ts"
   ],
   "references": [
     {
-      "path": "./tsconfig.spec.json"
+      "path": "../feature-analytics"
+    },
+    {
+      "path": "../ui-primitives"
+    },
+    {
+      "path": "../ui-common"
+    },
+    {
+      "path": "../feature-ai"
+    },
+    {
+      "path": "../data-access-documents"
+    },
+    {
+      "path": "../data-access-courses"
+    },
+    {
+      "path": "../util-ai"
+    },
+    {
+      "path": "../ui-video-courses"
+    },
+    {
+      "path": "../ui-courses"
     }
   ],
   "exclude": [
@@ -39,6 +72,10 @@
     "**/*.spec.tsx",
     "**/*.test.tsx",
     "jest.config.ts",
-    "node_modules"
+    "node_modules",
+    "../../node_modules",
+    "**/node_modules",
+    "../../packages/*/node_modules/**",
+    "node_modules/.pnpm/**"
   ]
 }

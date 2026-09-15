@@ -1,7 +1,10 @@
-import { tsquery } from '@phenomnomnominal/tsquery';
-import { readJson, joinPathFragments, type Tree } from '@nx/devkit';
-import { AggregatedLog } from '@nx/devkit/src/generators/plugin-migrations/aggregate-log-util';
-import { toProjectRelativePath } from '@nx/devkit/src/generators/plugin-migrations/plugin-migration-utils';
+import { ast, query } from '@phenomnomnominal/tsquery';
+import {
+  getDependencyVersionFromPackageJson,
+  joinPathFragments,
+  type Tree,
+} from '@nx/devkit';
+import { AggregatedLog, toProjectRelativePath } from '@nx/devkit/internal';
 import { dirname } from 'path/posix';
 import { coerce, major } from 'semver';
 
@@ -24,11 +27,9 @@ export function addConfigValuesToConfigFile(
   const IMPORT_PROPERTY_SELECTOR = 'ImportDeclaration';
   const configFileContents = tree.read(configFile, 'utf-8');
 
-  const ast = tsquery.ast(configFileContents);
+  const sourceFile = ast(configFileContents);
   // AST TO GET SECTION TO APPEND TO
-  const importNodes = tsquery(ast, IMPORT_PROPERTY_SELECTOR, {
-    visitAllChildren: true,
-  });
+  const importNodes = query(sourceFile, IMPORT_PROPERTY_SELECTOR);
   let startPosition = 0;
   if (importNodes.length !== 0) {
     const lastImportNode = importNodes[importNodes.length - 1];
@@ -55,46 +56,44 @@ export function addConfigValuesToConfigFile(
   );
 }
 
+// CLI flag names across Storybook v8 / v9 / v10 are identical (verified against
+// storybook v9 and v10 bundled CLI sources); kept as separate entries so a
+// future divergence per major can be expressed in place.
+const MODERN_STORYBOOK_PROP_MAPPING = {
+  port: 'port',
+  previewUrl: 'preview-url',
+  host: 'host',
+  docs: 'docs',
+  configDir: 'config-dir',
+  logLevel: 'loglevel',
+  quiet: 'quiet',
+  webpackStatsJson: 'stats-json',
+  debugWebpack: 'debug-webpack',
+  disableTelemetry: 'disable-telemetry',
+  https: 'https',
+  sslCa: 'ssl-ca',
+  sslCert: 'ssl-cert',
+  sslKey: 'ssl-key',
+  smokeTest: 'smoke-test',
+  noOpen: 'no-open',
+  outputDir: 'output-dir',
+} as const;
+
 export const STORYBOOK_PROP_MAPPINGS = {
-  v7: {
-    port: 'port',
-    previewUrl: 'preview-url',
-    host: 'host',
-    docs: 'docs',
-    configDir: 'config-dir',
-    logLevel: 'loglevel',
-    quiet: 'quiet',
-    webpackStatsJson: 'webpack-stats-json',
-    debugWebpack: 'debug-webpack',
-    disableTelemetry: 'disable-telemetry',
-    https: 'https',
-    sslCa: 'ssl-ca',
-    sslCert: 'ssl-cert',
-    sslKey: 'ssl-key',
-    smokeTest: 'smoke-test',
-    noOpen: 'no-open',
-    outputDir: 'output-dir',
-  },
-  v8: {
-    port: 'port',
-    previewUrl: 'preview-url',
-    host: 'host',
-    docs: 'docs',
-    configDir: 'config-dir',
-    logLevel: 'loglevel',
-    quiet: 'quiet',
-    webpackStatsJson: 'stats-json',
-    debugWebpack: 'debug-webpack',
-    disableTelemetry: 'disable-telemetry',
-    https: 'https',
-    sslCa: 'ssl-ca',
-    sslCert: 'ssl-cert',
-    sslKey: 'ssl-key',
-    smokeTest: 'smoke-test',
-    noOpen: 'no-open',
-    outputDir: 'output-dir',
-  },
-};
+  v8: MODERN_STORYBOOK_PROP_MAPPING,
+  v9: MODERN_STORYBOOK_PROP_MAPPING,
+  v10: MODERN_STORYBOOK_PROP_MAPPING,
+} as const;
+
+export function getStorybookPropMappings(
+  tree: Tree
+): typeof MODERN_STORYBOOK_PROP_MAPPING {
+  const major = getInstalledPackageVersionInfo(tree, 'storybook')?.major;
+  const key = `v${major}` as keyof typeof STORYBOOK_PROP_MAPPINGS;
+  // Above-ceiling falls through to the latest known mapping. Below-floor is
+  // unreachable: the generator-level floor assert blocks it before this runs.
+  return STORYBOOK_PROP_MAPPINGS[key] ?? STORYBOOK_PROP_MAPPINGS.v10;
+}
 
 export function ensureViteConfigPathIsRelative(
   tree: Tree,
@@ -110,7 +109,7 @@ export function ensureViteConfigPathIsRelative(
     return;
   }
 
-  const ast = tsquery.ast(configFileContents);
+  const sourceFile = ast(configFileContents);
   const REACT_FRAMEWORK_SELECTOR_IDENTIFIERS =
     'PropertyAssignment:has(Identifier[name=framework]) PropertyAssignment:has(Identifier[name=name]) StringLiteral[value=@storybook/react-vite]';
   const REACT_FRAMEWORK_SELECTOR_STRING_LITERALS =
@@ -121,35 +120,23 @@ export function ensureViteConfigPathIsRelative(
   const VUE_FRAMEWORK_SELECTOR_STRING_LITERALS =
     'PropertyAssignment:has(StringLiteral[value=framework]) PropertyAssignment:has(StringLiteral[value=name]) StringLiteral[value=@storybook/vue3-vite]';
   const isUsingVite =
-    tsquery(ast, REACT_FRAMEWORK_SELECTOR_IDENTIFIERS, {
-      visitAllChildren: true,
-    }).length > 0 ||
-    tsquery(ast, REACT_FRAMEWORK_SELECTOR_STRING_LITERALS, {
-      visitAllChildren: true,
-    }).length > 0 ||
-    tsquery(ast, VUE_FRAMEWORK_SELECTOR_STRING_LITERALS, {
-      visitAllChildren: true,
-    }).length > 0 ||
-    tsquery(ast, VUE_FRAMEWORK_SELECTOR_IDENTIFIERS, { visitAllChildren: true })
-      .length > 0;
+    query(sourceFile, REACT_FRAMEWORK_SELECTOR_IDENTIFIERS).length > 0 ||
+    query(sourceFile, REACT_FRAMEWORK_SELECTOR_STRING_LITERALS).length > 0 ||
+    query(sourceFile, VUE_FRAMEWORK_SELECTOR_STRING_LITERALS).length > 0 ||
+    query(sourceFile, VUE_FRAMEWORK_SELECTOR_IDENTIFIERS).length > 0;
   if (!isUsingVite) {
     return;
   }
 
   const VITE_CONFIG_PATH_SELECTOR =
     'PropertyAssignment:has(Identifier[name=framework]) PropertyAssignment PropertyAssignment PropertyAssignment:has(Identifier[name=viteConfigPath]) > StringLiteral';
-  let viteConfigPathNodes = tsquery(ast, VITE_CONFIG_PATH_SELECTOR, {
-    visitAllChildren: true,
-  });
+  let viteConfigPathNodes = query(sourceFile, VITE_CONFIG_PATH_SELECTOR);
   if (viteConfigPathNodes.length === 0) {
     const VITE_CONFIG_PATH_SELECTOR_STRING_LITERALS =
       'PropertyAssignment:has(StringLiteral[value=framework]) PropertyAssignment PropertyAssignment PropertyAssignment:has(StringLiteral[value=viteConfigPath]) > StringLiteral:not(StringLiteral[value=viteConfigPath])';
-    viteConfigPathNodes = tsquery(
-      ast,
-      VITE_CONFIG_PATH_SELECTOR_STRING_LITERALS,
-      {
-        visitAllChildren: true,
-      }
+    viteConfigPathNodes = query(
+      sourceFile,
+      VITE_CONFIG_PATH_SELECTOR_STRING_LITERALS
     );
 
     if (viteConfigPathNodes.length === 0) {
@@ -187,14 +174,13 @@ export function getInstalledPackageVersion(
   tree: Tree,
   pkgName: string
 ): string | null {
-  const { dependencies, devDependencies } = readJson(tree, 'package.json');
-  const version = dependencies?.[pkgName] ?? devDependencies?.[pkgName];
-
-  return version;
+  // resolves pnpm catalog: refs (and yarn catalog refs)
+  return getDependencyVersionFromPackageJson(tree, pkgName);
 }
 
 export function getInstalledPackageVersionInfo(tree: Tree, pkgName: string) {
   const version = getInstalledPackageVersion(tree, pkgName);
+  const coerced = version ? coerce(version) : null;
 
-  return version ? { major: major(coerce(version)), version } : null;
+  return coerced ? { major: major(coerced), version } : null;
 }

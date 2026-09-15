@@ -1,0 +1,86 @@
+import { basename, dirname } from 'node:path';
+import { combineGlobPatterns } from '@nx/devkit/internal';
+
+export const GRADLE_BUILD_FILES = new Set(['build.gradle', 'build.gradle.kts']);
+export const GRADLEW_FILES = new Set(['gradlew', 'gradlew.bat']);
+export const GRADLE_VERSION_CATALOG_GLOB = '**/gradle/*.versions.toml';
+export const GRADLE_TEST_FILES = [
+  '**/src/test/java/**/*Test.java',
+  '**/src/test/kotlin/**/*Test.kt',
+  '**/src/test/java/**/*Tests.java',
+  '**/src/test/kotlin/**/*Tests.kt',
+  '**/src/test/groovy/**/*Test.groovy',
+  '**/src/test/groovy/**/*Tests.groovy',
+];
+
+export const gradleConfigGlob = combineGlobPatterns(
+  ...Array.from(GRADLE_BUILD_FILES).map((file) => `**/${file}`)
+);
+
+// Files that influence Gradle's configuration phase and therefore the project
+// graph report: any *.gradle(.kts) script (build, settings, script plugins),
+// gradle.properties, the wrapper pin, and buildSrc build logic.
+const GRADLE_CONFIG_FILE_PATTERNS = [
+  '*.gradle',
+  '*.gradle.kts',
+  'gradle.properties',
+  'gradle/wrapper/gradle-wrapper.properties',
+  'buildSrc/**/*.kt',
+  'buildSrc/**/*.java',
+  'buildSrc/**/*.groovy',
+];
+
+export const gradleConfigAndTestGlob = combineGlobPatterns(
+  ...GRADLE_CONFIG_FILE_PATTERNS,
+  ...GRADLE_CONFIG_FILE_PATTERNS.map((pattern) => `**/${pattern}`),
+  ...Array.from(GRADLEW_FILES),
+  ...Array.from(GRADLEW_FILES).map((file) => `**/${file}`),
+  ...GRADLE_TEST_FILES,
+  GRADLE_VERSION_CATALOG_GLOB
+);
+
+/**
+ * This function split config files into build files, settings files, test files and project roots
+ * @param files list of files to split
+ * @returns object with buildFiles, gradlewFiles, testFiles and projectRoots
+ * For gradlewFiles, it will start with settings files and find the nearest gradlew file in the workspace
+ */
+export function splitConfigFiles(files: readonly string[]): {
+  buildFiles: string[];
+  gradlewFiles: string[];
+  testFiles: string[];
+  projectRoots: string[];
+} {
+  const buildFiles = [];
+  const testFiles = [];
+  const gradlewFiles = [];
+  const projectRoots = new Set<string>();
+
+  files.forEach((file) => {
+    const filename = basename(file);
+    const fileDirectory = dirname(file);
+    if (GRADLE_BUILD_FILES.has(filename)) {
+      buildFiles.push(file);
+      projectRoots.add(fileDirectory);
+    } else if (GRADLEW_FILES.has(filename)) {
+      if (process.platform.startsWith('win')) {
+        if (filename === 'gradlew.bat') {
+          gradlewFiles.push(file);
+        }
+      } else {
+        if (filename === 'gradlew') {
+          gradlewFiles.push(file);
+        }
+      }
+    } else {
+      testFiles.push(file);
+    }
+  });
+
+  return {
+    buildFiles,
+    testFiles,
+    gradlewFiles,
+    projectRoots: Array.from(projectRoots),
+  };
+}

@@ -11,8 +11,10 @@ import {
   updateNxJson,
   updateProjectConfiguration,
 } from '@nx/devkit';
-import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
-import type { Schema } from '../schema';
+import { findTargetDefault, upsertTargetDefault } from '@nx/devkit/internal';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { supportsSsrAllowedHosts } from '../../utils/version-utils';
+import type { NormalizedGeneratorOptions } from '../schema';
 import {
   DEFAULT_BROWSER_DIR,
   DEFAULT_MEDIA_DIR,
@@ -21,7 +23,7 @@ import {
 
 export function updateProjectConfigForApplicationBuilder(
   tree: Tree,
-  options: Schema
+  options: NormalizedGeneratorOptions
 ): void {
   const project = readProjectConfiguration(tree, options.project);
   const buildTarget = project.targets.build;
@@ -48,28 +50,40 @@ export function updateProjectConfigForApplicationBuilder(
       delete outputPath.browser;
     } else {
       outputPath = outputPath.base;
+      if (buildTarget.outputs && buildTarget.outputs.length > 0) {
+        buildTarget.outputs = buildTarget.outputs.map((output) =>
+          output === '{options.outputPath.base}'
+            ? '{options.outputPath}'
+            : output
+        );
+      }
     }
   }
 
+  const sourceRoot = getProjectSourceRoot(project, tree);
+
   buildTarget.options ??= {};
   buildTarget.options.outputPath = outputPath;
-  buildTarget.options.server = joinPathFragments(
-    project.sourceRoot ?? joinPathFragments(project.root, 'src'),
-    options.main
-  );
-  buildTarget.options.prerender = true;
+  buildTarget.options.server = joinPathFragments(sourceRoot, options.main);
   buildTarget.options.ssr = {
-    entry: joinPathFragments(project.root, options.serverFileName),
+    entry: joinPathFragments(sourceRoot, options.serverFileName),
   };
+  buildTarget.options.outputMode = 'server';
+  if (supportsSsrAllowedHosts(tree)) {
+    // The engine matches the request host against this list and an unset list
+    // matches nothing, so surface it for the deployment to fill in
+    buildTarget.options.security ??= {};
+    buildTarget.options.security.allowedHosts ??= [];
+  }
 
   updateProjectConfiguration(tree, options.project, project);
 }
 
 export function updateProjectConfigForBrowserBuilder(
   tree: Tree,
-  schema: Schema
+  options: NormalizedGeneratorOptions
 ) {
-  const projectConfig = readProjectConfiguration(tree, schema.project);
+  const projectConfig = readProjectConfiguration(tree, options.project);
   const buildTarget = projectConfig.targets.build;
   const baseOutputPath = buildTarget.options.outputPath;
   buildTarget.options.outputPath = joinPathFragments(baseOutputPath, 'browser');
@@ -82,14 +96,18 @@ export function updateProjectConfigForBrowserBuilder(
     }
   }
 
+  const sourceRoot = getProjectSourceRoot(projectConfig, tree);
+
   projectConfig.targets.server = {
     dependsOn: ['build'],
-    executor: buildTarget.executor.startsWith('@angular-devkit/build-angular:')
+    executor: options.buildTargetExecutor.startsWith(
+      '@angular-devkit/build-angular:'
+    )
       ? '@angular-devkit/build-angular:server'
       : '@nx/angular:webpack-server',
     options: {
       outputPath: joinPathFragments(baseOutputPath, 'server'),
-      main: joinPathFragments(projectConfig.root, schema.serverFileName),
+      main: joinPathFragments(sourceRoot, options.serverFileName),
       tsConfig: joinPathFragments(projectConfig.root, 'tsconfig.server.json'),
       ...(buildTarget.options ? getServerOptions(buildTarget.options) : {}),
     },
@@ -97,50 +115,43 @@ export function updateProjectConfigForBrowserBuilder(
     defaultConfiguration: 'production',
   };
 
-  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-
   projectConfig.targets['serve-ssr'] = {
-    executor:
-      angularMajorVersion >= 17
-        ? '@angular-devkit/build-angular:ssr-dev-server'
-        : '@nguniversal/builders:ssr-dev-server',
+    continuous: true,
+    executor: '@angular-devkit/build-angular:ssr-dev-server',
     configurations: {
       development: {
-        browserTarget: `${schema.project}:build:development`,
-        serverTarget: `${schema.project}:server:development`,
+        browserTarget: `${options.project}:build:development`,
+        serverTarget: `${options.project}:server:development`,
       },
       production: {
-        browserTarget: `${schema.project}:build:production`,
-        serverTarget: `${schema.project}:server:production`,
+        browserTarget: `${options.project}:build:production`,
+        serverTarget: `${options.project}:server:production`,
       },
     },
     defaultConfiguration: 'development',
   };
 
   projectConfig.targets.prerender = {
-    executor:
-      angularMajorVersion >= 17
-        ? '@angular-devkit/build-angular:prerender'
-        : '@nguniversal/builders:prerender',
+    executor: '@angular-devkit/build-angular:prerender',
     options: {
       routes: ['/'],
     },
     configurations: {
       development: {
-        browserTarget: `${schema.project}:build:development`,
-        serverTarget: `${schema.project}:server:development`,
+        browserTarget: `${options.project}:build:development`,
+        serverTarget: `${options.project}:server:development`,
       },
       production: {
-        browserTarget: `${schema.project}:build:production`,
-        serverTarget: `${schema.project}:server:production`,
+        browserTarget: `${options.project}:build:production`,
+        serverTarget: `${options.project}:server:production`,
       },
     },
     defaultConfiguration: 'production',
   };
 
-  updateProjectConfiguration(tree, schema.project, projectConfig);
+  updateProjectConfiguration(tree, options.project, projectConfig);
 
-  const nxJson = readNxJson(tree);
+  const nxJson = readNxJson(tree) ?? {};
   if (
     nxJson.tasksRunnerOptions?.default?.options?.cacheableOperations &&
     !nxJson.tasksRunnerOptions.default.options.cacheableOperations.includes(
@@ -151,9 +162,12 @@ export function updateProjectConfigForBrowserBuilder(
       'server'
     );
   }
-  nxJson.targetDefaults ??= {};
-  nxJson.targetDefaults.server ??= {};
-  nxJson.targetDefaults.server.cache ??= true;
+  const existing = findTargetDefault(nxJson.targetDefaults, {
+    target: 'server',
+  });
+  if (!existing || existing.cache === undefined) {
+    upsertTargetDefault(tree, nxJson, { target: 'server', cache: true });
+  }
   updateNxJson(tree, nxJson);
 }
 

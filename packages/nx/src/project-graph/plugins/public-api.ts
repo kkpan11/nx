@@ -1,52 +1,47 @@
 // This file represents the public API for plugins which live in nx.json's plugins array.
 // For methods to interact with plugins from within Nx, see `./internal-api.ts`.
 
-import { NxPluginV1 } from '../../utils/nx-plugin.deprecated';
-import {
+import type {
   FileMap,
   ProjectGraph,
   ProjectGraphExternalNode,
 } from '../../config/project-graph';
 
-import { ProjectConfiguration } from '../../config/workspace-json-project-json';
+import type { ProjectConfiguration } from '../../config/workspace-json-project-json';
 
-import { NxJsonConfiguration } from '../../config/nx-json';
-import { RawProjectGraphDependency } from '../project-graph-builder';
+import type { NxJsonConfiguration } from '../../config/nx-json';
+import type { TaskResults } from '../../tasks-runner/life-cycle';
+import type { RawProjectGraphDependency } from '../project-graph-builder';
 
-/**
- * Context for {@link CreateNodesFunction}
- */
-export interface CreateNodesContext extends CreateNodesContextV2 {
-  /**
-   * The subset of configuration files which match the createNodes pattern
-   */
-  readonly configFiles: readonly string[];
-}
-
-export interface CreateNodesContextV2 {
+export interface CreateNodesContext {
   readonly nxJsonConfiguration: NxJsonConfiguration;
   readonly workspaceRoot: string;
 }
 
 /**
- * A function which parses a configuration file into a set of nodes.
- * Used for creating nodes for the {@link ProjectGraph}
+ * @deprecated This will be removed in Nx 24. See {@link CreateNodesContext}
  */
-export type CreateNodesFunction<T = unknown> = (
-  projectConfigurationFile: string,
-  options: T | undefined,
-  context: CreateNodesContext
-) => CreateNodesResult | Promise<CreateNodesResult>;
+export type CreateNodesContextV2 = CreateNodesContext;
 
-export type CreateNodesResultV2 = Array<
+export type CreateNodesResultArray = Array<
   readonly [configFileSource: string, result: CreateNodesResult]
 >;
 
-export type CreateNodesFunctionV2<T = unknown> = (
+/**
+ * @deprecated This will be removed in Nx 24. See {@link CreateNodesResultArray}
+ */
+export type CreateNodesResultV2 = CreateNodesResultArray;
+
+export type CreateNodesFunction<T = unknown> = (
   projectConfigurationFiles: readonly string[],
   options: T | undefined,
-  context: CreateNodesContextV2
-) => CreateNodesResultV2 | Promise<CreateNodesResultV2>;
+  context: CreateNodesContext
+) => CreateNodesResultArray | Promise<CreateNodesResultArray>;
+
+/**
+ * @deprecated see {@link CreateNodesFunction}
+ */
+export type CreateNodesFunctionV2<T = unknown> = CreateNodesFunction<T>;
 
 export type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
@@ -64,30 +59,16 @@ export interface CreateNodesResult {
 
 /**
  * A pair of file patterns and {@link CreateNodesFunction}
- *
- * Nx 19.2+: Both original `CreateNodes` and `CreateNodesV2` are supported. Nx will only invoke `CreateNodesV2` if it is present.
- * Nx 20.X : The `CreateNodesV2` will be the only supported API. This typing will still exist, but be identical to `CreateNodesV2`.
-             Nx **will not** invoke the original `plugin.createNodes` callback. This should give plugin authors a window to transition.
-             Plugin authors should update their plugin's `createNodes` function to align with `CreateNodesV2` / the updated `CreateNodes`.
-             The plugin should contain something like: `export createNodes = createNodesV2;` during this period. This will allow the plugin
-             to maintain compatibility with Nx 19.2 and up.
- * Nx 21.X : The `CreateNodesV2` typing will be removed, as it has replaced `CreateNodes`.
- * 
- * @deprecated Use {@link CreateNodesV2} instead. CreateNodesV2 will replace this API. Read more about the transition above.
  */
 export type CreateNodes<T = unknown> = readonly [
   projectFilePattern: string,
-  createNodesFunction: CreateNodesFunction<T>
+  createNodesFunction: CreateNodesFunction<T>,
 ];
 
 /**
- * A pair of file patterns and {@link CreateNodesFunctionV2}
- * In Nx 20 {@link CreateNodes} will be replaced with this type. In Nx 21, this type will be removed.
+ * @deprecated - use {@link CreateNodes} instead
  */
-export type CreateNodesV2<T = unknown> = readonly [
-  projectFilePattern: string,
-  createNodesFunction: CreateNodesFunctionV2<T>
-];
+export type CreateNodesV2<T = unknown> = CreateNodes<T>;
 
 /**
  * Context for {@link CreateDependencies}
@@ -99,7 +80,7 @@ export interface CreateDependenciesContext {
   readonly externalNodes: ProjectGraph['externalNodes'];
 
   /**
-   * The configuration of each project in the workspace.
+   * The configuration of each project in the workspace keyed by project name.
    */
   readonly projects: Record<string, ProjectConfiguration>;
 
@@ -147,16 +128,14 @@ export type CreateMetadata<T = unknown> = (
 ) => ProjectsMetadata | Promise<ProjectsMetadata>;
 
 /**
- * A plugin for Nx which creates nodes and dependencies for the {@link ProjectGraph}
+ * A plugin which enhances the behavior of Nx
  */
-export type NxPluginV2<TOptions = unknown> = {
+export type NxPlugin<TOptions = unknown> = {
   name: string;
 
   /**
    * Provides a file pattern and function that retrieves configuration info from
    * those files. e.g. { '**\/*.csproj': buildProjectsFromCsProjFile }
-   *
-   * @deprecated Use {@link createNodesV2} instead. In Nx 20 support for calling createNodes with a single file for the first argument will be removed.
    */
   createNodes?: CreateNodes<TOptions>;
 
@@ -164,9 +143,9 @@ export type NxPluginV2<TOptions = unknown> = {
    * Provides a file pattern and function that retrieves configuration info from
    * those files. e.g. { '**\/*.csproj': buildProjectsFromCsProjFiles }
    *
-   * In Nx 20 {@link createNodes} will be replaced with this property. In Nx 21, this property will be removed.
+   * @deprecated Prefer `createNodes` for new plugins
    */
-  createNodesV2?: CreateNodesV2<TOptions>;
+  createNodesV2?: CreateNodes<TOptions>;
 
   /**
    * Provides a function to analyze files to create dependencies for the {@link ProjectGraph}
@@ -177,9 +156,46 @@ export type NxPluginV2<TOptions = unknown> = {
    * Provides a function to create metadata for the {@link ProjectGraph}
    */
   createMetadata?: CreateMetadata<TOptions>;
+
+  /**
+   * Provides a function to run before the Nx runs tasks
+   */
+  preTasksExecution?: PreTasksExecution<TOptions>;
+
+  /**
+   * Provides a function to run after the Nx runs tasks
+   */
+  postTasksExecution?: PostTasksExecution<TOptions>;
 };
 
+export type PreTasksExecutionContext = {
+  readonly id: string;
+  readonly workspaceRoot: string;
+  readonly nxJsonConfiguration: NxJsonConfiguration;
+  readonly argv: string[];
+};
+export type PostTasksExecutionContext = {
+  readonly id: string;
+  readonly workspaceRoot: string;
+  readonly nxJsonConfiguration: NxJsonConfiguration;
+  readonly taskResults: TaskResults;
+  readonly argv: string[];
+  readonly startTime: number;
+  readonly endTime: number;
+};
+
+export type PreTasksExecution<TOptions = unknown> = (
+  options: TOptions | undefined,
+  context: PreTasksExecutionContext
+) => void | Promise<void>;
+export type PostTasksExecution<TOptions = unknown> = (
+  options: TOptions | undefined,
+  context: PostTasksExecutionContext
+) => void | Promise<void>;
+
 /**
- * A plugin for Nx
+ * A plugin which enhances the behavior of Nx
+ *
+ * @deprecated See {@link NxPlugin}
  */
-export type NxPlugin = NxPluginV1 | NxPluginV2;
+export type NxPluginV2<TOptions = unknown> = NxPlugin<TOptions>;

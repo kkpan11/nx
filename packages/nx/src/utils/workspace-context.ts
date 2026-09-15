@@ -1,19 +1,24 @@
 import type { NxWorkspaceFilesExternals, WorkspaceContext } from '../native';
 import { performance } from 'perf_hooks';
-import { cacheDirectoryForWorkspace } from './cache-directory';
+import { workspaceDataDirectoryForWorkspace } from './cache-directory';
 import { isOnDaemon } from '../daemon/is-on-daemon';
 import { daemonClient } from '../daemon/client/client';
+import { handleImport } from './handle-import';
 
 let workspaceContext: WorkspaceContext | undefined;
+let filesReady: Promise<void> | undefined;
 
 export function setupWorkspaceContext(workspaceRoot: string) {
   const { WorkspaceContext } =
     require('../native') as typeof import('../native');
   performance.mark('workspace-context');
-  workspaceContext = new WorkspaceContext(
-    workspaceRoot,
-    cacheDirectoryForWorkspace(workspaceRoot)
-  );
+  const cacheDir = workspaceDataDirectoryForWorkspace(workspaceRoot);
+  // A plugin worker is only asked for files after its host finished walking
+  // and wrote the archive, so it loads that rather than walking again.
+  workspaceContext = (global as any).NX_PLUGIN_WORKER
+    ? WorkspaceContext.fromArchive(workspaceRoot, cacheDir)
+    : new WorkspaceContext(workspaceRoot, cacheDir);
+  filesReady = undefined;
   performance.mark('workspace-context:end');
   performance.measure(
     'workspace context init',
@@ -24,10 +29,11 @@ export function setupWorkspaceContext(workspaceRoot: string) {
 
 export async function getNxWorkspaceFilesFromContext(
   workspaceRoot: string,
-  projectRootMap: Record<string, string>
+  projectRootMap: Record<string, string>,
+  useDaemonProcess: boolean = true
 ) {
-  if (isOnDaemon() || !daemonClient.enabled()) {
-    ensureContextAvailable(workspaceRoot);
+  if (!useDaemonProcess || isOnDaemon() || !daemonClient.enabled()) {
+    await ensureFilesReady(workspaceRoot);
     return workspaceContext.getWorkspaceFiles(projectRootMap);
   }
   return daemonClient.getWorkspaceFiles(projectRootMap);
@@ -54,12 +60,24 @@ export async function globWithWorkspaceContext(
   globs: string[],
   exclude?: string[]
 ) {
-  if (isOnDaemon() || !daemonClient.enabled()) {
-    ensureContextAvailable(workspaceRoot);
+  if (workspaceRoot === '/virtual' || isOnDaemon() || !daemonClient.enabled()) {
+    await ensureFilesReady(workspaceRoot);
     return workspaceContext.glob(globs, exclude);
   } else {
     return daemonClient.glob(globs, exclude);
   }
+}
+
+export async function multiGlobWithWorkspaceContext(
+  workspaceRoot: string,
+  globs: string[],
+  exclude?: string[]
+) {
+  if (workspaceRoot === '/virtual' || isOnDaemon() || !daemonClient.enabled()) {
+    await ensureFilesReady(workspaceRoot);
+    return workspaceContext.multiGlob(globs, exclude);
+  }
+  return daemonClient.multiGlob(globs, exclude);
 }
 
 export async function hashWithWorkspaceContext(
@@ -68,25 +86,81 @@ export async function hashWithWorkspaceContext(
   exclude?: string[]
 ) {
   if (isOnDaemon() || !daemonClient.enabled()) {
-    ensureContextAvailable(workspaceRoot);
+    await ensureFilesReady(workspaceRoot);
     return workspaceContext.hashFilesMatchingGlob(globs, exclude);
   }
   return daemonClient.hashGlob(globs, exclude);
 }
 
-export function updateFilesInContext(
+export async function hashMultiGlobWithWorkspaceContext(
+  workspaceRoot: string,
+  globGroups: string[][]
+) {
+  if (isOnDaemon() || !daemonClient.enabled()) {
+    await ensureFilesReady(workspaceRoot);
+    return workspaceContext.hashFilesMatchingGlobs(globGroups);
+  }
+  return daemonClient.hashMultiGlob(globGroups);
+}
+
+export async function updateContextWithChangedFiles(
+  workspaceRoot: string,
+  createdFiles: string[],
   updatedFiles: string[],
   deletedFiles: string[]
 ) {
+  if (!daemonClient.enabled()) {
+    updateFilesInContext(
+      workspaceRoot,
+      [...createdFiles, ...updatedFiles],
+      deletedFiles
+    );
+  } else if (isOnDaemon()) {
+    // make sure to only import this when running on the daemon
+    const { scheduleProjectGraphRecomputation } = await handleImport(
+      '../daemon/server/project-graph-incremental-recomputation.js',
+      __dirname
+    );
+    // update files for the incremental graph recomputation on the daemon
+    scheduleProjectGraphRecomputation(createdFiles, updatedFiles, deletedFiles);
+  } else {
+    // daemon is enabled but we are not running on it, ask the daemon to update the context
+    await daemonClient.updateWorkspaceContext(
+      createdFiles,
+      updatedFiles,
+      deletedFiles
+    );
+  }
+}
+
+export function updateFilesInContext(
+  workspaceRoot: string,
+  updatedFiles: string[],
+  deletedFiles: string[]
+) {
+  ensureContextAvailable(workspaceRoot);
   return workspaceContext?.incrementalUpdate(updatedFiles, deletedFiles);
 }
 
 export async function getAllFileDataInContext(workspaceRoot: string) {
   if (isOnDaemon() || !daemonClient.enabled()) {
-    ensureContextAvailable(workspaceRoot);
+    await ensureFilesReady(workspaceRoot);
     return workspaceContext.allFileData();
   }
   return daemonClient.getWorkspaceContextFileData();
+}
+
+/**
+ * Re-walk the workspace and report what changed against the map the context is
+ * holding, adopting the fresh map. Used to recover after the kernel dropped
+ * watch events, so the per-path stream cannot be trusted complete.
+ *
+ * Daemon-only: it mutates the context in place, which is safe only where the
+ * context is the single source of truth for watched state.
+ */
+export function rescanAndDiffInContext(workspaceRoot: string) {
+  ensureContextAvailable(workspaceRoot);
+  return workspaceContext.rescanAndDiff();
 }
 
 export async function getFilesInDirectoryUsingContext(
@@ -94,7 +168,7 @@ export async function getFilesInDirectoryUsingContext(
   dir: string
 ) {
   if (isOnDaemon() || !daemonClient.enabled()) {
-    ensureContextAvailable(workspaceRoot);
+    await ensureFilesReady(workspaceRoot);
     return workspaceContext.getFilesInDirectory(dir);
   }
   return daemonClient.getFilesInDirectory(dir);
@@ -115,6 +189,38 @@ export function updateProjectFiles(
   );
 }
 
+/**
+ * Waits for the walk behind the context without holding the event loop. The
+ * native readers block the calling thread until the files exist, so the async
+ * entry points await this first; a plugin host is then never frozen while a
+ * worker is connecting to it.
+ */
+async function ensureFilesReady(workspaceRoot: string) {
+  ensureContextAvailable(workspaceRoot);
+  // A binding without `ready` (an older native build, a mocked one) reads
+  // synchronously as before.
+  filesReady ??= workspaceContext.ready?.() ?? Promise.resolve();
+  await filesReady;
+}
+
+/**
+ * Re-walks the host's files so the archive its plugin workers load includes
+ * writes made since the last walk, such as a migration flushing to disk. The
+ * walk is selective and shared through the files lock; one still running is
+ * reused rather than repeated.
+ */
+export function refreshWorkspaceContext(workspaceRoot: string) {
+  if (workspaceRoot === '/virtual' || isOnDaemon() || daemonClient.enabled()) {
+    return;
+  }
+  if (workspaceContext?.workspaceRoot !== workspaceRoot) {
+    setupWorkspaceContext(workspaceRoot);
+    return;
+  }
+  workspaceContext.refresh();
+  filesReady = undefined;
+}
+
 function ensureContextAvailable(workspaceRoot: string) {
   if (!workspaceContext || workspaceContext?.workspaceRoot !== workspaceRoot) {
     setupWorkspaceContext(workspaceRoot);
@@ -123,4 +229,5 @@ function ensureContextAvailable(workspaceRoot: string) {
 
 export function resetWorkspaceContext() {
   workspaceContext = undefined;
+  filesReady = undefined;
 }

@@ -1,8 +1,9 @@
 import { CreateNodesContext } from '@nx/devkit';
 import { createNodes } from './plugin';
-import { TempFs } from 'nx/src/internal-testing-utils/temp-fs';
+import { TempFs } from '@nx/devkit/internal-testing-utils';
 
-jest.mock('@nx/devkit/src/utils/config-utils', () => ({
+jest.mock('@nx/devkit/internal', () => ({
+  ...jest.requireActual('@nx/devkit/internal'),
   loadConfigFile: jest.fn().mockImplementation(() => {
     return Promise.resolve({
       buildDir: '../dist/my-app/.nuxt',
@@ -22,7 +23,9 @@ describe('@nx/nuxt/plugin', () => {
   let context: CreateNodesContext;
 
   describe('root project', () => {
+    let tempFs: TempFs;
     beforeEach(async () => {
+      tempFs = new TempFs('nuxt-root-plugin');
       context = {
         nxJsonConfiguration: {
           // These defaults should be overridden by plugin
@@ -37,18 +40,21 @@ describe('@nx/nuxt/plugin', () => {
             production: ['!{projectRoot}/**/*.spec.ts'],
           },
         },
-        workspaceRoot: '',
-        configFiles: [],
+        workspaceRoot: tempFs.tempDir,
       };
+      tempFs.createFileSync('nuxt.config.ts', '');
+      tempFs.createFileSync('package.json', JSON.stringify({ name: 'nuxt' }));
+      tempFs.createFileSync('package-lock.json', '{}');
     });
 
     afterEach(() => {
       jest.resetModules();
+      tempFs.cleanup();
     });
 
     it('should create nodes', async () => {
       const nodes = await createNodesFunction(
-        'nuxt.config.ts',
+        ['nuxt.config.ts'],
         {
           buildTargetName: 'build',
           serveTargetName: 'serve',
@@ -73,7 +79,6 @@ describe('@nx/nuxt/plugin', () => {
           },
         },
         workspaceRoot: tempFs.tempDir,
-        configFiles: [],
       };
 
       tempFs.createFileSync(
@@ -81,6 +86,7 @@ describe('@nx/nuxt/plugin', () => {
         JSON.stringify({ name: 'my-app' })
       );
       tempFs.createFileSync('my-app/nuxt.config.ts', '');
+      tempFs.createFileSync('package-lock.json', '{}');
     });
 
     afterEach(() => {
@@ -89,7 +95,7 @@ describe('@nx/nuxt/plugin', () => {
 
     it('should create nodes', async () => {
       const nodes = await createNodesFunction(
-        'my-app/nuxt.config.ts',
+        ['my-app/nuxt.config.ts'],
         {
           buildTargetName: 'build-something',
           serveTargetName: 'my-serve',

@@ -37,16 +37,16 @@ export function fileDataDepTarget(dep: FileDataDependency) {
   return typeof dep === 'string'
     ? dep
     : Array.isArray(dep) && dep.length === 2
-    ? dep[0]
-    : dep[1];
+      ? dep[0]
+      : dep[1];
 }
 
 export function fileDataDepType(dep: FileDataDependency) {
   return typeof dep === 'string'
     ? 'static'
     : Array.isArray(dep) && dep.length === 2
-    ? dep[1]
-    : dep[2];
+      ? dep[1]
+      : dep[2];
 }
 
 export interface FileMap {
@@ -89,11 +89,6 @@ export enum DependencyType {
   implicit = 'implicit',
 }
 
-/** @deprecated this type will be removed in v16. Use {@link ProjectGraphProjectNode} or {@link ProjectGraphExternalNode} instead */
-export type ProjectGraphNode =
-  | ProjectGraphProjectNode
-  | ProjectGraphExternalNode;
-
 /**
  * A node describing a project in a workspace
  */
@@ -108,6 +103,12 @@ export interface ProjectGraphProjectNode {
   };
 }
 
+export function isProjectGraphProjectNode(
+  node: ProjectGraphProjectNode | ProjectGraphExternalNode
+): node is ProjectGraphProjectNode {
+  return node.type === 'app' || node.type === 'e2e' || node.type === 'lib';
+}
+
 /**
  * A node describing an external dependency
  * `name` has as form of:
@@ -119,13 +120,19 @@ export interface ProjectGraphProjectNode {
  *
  */
 export interface ProjectGraphExternalNode {
-  type: 'npm';
-  name: `npm:${string}`;
+  type: string; // not app, e2e, or lib
+  name: string;
   data: {
     version: string;
     packageName: string;
     hash?: string;
   };
+}
+
+export function isProjectGraphExternalNode(
+  node: ProjectGraphProjectNode | ProjectGraphExternalNode
+): node is ProjectGraphExternalNode {
+  return isProjectGraphProjectNode(node) === false;
 }
 
 /**

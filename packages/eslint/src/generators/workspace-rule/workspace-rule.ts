@@ -1,18 +1,23 @@
+import { camelize } from '@nx/devkit/internal';
 import {
+  addDependenciesToPackageJson,
   applyChangesToString,
   ChangeType,
   formatFiles,
   generateFiles,
+  GeneratorCallback,
   joinPathFragments,
   logger,
   readNxJson,
+  runTasksInSerial,
   Tree,
 } from '@nx/devkit';
-import { camelize } from '@nx/devkit/src/utils/string-utils';
 import { join } from 'path';
 import * as ts from 'typescript';
 import { workspaceLintPluginDir } from '../../utils/workspace-lint-rules';
 import { lintWorkspaceRulesProjectGenerator } from '../workspace-rules-project/workspace-rules-project';
+import { assertSupportedEslintVersion } from '../../utils/assert-supported-eslint-version';
+import { versions } from '../../utils/versions';
 
 export interface LintWorkspaceRuleGeneratorOptions {
   name: string;
@@ -23,16 +28,34 @@ export async function lintWorkspaceRuleGenerator(
   tree: Tree,
   options: LintWorkspaceRuleGeneratorOptions
 ) {
+  assertSupportedEslintVersion(tree);
+
+  const tasks: GeneratorCallback[] = [];
+
+  // ESLint v9 dropped the eslintrc-style `RuleTester` API. typescript-eslint's
+  // recommended replacement is the separate `@typescript-eslint/rule-tester`
+  // package, whose flat-style API works for both flat and eslintrc workspaces.
+  const { typescriptESLintVersion } = versions(tree);
+
   const nxJson = readNxJson(tree);
   // Ensure that the workspace rules project has been created
-  const projectGeneratorCallback = await lintWorkspaceRulesProjectGenerator(
-    tree,
-    {
+  tasks.push(
+    await lintWorkspaceRulesProjectGenerator(tree, {
       skipFormat: true,
       addPlugin:
         process.env.NX_ADD_PLUGINS !== 'false' &&
         nxJson.useInferencePlugins !== false,
-    }
+    })
+  );
+
+  tasks.push(
+    addDependenciesToPackageJson(
+      tree,
+      {},
+      { '@typescript-eslint/rule-tester': typescriptESLintVersion },
+      undefined,
+      true
+    )
   );
 
   const ruleDir = joinPathFragments(
@@ -119,5 +142,5 @@ export async function lintWorkspaceRuleGenerator(
        }
 `);
 
-  return projectGeneratorCallback;
+  return runTasksInSerial(...tasks);
 }

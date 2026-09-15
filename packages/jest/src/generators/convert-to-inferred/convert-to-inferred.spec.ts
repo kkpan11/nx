@@ -3,22 +3,21 @@ import {
   joinPathFragments,
   readNxJson,
   readProjectConfiguration,
+  updateJson,
   updateNxJson,
   writeJson,
   type ExpandedPluginConfiguration,
   type ProjectConfiguration,
   type ProjectGraph,
   type Tree,
+  updateProjectConfiguration,
 } from '@nx/devkit';
 import { TempFs } from '@nx/devkit/internal-testing-utils';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { join } from 'node:path';
-import {
-  getRelativeProjectJsonSchemaPath,
-  updateProjectConfiguration,
-} from 'nx/src/generators/utils/project-configuration';
 import type { JestPluginOptions } from '../../plugins/plugin';
 import { convertToInferred } from './convert-to-inferred';
+import { getRelativeProjectJsonSchemaPath } from '@nx/devkit/internal';
 
 let fs: TempFs;
 let projectGraph: ProjectGraph;
@@ -40,9 +39,8 @@ jest.mock('@nx/devkit', () => ({
         ) {
           // Re-order `targets` to appear after the `// target` comment.
           delete projectConfiguration.targets;
-          projectConfiguration[
-            '// targets'
-          ] = `to see all targets run: nx show project ${projectName} --web`;
+          projectConfiguration['// targets'] =
+            `to see all targets run: nx show project ${projectName} --web`;
           projectConfiguration.targets = {};
         } else {
           delete projectConfiguration['// targets'];
@@ -149,6 +147,13 @@ function createTestProject(
     `${projectOpts.appRoot}/project.json`,
     JSON.stringify(project)
   );
+
+  updateJson(tree, `package.json`, (json) => {
+    json.devDependencies ??= {};
+    json.devDependencies.jest = '^30.0.0';
+    return json;
+  });
+
   return project;
 }
 
@@ -389,7 +394,7 @@ describe('Jest - Convert Executors To Plugin', () => {
       expect(updatedProject2.targets.test).toStrictEqual(project2TestTarget);
     });
 
-    it('should make "testFile" relative to the project root and turn it into "testPathPattern"', async () => {
+    it('should make "testFile" relative to the project root and turn it into "testPathPatterns"', async () => {
       const project = createTestProject(tree, undefined, {
         testFile: `${defaultTestProjectOptions.appRoot}/src/app/test.spec.ts`,
       });
@@ -407,7 +412,7 @@ describe('Jest - Convert Executors To Plugin', () => {
       // assert updated project configuration
       const updatedProject = readProjectConfiguration(tree, project.name);
       expect(updatedProject.targets.test.options).toStrictEqual({
-        testPathPattern: 'src/app/test.spec.ts',
+        testPathPatterns: 'src/app/test.spec.ts',
       });
       // assert other projects were not modified
       const updatedProject2 = readProjectConfiguration(tree, project2.name);
@@ -437,7 +442,7 @@ describe('Jest - Convert Executors To Plugin', () => {
         // assert updated project configuration
         const updatedProject = readProjectConfiguration(tree, project.name);
         expect(updatedProject.targets.test.options).toStrictEqual({
-          testPathPattern: '.*',
+          testPathPatterns: '.*',
         });
         // assert other projects were not modified
         const updatedProject2 = readProjectConfiguration(tree, project2.name);
@@ -445,7 +450,35 @@ describe('Jest - Convert Executors To Plugin', () => {
       }
     );
 
-    it('should make "testPathPattern" paths relative to the project root', async () => {
+    it('should make "testPathPatterns" paths relative to the project root', async () => {
+      const project = createTestProject(tree, undefined, {
+        testPathPatterns: [
+          `${defaultTestProjectOptions.appRoot}/src/app/test1.spec.ts`,
+          `${defaultTestProjectOptions.appRoot}/src/app/test2.spec.ts`,
+        ],
+      });
+      const project2 = createTestProject(tree, {
+        appRoot: 'apps/project2',
+        appName: 'project2',
+      });
+      const project2TestTarget = project2.targets.test;
+
+      await convertToInferred(tree, {
+        project: project.name,
+        skipFormat: true,
+      });
+
+      // assert updated project configuration
+      const updatedProject = readProjectConfiguration(tree, project.name);
+      expect(updatedProject.targets.test.options).toStrictEqual({
+        testPathPatterns: '"src/app/test1.spec.ts|src/app/test2.spec.ts"',
+      });
+      // assert other projects were not modified
+      const updatedProject2 = readProjectConfiguration(tree, project2.name);
+      expect(updatedProject2.targets.test).toStrictEqual(project2TestTarget);
+    });
+
+    it('should handle "testPathPattern"', async () => {
       const project = createTestProject(tree, undefined, {
         testPathPattern: [
           `${defaultTestProjectOptions.appRoot}/src/app/test1.spec.ts`,
@@ -479,9 +512,11 @@ describe('Jest - Convert Executors To Plugin', () => {
       [[`./${defaultTestProjectOptions.appRoot}`]],
       [[`./${defaultTestProjectOptions.appRoot}/`]],
     ])(
-      'should make "testPathPattern" a catch-all wildcard when it is set to the project root (%s)',
-      async (testPathPattern) => {
-        const project = createTestProject(tree, undefined, { testPathPattern });
+      'should make "testPathPatterns" a catch-all wildcard when it is set to the project root (%s)',
+      async (testPathPatterns) => {
+        const project = createTestProject(tree, undefined, {
+          testPathPatterns,
+        });
         const project2 = createTestProject(tree, {
           appRoot: 'apps/project2',
           appName: 'project2',
@@ -496,7 +531,7 @@ describe('Jest - Convert Executors To Plugin', () => {
         // assert updated project configuration
         const updatedProject = readProjectConfiguration(tree, project.name);
         expect(updatedProject.targets.test.options).toStrictEqual({
-          testPathPattern: '.*',
+          testPathPatterns: '.*',
         });
         // assert other projects were not modified
         const updatedProject2 = readProjectConfiguration(tree, project2.name);
@@ -504,10 +539,10 @@ describe('Jest - Convert Executors To Plugin', () => {
       }
     );
 
-    it('should merge "testFile" and "testPathPattern" paths', async () => {
+    it('should merge "testFile" and "testPathPatterns" paths', async () => {
       const project = createTestProject(tree, undefined, {
         testFile: `${defaultTestProjectOptions.appRoot}/src/app/test1.spec.ts`,
-        testPathPattern: [
+        testPathPatterns: [
           `${defaultTestProjectOptions.appRoot}/src/app/test2.spec.ts`,
           `${defaultTestProjectOptions.appRoot}/src/app/test3.spec.ts`,
         ],
@@ -526,7 +561,7 @@ describe('Jest - Convert Executors To Plugin', () => {
       // assert updated project configuration
       const updatedProject = readProjectConfiguration(tree, project.name);
       expect(updatedProject.targets.test.options).toStrictEqual({
-        testPathPattern:
+        testPathPatterns:
           '"src/app/test1.spec.ts|src/app/test2.spec.ts|src/app/test3.spec.ts"',
       });
       // assert other projects were not modified
@@ -1052,6 +1087,40 @@ describe('Jest - Convert Executors To Plugin', () => {
   });
 
   describe('all projects', () => {
+    it('centralizes shared test config without changing the effective target (equivalence)', async () => {
+      // Two projects share a non-inferred option (codeCoverage -> coverage), so
+      // it must be hoisted once into targetDefaults and still resolve
+      // identically for each project.
+      createTestProject(
+        tree,
+        { appName: 'app1', appRoot: 'apps/app1' },
+        { codeCoverage: true }
+      );
+      createTestProject(
+        tree,
+        { appName: 'app2', appRoot: 'apps/app2' },
+        { codeCoverage: true }
+      );
+
+      await convertToInferred(tree, { skipFormat: true });
+
+      // present exactly once, centrally, scoped to the jest plugin's targets
+      const targetDefault = readNxJson(tree).targetDefaults?.test;
+      expect(Array.isArray(targetDefault)).toBe(true);
+      const hoisted = (targetDefault as any[]).find(
+        (entry) => entry?.filter?.plugin === '@nx/jest/plugin'
+      );
+      expect(hoisted?.options?.coverage).toBe(true);
+      // centralized once, not duplicated per project. Effective resolution
+      // through Nx's real targetDefaults pipeline is verified in the engine
+      // spec's "through the REAL Nx resolution pipeline" tests.
+      for (const name of ['app1', 'app2']) {
+        const projectTarget =
+          readProjectConfiguration(tree, name).targets?.test ?? {};
+        expect(projectTarget.options?.coverage).toBeUndefined();
+      }
+    });
+
     it('should migrate multiple projects using the jest executors', async () => {
       const project1 = createTestProject(tree, undefined, {
         tsConfig: `${defaultTestProjectOptions.appRoot}/tsconfig.spec.json`,

@@ -1,21 +1,52 @@
+import { addPlugin } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
+  createProjectGraphAsync,
   ensurePackage,
   formatFiles,
+  type GeneratorCallback,
+  getDependencyVersionFromPackageJson,
   logger,
   readNxJson,
-  type GeneratorCallback,
   type Tree,
 } from '@nx/devkit';
-import { getInstalledPackageVersion, versions } from '../utils/version-utils';
+import { createNodes } from '../../plugins/plugin';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
+import { assertNotUsingTsSolutionSetup } from '../utils/validations';
+import {
+  getInstalledAngularDevkitVersion,
+  versions,
+} from '../utils/version-utils';
 import { Schema } from './schema';
 
 export async function angularInitGenerator(
   tree: Tree,
   options: Schema
 ): Promise<GeneratorCallback> {
+  assertSupportedAngularVersion(tree);
+  assertNotUsingTsSolutionSetup(tree, 'init');
+
   ignoreAngularCacheDirectory(tree);
   const installTask = installAngularDevkitCoreIfMissing(tree, options);
+
+  // For Angular inference plugin, we only want it during import since our
+  // generators do not use `angular.json`, and `nx init` should split
+  // `angular.json` into multiple `project.json` files -- as this is preferred
+  // by most folks we've talked to.
+  options.addPlugin ??= process.env.NX_RUNNING_NX_IMPORT === 'true';
+
+  if (options.addPlugin) {
+    await addPlugin(
+      tree,
+      await createProjectGraphAsync(),
+      '@nx/angular/plugin',
+      createNodes,
+      {
+        targetNamePrefix: ['', 'angular:', 'angular-'],
+      },
+      options.updatePackageScripts
+    );
+  }
 
   if (!options.skipFormat) {
     await formatFiles(tree);
@@ -28,7 +59,7 @@ function installAngularDevkitCoreIfMissing(
   tree: Tree,
   options: Schema
 ): GeneratorCallback {
-  const packageVersion = getInstalledPackageVersion(
+  const packageVersion = getDependencyVersionFromPackageJson(
     tree,
     '@angular-devkit/core'
   );
@@ -36,7 +67,7 @@ function installAngularDevkitCoreIfMissing(
   if (!packageVersion) {
     const pkgVersions = versions(tree);
     const devkitVersion =
-      getInstalledPackageVersion(tree, '@angular-devkit/build-angular') ??
+      getInstalledAngularDevkitVersion(tree) ??
       pkgVersions.angularDevkitVersion;
 
     try {

@@ -1,4 +1,12 @@
 import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+  addBuildTargetDefaults,
+  logShowProjectCommand,
+  E2EWebServerDetails,
+  type PackageJson,
+} from '@nx/devkit/internal';
+import {
   addDependenciesToPackageJson,
   addProjectConfiguration,
   ensurePackage,
@@ -9,23 +17,29 @@ import {
   joinPathFragments,
   names,
   offsetFromRoot,
+  type PluginConfiguration,
   readNxJson,
   readProjectConfiguration,
   runTasksInSerial,
-  TargetConfiguration,
   Tree,
   updateJson,
   updateNxJson,
   updateProjectConfiguration,
   writeJson,
 } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
 import {
   getRelativePathToRootTsConfig,
   initGenerator as jsInitGenerator,
 } from '@nx/js';
-import { swcCoreVersion } from '@nx/js/src/utils/versions';
-import type { Linter } from '@nx/eslint';
+import {
+  addLintingToProject,
+  swcCoreVersion,
+  getNpmScope,
+  addProjectToTsSolutionWorkspace,
+  normalizeLinterOption,
+  isUsingTsSolutionSetup,
+  updateTsconfigFiles,
+} from '@nx/js/internal';
 import { join } from 'path';
 import {
   nxVersion,
@@ -35,25 +49,25 @@ import {
 } from '../../utils/versions';
 import { webInitGenerator } from '../init/init';
 import { Schema } from './schema';
-import { getNpmScope } from '@nx/js/src/utils/package-json/get-npm-scope';
 import { hasWebpackPlugin } from '../../utils/has-webpack-plugin';
-import { addBuildTargetDefaults } from '@nx/devkit/src/generators/add-build-target-defaults';
-import { logShowProjectCommand } from '@nx/devkit/src/utils/log-show-project-command';
-import { VitePluginOptions } from '@nx/vite/src/plugins/plugin';
-import { WebpackPluginOptions } from '@nx/webpack/src/plugins/plugin';
+import staticServeConfiguration from '../static-serve/static-serve-configuration';
 
 interface NormalizedSchema extends Schema {
   projectName: string;
+  importPath: string;
   appProjectRoot: string;
   e2eProjectName: string;
   e2eProjectRoot: string;
-  e2eWebServerAddress: string;
-  e2eWebServerTarget: string;
-  e2ePort: number;
+  names: ReturnType<typeof names>;
   parsedTags: string[];
+  isUsingTsSolutionConfig: boolean;
 }
 
 function createApplicationFiles(tree: Tree, options: NormalizedSchema) {
+  const rootTsConfigPath = getRelativePathToRootTsConfig(
+    tree,
+    options.appProjectRoot
+  );
   if (options.bundler === 'vite') {
     generateFiles(
       tree,
@@ -61,39 +75,35 @@ function createApplicationFiles(tree: Tree, options: NormalizedSchema) {
       options.appProjectRoot,
       {
         ...options,
-        ...names(options.name),
         tmpl: '',
         offsetFromRoot: offsetFromRoot(options.appProjectRoot),
-        rootTsConfigPath: getRelativePathToRootTsConfig(
-          tree,
-          options.appProjectRoot
-        ),
+        rootTsConfigPath,
       }
     );
   } else {
+    const rootOffset = offsetFromRoot(options.appProjectRoot);
     generateFiles(
       tree,
       join(__dirname, './files/app-webpack'),
       options.appProjectRoot,
       {
         ...options,
-        ...names(options.name),
         tmpl: '',
-        offsetFromRoot: offsetFromRoot(options.appProjectRoot),
-        rootTsConfigPath: getRelativePathToRootTsConfig(
-          tree,
-          options.appProjectRoot
-        ),
+        offsetFromRoot: rootOffset,
+        rootTsConfigPath,
         webpackPluginOptions: hasWebpackPlugin(tree)
           ? {
               compiler: options.compiler,
               target: 'web',
-              outputPath: joinPathFragments(
-                'dist',
-                options.appProjectRoot != '.'
-                  ? options.appProjectRoot
-                  : options.projectName
-              ),
+              outputPath: options.isUsingTsSolutionConfig
+                ? 'dist'
+                : joinPathFragments(
+                    rootOffset,
+                    'dist',
+                    options.appProjectRoot !== '.'
+                      ? options.appProjectRoot
+                      : options.projectName
+                  ),
               tsConfig: './tsconfig.app.json',
               main: './src/main.ts',
               assets: ['./src/favicon.ico', './src/assets'],
@@ -110,19 +120,36 @@ function createApplicationFiles(tree: Tree, options: NormalizedSchema) {
       );
     }
   }
-  updateJson(
-    tree,
-    joinPathFragments(options.appProjectRoot, 'tsconfig.json'),
-    (json) => {
-      return {
-        ...json,
-        compilerOptions: {
-          ...(json.compilerOptions || {}),
-          strict: options.strict,
-        },
-      };
-    }
-  );
+  if (options.isUsingTsSolutionConfig) {
+    updateJson(
+      tree,
+      joinPathFragments(options.appProjectRoot, 'tsconfig.json'),
+      () => ({
+        extends: rootTsConfigPath,
+        files: [],
+        include: [],
+        references: [
+          {
+            path: './tsconfig.app.json',
+          },
+        ],
+      })
+    );
+  } else {
+    updateJson(
+      tree,
+      joinPathFragments(options.appProjectRoot, 'tsconfig.json'),
+      (json) => {
+        return {
+          ...json,
+          compilerOptions: {
+            ...(json.compilerOptions || {}),
+            strict: options.strict,
+          },
+        };
+      }
+    );
+  }
 }
 
 async function setupBundler(tree: Tree, options: NormalizedSchema) {
@@ -155,7 +182,7 @@ async function setupBundler(tree: Tree, options: NormalizedSchema) {
       addPlugin: options.addPlugin,
     });
     const project = readProjectConfiguration(tree, options.projectName);
-    if (project.targets.build) {
+    if (project.targets?.build) {
       const prodConfig = project.targets.build.configurations.production;
       const buildOptions = project.targets.build.options;
       buildOptions.assets = assets;
@@ -199,6 +226,7 @@ async function setupBundler(tree: Tree, options: NormalizedSchema) {
   } else if (options.bundler === 'none') {
     const project = readProjectConfiguration(tree, options.projectName);
     addBuildTargetDefaults(tree, `@nx/js:${options.compiler}`);
+    project.targets ??= {};
     project.targets.build = {
       executor: `@nx/js:${options.compiler}`,
       outputs: ['{options.outputPath}'],
@@ -215,20 +243,37 @@ async function setupBundler(tree: Tree, options: NormalizedSchema) {
 }
 
 async function addProject(tree: Tree, options: NormalizedSchema) {
-  const targets: Record<string, TargetConfiguration> = {};
+  const packageJson: PackageJson = {
+    name: options.importPath,
+    version: '0.0.1',
+    private: true,
+  };
 
-  addProjectConfiguration(
-    tree,
-    options.projectName,
-    {
+  if (!options.useProjectJson) {
+    if (options.projectName !== options.importPath) {
+      packageJson.nx = { name: options.projectName };
+    }
+    if (options.parsedTags?.length) {
+      packageJson.nx ??= {};
+      packageJson.nx.tags = options.parsedTags;
+    }
+  } else {
+    addProjectConfiguration(tree, options.projectName, {
       projectType: 'application',
       root: options.appProjectRoot,
       sourceRoot: joinPathFragments(options.appProjectRoot, 'src'),
       tags: options.parsedTags,
-      targets,
-    },
-    options.standaloneConfig
-  );
+      targets: {},
+    });
+  }
+
+  if (!options.useProjectJson || options.isUsingTsSolutionConfig) {
+    writeJson(
+      tree,
+      joinPathFragments(options.appProjectRoot, 'package.json'),
+      packageJson
+    );
+  }
 }
 
 function setDefaults(tree: Tree, options: NormalizedSchema) {
@@ -247,7 +292,6 @@ function setDefaults(tree: Tree, options: NormalizedSchema) {
 export async function applicationGenerator(host: Tree, schema: Schema) {
   return await applicationGeneratorInternal(host, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
     ...schema,
   });
 }
@@ -255,11 +299,17 @@ export async function applicationGenerator(host: Tree, schema: Schema) {
 export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
   const options = await normalizeOptions(host, schema);
 
+  if (options.isUsingTsSolutionConfig) {
+    await addProjectToTsSolutionWorkspace(host, options.appProjectRoot);
+  }
+
   const tasks: GeneratorCallback[] = [];
 
   const jsInitTask = await jsInitGenerator(host, {
     js: false,
     skipFormat: true,
+    platform: 'web',
+    formatter: options.formatter,
   });
   tasks.push(jsInitTask);
   const webTask = await webInitGenerator(host, {
@@ -276,11 +326,53 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
 
   createApplicationFiles(host, options);
 
+  let enableTypedLinting = false;
+  if (options.linter !== 'eslint') {
+    tasks.push(
+      await addLintingToProject(host, {
+        linter: options.linter,
+        project: options.projectName,
+        unitTestRunner: options.unitTestRunner,
+        addPlugin: options.addPlugin,
+      })
+    );
+  }
+  if (options.linter === 'eslint') {
+    const { lintProjectGenerator } = ensurePackage<typeof import('@nx/eslint')>(
+      '@nx/eslint',
+      nxVersion
+    );
+    // CommonJS `require` instead of dynamic ESM `import`: `ensurePackage`
+    // exposes the temp install via `Module._initPaths`, which ESM ignores.
+    const {
+      isTypedLintingEnabled,
+      addIgnoresToLintConfig,
+    }: typeof import('@nx/eslint/internal') = require('@nx/eslint/internal');
+    enableTypedLinting = isTypedLintingEnabled(options);
+    const lintTask = await lintProjectGenerator(host, {
+      linter: options.linter,
+      project: options.projectName,
+      tsConfigPaths: [
+        joinPathFragments(options.appProjectRoot, 'tsconfig.app.json'),
+      ],
+      unitTestRunner: options.unitTestRunner,
+      skipFormat: true,
+      enableTypedLinting,
+      addPlugin: options.addPlugin,
+    });
+    tasks.push(lintTask);
+
+    // Add out-tsc ignore pattern when using TS solution setup
+    if (options.isUsingTsSolutionConfig) {
+      addIgnoresToLintConfig(host, options.appProjectRoot, ['**/out-tsc']);
+    }
+  }
+
   if (options.bundler === 'vite') {
     const { viteConfigurationGenerator, createOrEditViteConfig } =
       ensurePackage<typeof import('@nx/vite')>('@nx/vite', nxVersion);
     // We recommend users use `import.meta.env.MODE` and other variables in their code to differentiate between production and development.
-    // See: https://vitejs.dev/guide/env-and-mode.html
+    // See: https://vite.dev/guide/env-and-mode.html
     if (
       host.exists(joinPathFragments(options.appProjectRoot, 'src/environments'))
     ) {
@@ -306,22 +398,31 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
         includeLib: false,
         includeVitest: options.unitTestRunner === 'vitest',
         inSourceTests: options.inSourceTests,
+        useEsmExtension: true,
       },
       false
     );
   }
 
   if (options.bundler !== 'vite' && options.unitTestRunner === 'vitest') {
-    const { vitestGenerator, createOrEditViteConfig } = ensurePackage<
-      typeof import('@nx/vite')
-    >('@nx/vite', nxVersion);
-    const vitestTask = await vitestGenerator(host, {
+    const { createOrEditViteConfig } = ensurePackage<typeof import('@nx/vite')>(
+      '@nx/vite',
+      nxVersion
+    );
+    ensurePackage('@nx/vitest', nxVersion);
+    // CommonJS `require` instead of dynamic ESM `import`: `ensurePackage`
+    // exposes the temp install via `Module._initPaths`, which ESM ignores.
+    const {
+      configurationGenerator,
+    }: typeof import('@nx/vitest/generators') = require('@nx/vitest/generators');
+    const vitestTask = await configurationGenerator(host, {
       uiFramework: 'none',
       project: options.projectName,
       coverageProvider: 'v8',
       inSourceTests: options.inSourceTests,
       skipFormat: true,
       addPlugin: options.addPlugin,
+      compiler: options.compiler,
     });
     tasks.push(vitestTask);
     createOrEditViteConfig(
@@ -331,7 +432,10 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
         includeLib: false,
         includeVitest: true,
         inSourceTests: options.inSourceTests,
+        useEsmExtension: true,
       },
+      true,
+      undefined,
       true
     );
   }
@@ -345,58 +449,150 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
     );
   }
 
-  if (options.linter === 'eslint') {
-    const { lintProjectGenerator } = ensurePackage<typeof import('@nx/eslint')>(
-      '@nx/eslint',
-      nxVersion
+  const nxJson = readNxJson(host);
+  let hasPlugin: PluginConfiguration | undefined;
+  let buildPlugin: string;
+  let buildConfigFile: string;
+  if (options.bundler === 'webpack' || options.bundler === 'vite') {
+    buildPlugin = `@nx/${options.bundler}/plugin`;
+    buildConfigFile =
+      options.bundler === 'webpack' ? 'webpack.config.js' : `vite.config.ts`;
+    hasPlugin = nxJson.plugins?.find((p) =>
+      typeof p === 'string' ? p === buildPlugin : p.plugin === buildPlugin
     );
-    const lintTask = await lintProjectGenerator(host, {
-      linter: options.linter,
-      project: options.projectName,
-      tsConfigPaths: [
-        joinPathFragments(options.appProjectRoot, 'tsconfig.app.json'),
-      ],
-      unitTestRunner: options.unitTestRunner,
-      skipFormat: true,
-      setParserOptionsProject: options.setParserOptionsProject,
-      addPlugin: options.addPlugin,
+  }
+
+  if (!hasPlugin) {
+    await staticServeConfiguration(host, {
+      buildTarget: `${options.projectName}:build`,
+      spa: true,
     });
-    tasks.push(lintTask);
+  }
+
+  let e2eWebServerInfo: E2EWebServerDetails = {
+    e2eWebServerAddress: `http://localhost:4200`,
+    e2eWebServerCommand: `${getPackageManagerCommand().exec} nx run ${
+      options.projectName
+    }:serve`,
+    e2eCiWebServerCommand: `${getPackageManagerCommand().exec} nx run ${
+      options.projectName
+    }:serve-static`,
+    e2eCiBaseUrl: `http://localhost:4200`,
+    e2eDevServerTarget: `${options.projectName}:serve`,
+  };
+
+  if (options.bundler === 'webpack') {
+    const { getWebpackE2EWebServerInfo } = ensurePackage<
+      typeof import('@nx/webpack')
+    >('@nx/webpack', nxVersion);
+    e2eWebServerInfo = await getWebpackE2EWebServerInfo(
+      host,
+      options.projectName,
+      joinPathFragments(options.appProjectRoot, `webpack.config.js`),
+      options.addPlugin,
+      // This generator has no `port` option, so there is never an explicit request
+      // to pass on. The helper defaults to 4200 itself, and leaving this undefined
+      // is what lets targetDefaults still apply.
+      undefined
+    );
+  } else if (options.bundler === 'vite') {
+    const { getViteE2EWebServerInfo } = ensurePackage<
+      typeof import('@nx/vite')
+    >('@nx/vite', nxVersion);
+    e2eWebServerInfo = await getViteE2EWebServerInfo(
+      host,
+      options.projectName,
+      joinPathFragments(options.appProjectRoot, `vite.config.ts`),
+      options.addPlugin,
+      4200
+    );
   }
 
   if (options.e2eTestRunner === 'cypress') {
     const { configurationGenerator } = ensurePackage<
       typeof import('@nx/cypress')
     >('@nx/cypress', nxVersion);
-    addProjectConfiguration(host, options.e2eProjectName, {
-      root: options.e2eProjectRoot,
-      sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
-      projectType: 'application',
-      targets: {},
-      tags: [],
-      implicitDependencies: [options.projectName],
-    });
+
+    const packageJson: PackageJson = {
+      name: options.e2eProjectName,
+      version: '0.0.1',
+      private: true,
+    };
+
+    if (!options.useProjectJson) {
+      packageJson.nx = {
+        implicitDependencies: [options.projectName],
+      };
+    } else {
+      addProjectConfiguration(host, options.e2eProjectName, {
+        root: options.e2eProjectRoot,
+        sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
+        projectType: 'application',
+        targets: {},
+        tags: [],
+        implicitDependencies: [options.projectName],
+      });
+    }
+
+    if (!options.useProjectJson || options.isUsingTsSolutionConfig) {
+      writeJson(
+        host,
+        joinPathFragments(options.e2eProjectRoot, 'package.json'),
+        packageJson
+      );
+    }
+
     const cypressTask = await configurationGenerator(host, {
       ...options,
       project: options.e2eProjectName,
-      devServerTarget: `${options.projectName}:${options.e2eWebServerTarget}`,
-      baseUrl: options.e2eWebServerAddress,
+      devServerTarget: e2eWebServerInfo.e2eDevServerTarget,
+      baseUrl: e2eWebServerInfo.e2eWebServerAddress,
       directory: 'src',
       skipFormat: true,
+      enableTypedLinting,
+      webServerCommands: {
+        default: e2eWebServerInfo.e2eWebServerCommand,
+        production: e2eWebServerInfo.e2eCiWebServerCommand,
+      },
+      ciWebServerCommand: e2eWebServerInfo.e2eCiWebServerCommand,
+      ciBaseUrl: e2eWebServerInfo.e2eCiBaseUrl,
     });
+
     tasks.push(cypressTask);
   } else if (options.e2eTestRunner === 'playwright') {
     const { configurationGenerator: playwrightConfigGenerator } = ensurePackage<
       typeof import('@nx/playwright')
     >('@nx/playwright', nxVersion);
-    addProjectConfiguration(host, options.e2eProjectName, {
-      root: options.e2eProjectRoot,
-      sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
-      projectType: 'application',
-      targets: {},
-      tags: [],
-      implicitDependencies: [options.projectName],
-    });
+
+    const packageJson: PackageJson = {
+      name: options.e2eProjectName,
+      version: '0.0.1',
+      private: true,
+    };
+
+    if (!options.useProjectJson) {
+      packageJson.nx = {
+        implicitDependencies: [options.projectName],
+      };
+    } else {
+      addProjectConfiguration(host, options.e2eProjectName, {
+        root: options.e2eProjectRoot,
+        sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
+        projectType: 'application',
+        targets: {},
+        tags: [],
+        implicitDependencies: [options.projectName],
+      });
+    }
+
+    if (!options.useProjectJson || options.isUsingTsSolutionConfig) {
+      writeJson(
+        host,
+        joinPathFragments(options.e2eProjectRoot, 'package.json'),
+        packageJson
+      );
+    }
+
     const playwrightTask = await playwrightConfigGenerator(host, {
       project: options.e2eProjectName,
       skipFormat: true,
@@ -404,13 +600,12 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
       directory: 'src',
       js: false,
       linter: options.linter,
-      setParserOptionsProject: options.setParserOptionsProject,
-      webServerCommand: `${getPackageManagerCommand().exec} nx ${
-        options.e2eWebServerTarget
-      } ${options.name}`,
-      webServerAddress: options.e2eWebServerAddress,
+      enableTypedLinting,
+      webServerCommand: e2eWebServerInfo.e2eCiWebServerCommand,
+      webServerAddress: e2eWebServerInfo.e2eCiBaseUrl,
       addPlugin: options.addPlugin,
     });
+
     tasks.push(playwrightTask);
   }
   if (options.unitTestRunner === 'jest') {
@@ -421,7 +616,9 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
     const jestTask = await configurationGenerator(host, {
       project: options.projectName,
       skipSerializers: true,
-      setupFile: 'web-components',
+      // No setup file: the `web-components` one only ever held the
+      // `document-register-element` polyfill, which is long gone.
+      setupFile: 'none',
       compiler: options.compiler,
       skipFormat: true,
       addPlugin: options.addPlugin,
@@ -460,7 +657,20 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
     )
   );
 
-  if (!schema.skipFormat) {
+  updateTsconfigFiles(
+    host,
+    options.appProjectRoot,
+    'tsconfig.app.json',
+    {
+      module: 'esnext',
+      moduleResolution: 'bundler',
+    },
+    options.linter === 'eslint'
+      ? ['eslint.config.js', 'eslint.config.cjs', 'eslint.config.mjs']
+      : undefined
+  );
+
+  if (!options.skipFormat) {
     await formatFiles(host);
   }
 
@@ -475,60 +685,28 @@ async function normalizeOptions(
   host: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
+  await ensureRootProjectName(options, 'application');
   const {
-    projectName: appProjectName,
+    projectName,
     projectRoot: appProjectRoot,
-    projectNameAndRootFormat,
+    importPath,
   } = await determineProjectNameAndRootOptions(host, {
     name: options.name,
     projectType: 'application',
     directory: options.directory,
-    projectNameAndRootFormat: options.projectNameAndRootFormat,
-    callingGenerator: '@nx/web:application',
   });
-  options.projectNameAndRootFormat = projectNameAndRootFormat;
   const nxJson = readNxJson(host);
   const addPluginDefault =
     process.env.NX_ADD_PLUGINS !== 'false' &&
     nxJson.useInferencePlugins !== false;
   options.addPlugin ??= addPluginDefault;
 
-  let e2eWebServerTarget = 'serve';
-  if (options.addPlugin) {
-    if (nxJson.plugins) {
-      for (const plugin of nxJson.plugins) {
-        if (
-          options.bundler === 'vite' &&
-          typeof plugin === 'object' &&
-          plugin.plugin === '@nx/vite/plugin' &&
-          (plugin.options as VitePluginOptions).serveTargetName
-        ) {
-          e2eWebServerTarget = (plugin.options as VitePluginOptions)
-            .serveTargetName;
-        } else if (
-          options.bundler === 'webpack' &&
-          typeof plugin === 'object' &&
-          plugin.plugin === '@nx/webpack/plugin' &&
-          (plugin.options as WebpackPluginOptions).serveTargetName
-        ) {
-          e2eWebServerTarget = (plugin.options as WebpackPluginOptions)
-            .serveTargetName;
-        }
-      }
-    }
-  }
-
-  let e2ePort = 4200;
-  if (
-    nxJson.targetDefaults?.[e2eWebServerTarget] &&
-    nxJson.targetDefaults?.[e2eWebServerTarget].options?.port
-  ) {
-    e2ePort = nxJson.targetDefaults?.[e2eWebServerTarget].options?.port;
-  }
+  const isUsingTsSolutionConfig = isUsingTsSolutionSetup(host);
+  const appProjectName =
+    !isUsingTsSolutionConfig || options.name ? projectName : importPath;
 
   const e2eProjectName = `${appProjectName}-e2e`;
   const e2eProjectRoot = `${appProjectRoot}-e2e`;
-  const e2eWebServerAddress = `http://localhost:${e2ePort}`;
 
   const npmScope = getNpmScope(host);
 
@@ -537,25 +715,25 @@ async function normalizeOptions(
     : [];
 
   options.style = options.style || 'css';
-  options.linter = options.linter || ('eslint' as Linter.EsLint);
+  options.linter = await normalizeLinterOption(host, options.linter);
   options.unitTestRunner = options.unitTestRunner || 'jest';
   options.e2eTestRunner = options.e2eTestRunner || 'playwright';
 
   return {
     ...options,
     prefix: options.prefix ?? npmScope ?? 'app',
-    name: names(options.name).fileName,
     compiler: options.compiler ?? 'babel',
     bundler: options.bundler ?? 'webpack',
     projectName: appProjectName,
+    importPath,
     strict: options.strict ?? true,
     appProjectRoot,
     e2eProjectRoot,
     e2eProjectName,
-    e2eWebServerAddress,
-    e2eWebServerTarget,
-    e2ePort,
     parsedTags,
+    names: names(projectName),
+    isUsingTsSolutionConfig,
+    useProjectJson: options.useProjectJson ?? !isUsingTsSolutionConfig,
   };
 }
 

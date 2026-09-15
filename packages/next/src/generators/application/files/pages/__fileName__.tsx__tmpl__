@@ -1,17 +1,8 @@
-<% if (style !== 'none') { %>
-  <% if (styledModule && styledModule !== 'styled-jsx') {
-    var wrapper = 'StyledPage';
-  %>import styled from '<%= styledModule %>';<% } else {
-    var wrapper = 'div';
-  %>
-    <%- (style !== 'styled-jsx' && style !== 'tailwind') ? `import styles from './${fileName}.module.${style}';` : '' %>
-  <% }
-  %>
-
-  <% if (styledModule && styledModule !== 'styled-jsx') { %>
-  const StyledPage = styled.div`<%- pageStyleContent %>`;
-  <% }%>
-<% } %>
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- the icons below
+   are inline SVGs, which have no tag to swap the role for. */
+<%_ if (style !== 'none') { var wrapper = 'div'; _%>
+import styles from './<%= fileName %>.module.<%= style %>';
+<% } else { var wrapper = 'div'; } %>
 
 export function Index() {
   /*
@@ -20,8 +11,7 @@ export function Index() {
    * Note: The corresponding styles are in the ./<%= fileName %>.<%= style %> file.
    */
   return (
-    <<%= wrapper %><% if (!styledModule && style !== 'tailwind') {%> className={styles.page}<% } %>>
-      <%- styledModule === 'styled-jsx' && style !== 'none' ? `<style jsx>{\`${pageStyleContent}\`}</style>` : `` %>
+    <<%= wrapper %><% if (style !== 'none') {%> className={styles.page}<% } %>>
       <%- appContent %>
     </<%= wrapper %>>
   );

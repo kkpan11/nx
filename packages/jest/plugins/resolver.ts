@@ -1,25 +1,19 @@
 import { dirname, extname, join, resolve } from 'path';
 import { resolve as resolveExports } from 'resolve.exports';
-import type defaultResolver from 'jest-resolve/build/defaultResolver';
-
-interface ResolveOptions {
-  rootDir: string;
-  basedir: string;
-  paths: string[];
-  moduleDirectory: string[];
-  browser: boolean;
-  extensions: string[];
-  defaultResolver: typeof defaultResolver;
-}
+import type { ResolverOptions } from 'jest-resolve';
+import { getVersion } from 'jest';
+import { major } from 'semver';
 
 let compilerSetup;
 let ts;
+const jestMajorVersion = major(getVersion());
 
 function getCompilerSetup(rootDir: string) {
   const tsConfigPath =
     ts.findConfigFile(rootDir, ts.sys.fileExists, 'tsconfig.spec.json') ||
     ts.findConfigFile(rootDir, ts.sys.fileExists, 'tsconfig.test.json') ||
-    ts.findConfigFile(rootDir, ts.sys.fileExists, 'tsconfig.jest.json');
+    ts.findConfigFile(rootDir, ts.sys.fileExists, 'tsconfig.jest.json') ||
+    ts.findConfigFile(rootDir, ts.sys.fileExists, 'tsconfig.json');
 
   if (!tsConfigPath) {
     console.error(
@@ -34,11 +28,15 @@ function getCompilerSetup(rootDir: string) {
     dirname(tsConfigPath)
   );
   const compilerOptions = config.options;
+  if (!compilerOptions.baseUrl) {
+    const { resolvePathsBaseUrl } = require('@nx/js');
+    compilerOptions.baseUrl = resolvePathsBaseUrl(tsConfigPath);
+  }
   const host = ts.createCompilerHost(compilerOptions, true);
   return { compilerOptions, host };
 }
 
-module.exports = function (path: string, options: ResolveOptions) {
+module.exports = function (path: string, options: ResolverOptions) {
   const ext = extname(path);
   if (ext === '.css' || ext === '.scss' || ext === '.sass' || ext === '.less') {
     return require.resolve('identity-obj-proxy');
@@ -47,10 +45,17 @@ module.exports = function (path: string, options: ResolveOptions) {
     try {
       // Try to use the defaultResolver with default options
       return options.defaultResolver(path, options);
-    } catch {
+    } catch (e) {
+      if (jestMajorVersion >= 30) {
+        // The default resolver already handles what we had a workaround for in
+        // previous versions. Let the error bubble up.
+        throw e;
+      }
+
       // Try to use the defaultResolver with a packageFilter
       return options.defaultResolver(path, {
         ...options,
+        // @ts-expect-error packageFilter and pathFilter where available in Jest 29
         packageFilter: (pkg) => ({
           ...pkg,
           main: pkg.main || pkg.es2015 || pkg.module,
@@ -60,7 +65,7 @@ module.exports = function (path: string, options: ResolveOptions) {
             return path;
           }
 
-          return resolveExports(pkg, path) || path;
+          return resolveExports(pkg, path)?.[0] || path;
         },
       });
     }

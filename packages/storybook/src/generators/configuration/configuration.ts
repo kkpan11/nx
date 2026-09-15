@@ -10,9 +10,10 @@ import {
 } from '@nx/devkit';
 import { initGenerator as jsInitGenerator } from '@nx/js';
 
-import { cypressProjectGenerator } from '../cypress-project/cypress-project';
 import { StorybookConfigureSchema } from './schema';
 import { initGenerator } from '../init/init';
+import { warnStorybookExecutorGenerating } from '../../utils/deprecation';
+import { assertSupportedStorybookVersion } from '../../utils/assert-supported-storybook-version';
 
 import {
   addAngularStorybookTarget,
@@ -26,29 +27,27 @@ import {
   createProjectStorybookDir,
   createStorybookTsconfigFile,
   editTsconfigBaseJson,
-  findMetroConfig,
   findNextConfig,
   findViteConfig,
-  getE2EProjectName,
+  isUsingReactNative,
   projectIsRootProjectInStandaloneWorkspace,
   updateLintConfig,
 } from './lib/util-functions';
-import { Linter } from '@nx/eslint';
 import {
   findStorybookAndBuildTargetsAndCompiler,
-  pleaseUpgrade,
+  getStorybookVersionToInstall,
   storybookMajorVersion,
 } from '../../utils/utilities';
 import {
   coreJsVersion,
   nxVersion,
-  storybookVersion,
   tsLibVersion,
   tsNodeVersion,
+  versions,
 } from '../../utils/versions';
-import { interactionTestsDependencies } from './lib/interaction-testing.utils';
 import { ensureDependencies } from './lib/ensure-dependencies';
 import { editRootTsConfig } from './lib/edit-root-tsconfig';
+import { getProjectType } from '@nx/js/internal';
 
 export function configurationGenerator(
   tree: Tree,
@@ -61,8 +60,13 @@ export async function configurationGeneratorInternal(
   tree: Tree,
   rawSchema: StorybookConfigureSchema
 ) {
-  if (storybookMajorVersion() === 6) {
-    throw new Error(pleaseUpgrade());
+  assertSupportedStorybookVersion(tree);
+
+  const storybookMajor = storybookMajorVersion(tree);
+  if (storybookMajor === 8) {
+    logger.warn(
+      `Support for Storybook 8 is deprecated. Please upgrade to Storybook 9. See https://nx.dev/nx-api/storybook/generators/migrate-9 for more details.`
+    );
   }
 
   const schema = normalizeSchema(tree, rawSchema);
@@ -79,7 +83,6 @@ export async function configurationGeneratorInternal(
   const viteConfigFilePath = viteConfig?.fullConfigPath;
   const viteConfigFileName = viteConfig?.viteConfigFileName;
   const nextConfigFilePath = findNextConfig(tree, root);
-  const metroConfigFilePath = findMetroConfig(tree, root);
 
   if (viteConfigFilePath) {
     if (schema.uiFramework === '@storybook/react-webpack5') {
@@ -124,13 +127,14 @@ export async function configurationGeneratorInternal(
   );
 
   const mainDir =
-    !!nextConfigFilePath && projectType === 'application'
+    !!nextConfigFilePath &&
+    getProjectType(tree, root, projectType) === 'application'
       ? 'components'
       : 'src';
 
   const usesVite =
     !!viteConfigFilePath || schema.uiFramework?.endsWith('-vite');
-  const useReactNative = !!metroConfigFilePath;
+  const usesReactNative = isUsingReactNative(schema.project);
 
   createProjectStorybookDir(
     tree,
@@ -149,7 +153,7 @@ export async function configurationGeneratorInternal(
     viteConfigFilePath,
     hasPlugin,
     viteConfigFileName,
-    useReactNative
+    usesReactNative
   );
 
   if (schema.uiFramework !== '@storybook/angular') {
@@ -167,14 +171,15 @@ export async function configurationGeneratorInternal(
   updateLintConfig(tree, schema);
 
   addBuildStorybookToCacheableOperations(tree);
-  addStorybookToNamedInputs(tree);
+  addStorybookToNamedInputs(tree, schema);
   if (!hasPlugin) {
-    addStorybookToTargetDefaults(tree);
+    addStorybookToTargetDefaults(tree, schema);
   }
 
   let devDeps = {};
 
   if (!hasPlugin || schema.addExplicitTargets) {
+    warnStorybookExecutorGenerating();
     if (schema.uiFramework === '@storybook/angular') {
       addAngularStorybookTarget(tree, schema.project, schema.interactionTests);
     } else {
@@ -189,30 +194,11 @@ export async function configurationGeneratorInternal(
       await addStaticTarget(tree, schema);
     }
   } else {
-    devDeps['storybook'] = storybookVersion;
+    devDeps['storybook'] = getStorybookVersionToInstall(tree);
   }
 
-  // TODO(katerina): Nx 19 -> remove Cypress
-  if (schema.configureCypress) {
-    const e2eProject = await getE2EProjectName(tree, schema.project);
-    if (!e2eProject) {
-      const cypressTask = await cypressProjectGenerator(tree, {
-        name: schema.project,
-        js: schema.js,
-        linter: schema.linter,
-        directory: schema.cypressDirectory,
-        standaloneConfig: schema.standaloneConfig,
-        ciTargetName: schema.configureStaticServe
-          ? 'static-storybook'
-          : undefined,
-        skipFormat: true,
-      });
-      tasks.push(cypressTask);
-    } else {
-      logger.warn(
-        `There is already an e2e project setup for ${schema.project}, called ${e2eProject}.`
-      );
-    }
+  if (schema.interactionTests) {
+    devDeps['@storybook/test-runner'] = versions(tree).testRunnerVersion;
   }
 
   if (schema.tsConfiguration) {
@@ -221,13 +207,6 @@ export async function configurationGeneratorInternal(
 
   if (usesVite && !viteConfigFilePath) {
     devDeps['tslib'] = tsLibVersion;
-  }
-
-  if (schema.interactionTests) {
-    devDeps = {
-      ...devDeps,
-      ...interactionTestsDependencies(),
-    };
   }
 
   if (schema.configureStaticServe) {
@@ -249,7 +228,7 @@ export async function configurationGeneratorInternal(
     devDeps['@nx/vite'] = nxVersion;
   }
 
-  tasks.push(addDependenciesToPackageJson(tree, {}, devDeps));
+  tasks.push(addDependenciesToPackageJson(tree, {}, devDeps, undefined, true));
 
   if (!schema.skipFormat) {
     await formatFiles(tree);
@@ -269,7 +248,6 @@ function normalizeSchema(
 
   const defaults = {
     interactionTests: true,
-    linter: Linter.EsLint,
     js: false,
     tsConfiguration: true,
     addPlugin,

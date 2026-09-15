@@ -1,37 +1,46 @@
-import { serverLogger } from './logger';
+import type { MockInstance } from 'vitest';
+import { serverLogger } from '../logger';
+
+vi.mock('../../utils/versions', async () => ({
+  ...(await vi.importActual('../../utils/versions')),
+  nxVersion: 'NX_VERSION',
+}));
 
 describe('serverLogger', () => {
-  let consoleLogSpy: jest.SpyInstance;
+  let consoleLogSpy: MockInstance;
 
   beforeEach(() => {
-    jest
-      .spyOn(global.Date, 'now')
-      .mockImplementation(() => new Date('2021-10-11T17:18:45.980Z').valueOf());
-    consoleLogSpy = jest.spyOn(console, 'log');
+    vi.spyOn(global.Date, 'now').mockImplementation(() =>
+      new Date('2021-10-11T17:18:45.980Z').valueOf()
+    );
+    consoleLogSpy = vi.spyOn(console, 'log');
   });
 
   afterEach(() => {
-    jest.resetAllMocks();
+    vi.resetAllMocks();
   });
 
   describe('log()', () => {
     const testCases = [
       {
         inputs: ['foobar'],
-        expectedLog: '[NX Daemon Server] - 2021-10-11T17:18:45.980Z - foobar',
+        expectedLog:
+          '[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - foobar',
       },
       {
         inputs: ['foo', 'bar'],
-        expectedLog: '[NX Daemon Server] - 2021-10-11T17:18:45.980Z - foo bar',
+        expectedLog:
+          '[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - foo bar',
       },
       {
         inputs: [1, 2],
-        expectedLog: '[NX Daemon Server] - 2021-10-11T17:18:45.980Z - 1 2',
+        expectedLog:
+          '[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - 1 2',
       },
       {
         inputs: [{ some: 'object' }, ['an', 'array']],
         expectedLog:
-          '[NX Daemon Server] - 2021-10-11T17:18:45.980Z - {"some":"object"} ["an","array"]',
+          '[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - {"some":"object"} ["an","array"]',
       },
     ];
 
@@ -52,11 +61,11 @@ describe('serverLogger', () => {
       serverLogger.log('Server stopped');
       // prettier-ignore
       expect(consoleLogSpy.mock.calls).toEqual([
-        ['[NX Daemon Server] - 2021-10-11T17:18:45.980Z - Server started'],
-        ['[NX Daemon Server] - 2021-10-11T17:18:45.980Z - [WATCHER]: Watching started'],
-        ['[NX Daemon Server] - 2021-10-11T17:18:45.980Z - [REQUEST]: A request has come in'],
-        ['[NX Daemon Server] - 2021-10-11T17:18:45.980Z - [WATCHER]: Watching stopped'],
-        ['[NX Daemon Server] - 2021-10-11T17:18:45.980Z - Server stopped'],
+        ['[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - Server started'],
+        ['[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - [WATCHER]: Watching started'],
+        ['[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - [REQUEST]: A request has come in'],
+        ['[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - [WATCHER]: Watching stopped'],
+        ['[NX vNX_VERSION Daemon Server] - 2021-10-11T17:18:45.980Z - Server stopped'],
       ]);
     });
   });

@@ -1,4 +1,5 @@
 import {
+  checkFilesExist,
   cleanupProject,
   createFile,
   ensureCypressInstallation,
@@ -8,7 +9,7 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from '../../utils';
+} from '@nx/e2e-utils';
 import { join } from 'path';
 
 describe('React Cypress Component Tests', () => {
@@ -21,12 +22,12 @@ describe('React Cypress Component Tests', () => {
     process.env.NX_ADD_PLUGINS = 'false';
     projectName = newProject({
       name: uniq('cy-react'),
-      packages: ['@nx/react'],
+      packages: ['@nx/react', '@nx/webpack', '@nx/jest', '@nx/cypress'],
     });
-    ensureCypressInstallation();
+    await ensureCypressInstallation();
 
     runCLI(
-      `generate @nx/react:app ${appName} --bundler=webpack --no-interactive`
+      `generate @nx/react:app apps/${appName} --bundler=webpack --no-interactive`
     );
 
     updateJson('nx.json', (json) => ({
@@ -42,13 +43,13 @@ describe('React Cypress Component Tests', () => {
     }));
 
     runCLI(
-      `generate @nx/react:component fancy-cmp --project=${appName} --no-interactive`
+      `generate @nx/react:component apps/${appName}/src/app/fancy-cmp/fancy-cmp --no-interactive`
     );
     runCLI(
-      `generate @nx/react:lib ${usedInAppLibName} --no-interactive --unitTestRunner=jest`
+      `generate @nx/react:lib libs/${usedInAppLibName} --no-interactive --unitTestRunner=jest`
     );
     runCLI(
-      `generate @nx/react:component btn --project=${usedInAppLibName} --export --no-interactive`
+      `generate @nx/react:component libs/${usedInAppLibName}/src/lib/btn/btn --export --no-interactive`
     );
     // makes sure custom webpack is loading
     createFile(
@@ -107,12 +108,13 @@ export default App;`
     );
 
     runCLI(
-      `generate @nx/react:lib ${buildableLibName} --buildable --no-interactive --unitTestRunner=jest`
+      `generate @nx/react:lib libs/${buildableLibName} --buildable --no-interactive --unitTestRunner=jest`
     );
     runCLI(
-      `generate @nx/react:component input --project=${buildableLibName} --export --no-interactive`
+      `generate @nx/react:component libs/${buildableLibName}/src/lib/input/input --export --no-interactive`
     );
 
+    checkFilesExist(`libs/${buildableLibName}/src/lib/input/input.tsx`);
     updateFile(
       `libs/${buildableLibName}/src/lib/input/input.tsx`,
       `
@@ -150,29 +152,29 @@ export default Input;
     delete process.env.NX_ADD_PLUGINS;
   });
 
-  it('should test app', () => {
+  it('should test app', async () => {
     runCLI(
       `generate @nx/react:cypress-component-configuration --project=${appName} --generate-tests`
     );
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(runCLI(`component-test ${appName} --no-watch`)).toContain(
         'All specs passed!'
       );
     }
   }, 300_000);
 
-  it('should successfully component test lib being used in app', () => {
+  it('should successfully component test lib being used in app', async () => {
     runCLI(
       `generate @nx/react:cypress-component-configuration --project=${usedInAppLibName} --generate-tests`
     );
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(runCLI(`component-test ${usedInAppLibName} --no-watch`)).toContain(
         'All specs passed!'
       );
     }
   }, 300_000);
 
-  it('should successfully component test lib being used in app using babel compiler', () => {
+  it('should successfully component test lib being used in app using babel compiler', async () => {
     runCLI(
       `generate @nx/react:cypress-component-configuration --project=${usedInAppLibName} --generate-tests`
     );
@@ -183,14 +185,14 @@ export default Input;
         'nxComponentTestingPreset(__filename, {compiler: "babel"})'
       );
     });
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(runCLI(`component-test ${usedInAppLibName} --no-watch`)).toContain(
         'All specs passed!'
       );
     }
   }, 300_000);
 
-  it('should test buildable lib not being used in app', () => {
+  it('should test buildable lib not being used in app', async () => {
     createFile(
       `libs/${buildableLibName}/src/lib/input/input.cy.tsx`,
       `
@@ -203,7 +205,7 @@ describe(Input.name, () => {
     cy.mount(<Input readOnly={false} />)
     cy.get('label').should('have.css', 'color', 'rgb(0, 0, 0)');
   })
-  it('should be read only', () => {
+  it('should be read only', async () => {
     cy.mount(<Input readOnly={true}/>)
     cy.get('input').should('have.attr', 'readonly');
   })
@@ -215,38 +217,7 @@ describe(Input.name, () => {
       `generate @nx/react:cypress-component-configuration --project=${buildableLibName} --generate-tests --build-target=${appName}:build`
     );
 
-    if (runE2ETests()) {
-      expect(runCLI(`component-test ${buildableLibName} --no-watch`)).toContain(
-        'All specs passed!'
-      );
-    }
-
-    // add tailwind
-    runCLI(`generate @nx/react:setup-tailwind --project=${buildableLibName}`);
-    updateFile(
-      `libs/${buildableLibName}/src/styles.css`,
-      `
-@tailwind components;
-@tailwind base;
-@tailwind utilities;
-`
-    );
-    updateFile(
-      `libs/${buildableLibName}/src/lib/input/input.cy.tsx`,
-      (content) => {
-        // text-green-500 should now apply
-        return content.replace('rgb(0, 0, 0)', 'rgb(34, 197, 94)');
-      }
-    );
-    updateFile(
-      `libs/${buildableLibName}/src/lib/input/input.tsx`,
-      (content) => {
-        return `import '../../styles.css';
-${content}`;
-      }
-    );
-
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(runCLI(`component-test ${buildableLibName} --no-watch`)).toContain(
         'All specs passed!'
       );
@@ -278,14 +249,13 @@ ${content}`;
       `
     );
     updateJson(join('apps', appName, 'project.json'), (config) => {
-      config.targets[
-        'build'
-      ].options.webpackConfig = `apps/${appName}/webpack.config.js`;
+      config.targets['build'].options.webpackConfig =
+        `apps/${appName}/webpack.config.js`;
 
       return config;
     });
 
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       const results = runCLI(`component-test ${appName}`);
       expect(results).toContain('I am from the custom async Webpack config');
       expect(results).toContain('All specs passed!');
@@ -293,10 +263,10 @@ ${content}`;
   });
 
   // flaky bc of upstream issue https://github.com/cypress-io/cypress/issues/25913
-  it.skip('should CT vite projects importing other projects', () => {
+  it.skip('should CT vite projects importing other projects', async () => {
     const viteLibName = uniq('vite-lib');
     runCLI(
-      `generate @nrwl/react:lib ${viteLibName} --bundler=vite --no-interactive`
+      `generate @nx/react:lib ${viteLibName} --bundler=vite --no-interactive`
     );
 
     updateFile(`libs/${viteLibName}/src/lib/${viteLibName}.tsx`, () => {
@@ -314,9 +284,9 @@ export default MyComponent;`;
     });
 
     runCLI(
-      `generate @nrwl/react:cypress-component-configuration --project=${viteLibName} --generate-tests --bundler=vite --build-target=${appName}:build`
+      `generate @nx/react:cypress-component-configuration --project=${viteLibName} --generate-tests --bundler=vite --build-target=${appName}:build`
     );
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(runCLI(`component-test ${viteLibName}`)).toContain(
         'All specs passed!'
       );

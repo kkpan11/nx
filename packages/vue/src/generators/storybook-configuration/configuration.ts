@@ -1,7 +1,13 @@
 import { StorybookConfigureSchema } from './schema';
 import storiesGenerator from '../stories/stories';
-import { ensurePackage, formatFiles, Tree } from '@nx/devkit';
+import {
+  ensurePackage,
+  formatFiles,
+  GeneratorCallback,
+  Tree,
+} from '@nx/devkit';
 import { nxVersion } from '../../utils/versions';
+import { assertSupportedVueVersion } from '../../utils/assert-supported-vue-version';
 
 async function generateStories(host: Tree, schema: StorybookConfigureSchema) {
   await storiesGenerator(host, {
@@ -26,7 +32,9 @@ export function storybookConfigurationGenerator(
 export async function storybookConfigurationGeneratorInternal(
   host: Tree,
   schema: StorybookConfigureSchema
-) {
+): Promise<GeneratorCallback> {
+  assertSupportedVueVersion(host);
+
   const { configurationGenerator } = ensurePackage<
     typeof import('@nx/storybook')
   >('@nx/storybook', nxVersion);

@@ -1,19 +1,24 @@
-import * as chalk from 'chalk';
-import { dirname, join } from 'path';
-
+import { dirname, join, relative } from 'path';
+import {
+  ExecutorsJsonEntry,
+  GeneratorsJsonEntry,
+} from '../../config/misc-interfaces';
 import { ProjectConfiguration } from '../../config/workspace-json-project-json';
-import { NxPlugin, readPluginPackageJson } from '../../project-graph/plugins';
-import { loadNxPlugin } from '../../project-graph/plugins/loader';
 import { readJsonFile } from '../fileutils';
 import { getNxRequirePaths } from '../installation-directory';
-import { output } from '../output';
+import { readPluginPackageJson } from '../../project-graph/plugins';
+import { loadNxPlugin } from '../../project-graph/plugins/in-process-loader';
 import { PackageJson } from '../package-json';
-import { getPackageManagerCommand } from '../package-manager';
-import { workspaceRoot } from '../workspace-root';
-import { hasElements } from './shared';
+import type { LoadedNxPlugin } from '../../project-graph/plugins/loaded-nx-plugin';
 
-import type { PluginCapabilities } from './models';
-import type { ExecutorsJsonEntry } from '../../config/misc-interfaces';
+export interface PluginCapabilities {
+  name: string;
+  path?: string;
+  executors?: { [name: string]: ExecutorsJsonEntry };
+  generators?: { [name: string]: GeneratorsJsonEntry };
+  projectInference?: boolean;
+  projectGraphExtension?: boolean;
+}
 
 function tryGetCollection<T extends object>(
   packageJsonPath: string,
@@ -39,17 +44,18 @@ export async function getPluginCapabilities(
   includeRuntimeCapabilities = false
 ): Promise<PluginCapabilities | null> {
   try {
-    const { json: packageJson, path: packageJsonPath } =
-      await readPluginPackageJson(
-        pluginName,
-        projects,
-        getNxRequirePaths(workspaceRoot)
-      );
+    const { json: packageJson, path: packageJsonPath } = readPluginPackageJson(
+      pluginName,
+      projects,
+      getNxRequirePaths(workspaceRoot)
+    );
     const pluginModule = includeRuntimeCapabilities
       ? await tryGetModule(packageJson, workspaceRoot)
       : ({} as Record<string, unknown>);
+    const pluginPath = relative(workspaceRoot, dirname(packageJsonPath)) || '.';
     return {
       name: pluginName,
+      path: pluginPath,
       generators: {
         ...tryGetCollection(
           packageJsonPath,
@@ -86,11 +92,14 @@ export async function getPluginCapabilities(
         pluginModule &&
         ('processProjectGraph' in pluginModule ||
           'createNodes' in pluginModule ||
+          'createNodesV2' in pluginModule ||
+          'createMetadata' in pluginModule ||
           'createDependencies' in pluginModule),
       projectInference:
         pluginModule &&
         ('projectFilePatterns' in pluginModule ||
-          'createNodes' in pluginModule),
+          'createNodes' in pluginModule ||
+          'createNodesV2' in pluginModule),
     };
   } catch {
     return null;
@@ -100,7 +109,7 @@ export async function getPluginCapabilities(
 async function tryGetModule(
   packageJson: PackageJson,
   workspaceRoot: string
-): Promise<NxPlugin | null> {
+): Promise<LoadedNxPlugin | null> {
   try {
     if (
       packageJson.generators ??
@@ -110,8 +119,7 @@ async function tryGetModule(
       packageJson['builders']
     ) {
       const [pluginPromise] = loadNxPlugin(packageJson.name, workspaceRoot);
-      const plugin = await pluginPromise;
-      return plugin;
+      return await pluginPromise;
     } else {
       return {
         name: packageJson.name,
@@ -120,127 +128,4 @@ async function tryGetModule(
   } catch {
     return null;
   }
-}
-
-export async function listPluginCapabilities(
-  pluginName: string,
-  projects: Record<string, ProjectConfiguration>
-) {
-  const plugin = await getPluginCapabilities(
-    workspaceRoot,
-    pluginName,
-    projects
-  );
-
-  if (!plugin) {
-    const pmc = getPackageManagerCommand();
-    output.note({
-      title: `${pluginName} is not currently installed`,
-      bodyLines: [
-        `Use "${pmc.addDev} ${pluginName}" to install the plugin.`,
-        `After that, use "${pmc.exec} nx g ${pluginName}:init" to add the required peer deps and initialize the plugin.`,
-      ],
-    });
-
-    return;
-  }
-
-  const hasBuilders = hasElements(plugin.executors);
-  const hasGenerators = hasElements(plugin.generators);
-  const hasProjectGraphExtension = !!plugin.projectGraphExtension;
-  const hasProjectInference = !!plugin.projectInference;
-
-  if (
-    !hasBuilders &&
-    !hasGenerators &&
-    !hasProjectGraphExtension &&
-    !hasProjectInference
-  ) {
-    output.warn({ title: `No capabilities found in ${pluginName}` });
-    return;
-  }
-
-  const bodyLines = [];
-
-  if (hasGenerators) {
-    bodyLines.push(chalk.bold(chalk.green('GENERATORS')));
-    bodyLines.push('');
-    bodyLines.push(
-      ...Object.keys(plugin.generators).map(
-        (name) => `${chalk.bold(name)} : ${plugin.generators[name].description}`
-      )
-    );
-    if (hasBuilders) {
-      bodyLines.push('');
-    }
-  }
-
-  if (hasBuilders) {
-    bodyLines.push(chalk.bold(chalk.green('EXECUTORS/BUILDERS')));
-    bodyLines.push('');
-    bodyLines.push(
-      ...Object.keys(plugin.executors).map(
-        (name) =>
-          `${chalk.bold(name)} : ${resolveExecutorDescription(
-            plugin.executors[name],
-            projects
-          )}`
-      )
-    );
-  }
-
-  if (hasProjectGraphExtension) {
-    bodyLines.push(`✔️  Project Graph Extension`);
-  }
-
-  if (hasProjectInference) {
-    bodyLines.push(`✔️  Project Inference`);
-  }
-
-  output.log({
-    title: `Capabilities in ${plugin.name}:`,
-    bodyLines,
-  });
-}
-
-function resolveExecutorDescription(
-  executorJsonEntry: ExecutorsJsonEntry,
-  projects: Record<string, ProjectConfiguration>
-) {
-  try {
-    if (typeof executorJsonEntry === 'string') {
-      // it points to another executor, resolve it
-      const [pkgName, executor] = executorJsonEntry.split(':');
-      const collection = loadExecutorsCollection(
-        workspaceRoot,
-        pkgName,
-        projects
-      );
-
-      return resolveExecutorDescription(collection[executor], projects);
-    }
-
-    return executorJsonEntry.description;
-  } catch {
-    return 'No description available';
-  }
-}
-
-function loadExecutorsCollection(
-  workspaceRoot: string,
-  pluginName: string,
-  projects: Record<string, ProjectConfiguration>
-): { [name: string]: ExecutorsJsonEntry } {
-  const { json: packageJson, path: packageJsonPath } = readPluginPackageJson(
-    pluginName,
-    projects,
-    getNxRequirePaths(workspaceRoot)
-  );
-
-  return {
-    ...tryGetCollection(packageJsonPath, packageJson.builders, 'builders'),
-    ...tryGetCollection(packageJsonPath, packageJson.executors, 'builders'),
-    ...tryGetCollection(packageJsonPath, packageJson.builders, 'executors'),
-    ...tryGetCollection(packageJsonPath, packageJson.executors, 'executors'),
-  };
 }

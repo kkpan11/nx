@@ -1,4 +1,3 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type { ProjectGraphProjectNode } from '@nx/devkit';
 
@@ -12,9 +11,12 @@ export function groupTargets(project: ProjectGraphProjectNode): {
   groups: Record<string, string[]>;
   targets: string[];
 } {
-  const targetGroups = project.data.metadata?.targetGroups ?? {};
+  const targetGroups = {
+    ...((project.data.metadata?.targetGroups as Record<string, string[]>) ??
+      {}),
+  };
   Object.entries(targetGroups).forEach(([group, targets]) => {
-    targetGroups[group] = targets.sort(sortNxReleasePublishLast);
+    targetGroups[group] = [...targets].sort(sortNxReleasePublishLast);
   });
   const allTargetsInTargetGroups: string[] = Object.values(targetGroups).flat();
   const targets: string[] = Object.keys(project.data.targets ?? {})

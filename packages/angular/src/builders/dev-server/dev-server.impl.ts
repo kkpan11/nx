@@ -5,17 +5,16 @@ import {
   normalizePath,
   parseTargetString,
   readCachedProjectGraph,
+  readProjectsConfigurationFromProjectGraph,
+  workspaceRoot,
 } from '@nx/devkit';
 import { getRootTsConfigPath } from '@nx/js';
-import type { DependentBuildableProjectNode } from '@nx/js/src/utils/buildable-libs-utils';
-import { WebpackNxBuildCoordinationPlugin } from '@nx/webpack/src/plugins/webpack-nx-build-coordination-plugin';
+import type { DependentBuildableProjectNode } from '@nx/js/internal';
 import { existsSync } from 'fs';
-import { isNpmProject } from 'nx/src/project-graph/operators';
-import { readCachedProjectConfiguration } from 'nx/src/project-graph/project-graph';
 import { relative } from 'path';
 import { combineLatest, from } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
-import { getInstalledAngularVersionInfo } from '../../executors/utilities/angular-version-utils';
+import { assertPackageIsInstalled } from '../../executors/utilities/builder-package';
 import {
   loadIndexHtmlTransformer,
   loadMiddleware,
@@ -24,16 +23,13 @@ import {
 } from '../../executors/utilities/esbuild-extensions';
 import { patchBuilderContext } from '../../executors/utilities/patch-builder-context';
 import { createTmpTsConfigForBuildableLibs } from '../utilities/buildable-libs';
-import {
-  mergeCustomWebpackConfig,
-  resolveIndexHtmlTransformer,
-} from '../utilities/webpack';
 import { normalizeOptions, validateOptions } from './lib';
-import type {
-  NormalizedSchema,
-  Schema,
-  SchemaWithBrowserTarget,
-} from './schema';
+import type { NormalizedSchema, Schema } from './schema';
+import {
+  readNxJsonFromDisk as readNxJson,
+  isNpmProject,
+  readCachedProjectConfiguration,
+} from '@nx/devkit/internal';
 
 type BuildTargetOptions = {
   tsConfig: string;
@@ -55,11 +51,16 @@ export function executeDevServerBuilder(
 
   const options = normalizeOptions(rawOptions);
 
+  const projectGraph = readCachedProjectGraph();
+
   const parsedBuildTarget = parseTargetString(options.buildTarget, {
     cwd: context.currentDirectory,
-    projectGraph: readCachedProjectGraph(),
+    projectGraph,
     projectName: context.target.project,
+    projectsConfigurations:
+      readProjectsConfigurationFromProjectGraph(projectGraph),
     root: context.workspaceRoot,
+    nxJsonConfiguration: readNxJson(workspaceRoot),
     isVerbose: false,
   });
   const browserTargetProjectConfiguration = readCachedProjectConfiguration(
@@ -74,8 +75,8 @@ export function executeDevServerBuilder(
     ...(parsedBuildTarget.configuration
       ? buildTarget.configurations[parsedBuildTarget.configuration]
       : buildTarget.defaultConfiguration
-      ? buildTarget.configurations[buildTarget.defaultConfiguration]
-      : {}),
+        ? buildTarget.configurations[buildTarget.defaultConfiguration]
+        : {}),
   };
 
   const buildLibsFromSource =
@@ -150,6 +151,7 @@ export function executeDevServerBuilder(
 
   const delegateBuilderOptions = getDelegateBuilderOptions(options);
   const isUsingWebpackBuilder = ![
+    '@angular/build:application',
     '@angular-devkit/build-angular:application',
     '@angular-devkit/build-angular:browser-esbuild',
     '@nx/angular:application',
@@ -163,6 +165,10 @@ export function executeDevServerBuilder(
    * handle `@nx/angular:*` executors.
    */
   patchBuilderContext(context, !isUsingWebpackBuilder, parsedBuildTarget);
+  assertPackageIsInstalled(
+    '@angular-devkit/build-angular',
+    '@nx/angular:dev-server'
+  );
 
   return combineLatest([
     from(import('@angular-devkit/build-angular')),
@@ -201,13 +207,19 @@ export function executeDevServerBuilder(
                     // run the target for all projects.
                     // This will occur when workspaceDependencies = []
                     if (workspaceDependencies.length > 0) {
+                      assertPackageIsInstalled(
+                        '@nx/webpack',
+                        '@nx/angular:dev-server'
+                      );
+                      const { WebpackNxBuildCoordinationPlugin } =
+                        await import('@nx/webpack/internal');
                       baseWebpackConfig.plugins.push(
-                        // @ts-expect-error - difference between angular and webpack plugin definitions bc of webpack versions
                         new WebpackNxBuildCoordinationPlugin(
                           `nx run-many --target=${
                             parsedBuildTarget.target
-                          } --projects=${workspaceDependencies.join(',')}`
-                        )
+                          } --projects=${workspaceDependencies.join(',')}`,
+                          { skipWatchingDeps: !options.watchDependencies }
+                        ) as any // TODO(Colum): this can be removed when angular 20.2 is merged
                       );
                     }
                   }
@@ -216,6 +228,16 @@ export function executeDevServerBuilder(
                     return baseWebpackConfig;
                   }
 
+                  assertPackageIsInstalled(
+                    '@nx/webpack',
+                    '@nx/angular:dev-server'
+                  );
+                  assertPackageIsInstalled(
+                    'webpack-merge',
+                    '@nx/angular:dev-server'
+                  );
+                  const { mergeCustomWebpackConfig } =
+                    await import('../utilities/webpack.js');
                   return mergeCustomWebpackConfig(
                     baseWebpackConfig,
                     pathToWebpackConfig,
@@ -251,16 +273,9 @@ function getDelegateBuilderOptions(
     ...options,
   };
 
-  const { major: angularMajorVersion } = getInstalledAngularVersionInfo();
-  if (angularMajorVersion <= 17) {
-    (
-      delegateBuilderOptions as unknown as SchemaWithBrowserTarget
-    ).browserTarget = delegateBuilderOptions.buildTarget;
-    delete delegateBuilderOptions.buildTarget;
-  }
-
   // delete extra option not supported by the delegate builder
   delete delegateBuilderOptions.buildLibsFromSource;
+  delete delegateBuilderOptions.watchDependencies;
 
   return delegateBuilderOptions;
 }
@@ -275,11 +290,17 @@ async function loadIndexHtmlFileTransformer(
     return undefined;
   }
 
-  return isUsingWebpackBuilder
-    ? resolveIndexHtmlTransformer(
-        pathToIndexFileTransformer,
-        tsConfig,
-        context.target
-      )
-    : await loadIndexHtmlTransformer(pathToIndexFileTransformer, tsConfig);
+  if (isUsingWebpackBuilder) {
+    assertPackageIsInstalled('@nx/webpack', '@nx/angular:dev-server');
+    assertPackageIsInstalled('webpack-merge', '@nx/angular:dev-server');
+    const { resolveIndexHtmlTransformer } =
+      await import('../utilities/webpack.js');
+    return resolveIndexHtmlTransformer(
+      pathToIndexFileTransformer,
+      tsConfig,
+      context.target
+    );
+  }
+
+  return loadIndexHtmlTransformer(pathToIndexFileTransformer, tsConfig);
 }

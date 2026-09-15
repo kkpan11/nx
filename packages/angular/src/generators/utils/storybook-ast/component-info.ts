@@ -5,16 +5,17 @@ import {
   Tree,
   visitNotIgnoredFiles,
 } from '@nx/devkit';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import { basename, dirname, extname, relative } from 'path';
 import type { Identifier, SourceFile, Statement } from 'typescript';
 import { getTsSourceFile } from '../../../utils/nx-devkit/ast-utils';
+import { getInstalledAngularVersionInfo } from '../version-utils';
 import type { EntryPoint } from './entry-point';
-import { getModuleDeclaredComponents } from './module-info';
-import { getAllFilesRecursivelyFromDir } from './tree-utilities';
+import { getModuleDeclarations } from './module-info';
 
 let tsModule: typeof import('typescript');
-let tsquery: typeof import('@phenomnomnominal/tsquery').tsquery;
+let tsqueryAst: typeof import('@phenomnomnominal/tsquery').ast;
+let tsqueryQuery: typeof import('@phenomnomnominal/tsquery').query;
 
 export interface ComponentInfo {
   componentFileName: string;
@@ -33,12 +34,12 @@ export function getComponentsInfo(
   return moduleFilePaths
     .flatMap((moduleFilePath) => {
       const file = getTsSourceFile(tree, moduleFilePath);
-      const declaredComponents = getModuleDeclaredComponents(
+      const moduleDeclarations = getModuleDeclarations(
         file,
         moduleFilePath,
         projectName
       );
-      if (declaredComponents.length === 0) {
+      if (moduleDeclarations.length === 0) {
         return undefined;
       }
 
@@ -49,14 +50,14 @@ export function getComponentsInfo(
         (statement) => statement.kind === tsModule.SyntaxKind.ImportDeclaration
       );
 
-      const componentsInfo = declaredComponents.map((componentName) =>
-        getComponentInfo(
+      const componentsInfo = moduleDeclarations.map((maybeComponentName) =>
+        tryGetComponentInfo(
           tree,
           entryPoint,
           file,
           imports,
           moduleFilePath,
-          componentName
+          maybeComponentName
         )
       );
 
@@ -112,19 +113,23 @@ export function getStandaloneComponentsInfo(
 }
 
 function getStandaloneComponents(tree: Tree, filePath: string): string[] {
-  if (!tsquery) {
+  if (!tsqueryAst) {
     ensureTypescript();
-    tsquery = require('@phenomnomnominal/tsquery').tsquery;
+    const tsqueryModule = require('@phenomnomnominal/tsquery');
+    tsqueryAst = tsqueryModule.ast;
+    tsqueryQuery = tsqueryModule.query;
   }
   const fileContent = tree.read(filePath, 'utf-8');
-  const ast = tsquery.ast(fileContent);
-  const components = tsquery<Identifier>(
-    ast,
-    'ClassDeclaration:has(Decorator > CallExpression:has(Identifier[name=Component]) ObjectLiteralExpression PropertyAssignment:has(Identifier[name=standalone]) > TrueKeyword) > Identifier',
-    { visitAllChildren: true }
+  const sourceFile = tsqueryAst(fileContent);
+
+  // standalone: true is the default, so all components except those with
+  // standalone: false are considered standalone
+  const standaloneComponentNodes = tsqueryQuery<Identifier>(
+    sourceFile,
+    'ClassDeclaration:has(Decorator > CallExpression:has(Identifier[name=Component]) ObjectLiteralExpression:not(:has(PropertyAssignment:has(Identifier[name=standalone]) > FalseKeyword))) > Identifier'
   );
 
-  return components.map((component) => component.getText());
+  return standaloneComponentNodes.map((component) => component.getText());
 }
 
 function getComponentImportPath(
@@ -162,92 +167,118 @@ function getComponentImportPath(
   return importPath;
 }
 
-function getComponentInfo(
+function tryGetComponentInfo(
   tree: Tree,
   entryPoint: EntryPoint,
   sourceFile: SourceFile,
   imports: Statement[],
   moduleFilePath: string,
-  componentName: string
-): ComponentInfo {
+  symbolName: string
+): ComponentInfo | undefined {
   try {
-    if (!tsquery) {
+    if (!tsqueryQuery) {
       ensureTypescript();
-      tsquery = require('@phenomnomnominal/tsquery').tsquery;
+      const tsqueryModule = require('@phenomnomnominal/tsquery');
+      tsqueryAst = tsqueryModule.ast;
+      tsqueryQuery = tsqueryModule.query;
     }
 
     const moduleFolderPath = dirname(moduleFilePath);
 
     // try to get the component from the same file (inline scam)
-    const node = tsquery(
+    const node = tsqueryQuery(
       sourceFile,
-      `ClassDeclaration:has(Decorator > CallExpression > Identifier[name=Component]):has(Identifier[name=${componentName}])`,
-      { visitAllChildren: true }
+      `ClassDeclaration:has(Decorator > CallExpression > Identifier[name=Component]):has(Identifier[name=${symbolName}])`
     )[0];
 
     if (node) {
       return {
         componentFileName: basename(moduleFilePath, '.ts'),
         moduleFolderPath,
-        name: componentName,
+        name: symbolName,
         path: '.',
         entryPointName: entryPoint.name,
       };
     }
 
     // try to get the component from the imports
-    const componentFilePathRelativeToModule = getComponentImportPath(
-      componentName,
+    const symbolFilePathRelativeToModule = getComponentImportPath(
+      symbolName,
       imports
     );
-    const componentImportPath = getFullComponentFilePath(
+    let symbolImportPath = getFullComponentFilePath(
       moduleFolderPath,
-      componentFilePathRelativeToModule
+      symbolFilePathRelativeToModule
     );
 
-    if (tree.exists(componentImportPath) && !tree.isFile(componentImportPath)) {
-      return getComponentInfoFromDir(
+    if (tree.exists(symbolImportPath) && !tree.isFile(symbolImportPath)) {
+      return tryGetComponentInfoFromDir(
         tree,
         entryPoint,
-        componentImportPath,
-        componentName,
+        symbolImportPath,
+        symbolName,
         moduleFolderPath
       );
     }
 
-    const path = dirname(componentFilePathRelativeToModule);
-    const componentFileName = basename(componentFilePathRelativeToModule);
+    const candidatePaths = [
+      symbolImportPath,
+      `${symbolImportPath}.ts`,
+      `${symbolImportPath}.js`,
+    ];
 
-    return {
-      componentFileName,
-      moduleFolderPath,
-      name: componentName,
-      path,
-      entryPointName: entryPoint.name,
-    };
+    for (const candidatePath of candidatePaths) {
+      if (!tree.exists(candidatePath)) {
+        continue;
+      }
+
+      const content = tree.read(candidatePath, 'utf-8');
+      const classAndComponentRegex = new RegExp(
+        `@Component[\\s\\S\n]*?\\bclass ${symbolName}\\b`,
+        'g'
+      );
+
+      if (content.match(classAndComponentRegex)) {
+        const path = dirname(symbolFilePathRelativeToModule);
+        const componentFileName = basename(symbolFilePathRelativeToModule);
+
+        return {
+          componentFileName,
+          moduleFolderPath,
+          name: symbolName,
+          path,
+          entryPointName: entryPoint.name,
+        };
+      }
+    }
+
+    return undefined;
   } catch (ex) {
-    logger.warn(
-      `Could not generate a story for ${componentName}. Error: ${ex}`
-    );
+    logger.warn(`Could not generate a story for ${symbolName}. Error: ${ex}`);
     return undefined;
   }
 }
 
-function getComponentInfoFromDir(
+function tryGetComponentInfoFromDir(
   tree: Tree,
   entryPoint: EntryPoint,
   dir: string,
-  componentName: string,
+  symbolName: string,
   moduleFolderPath: string
-): ComponentInfo {
+): ComponentInfo | undefined {
   let path = null;
   let componentFileName = null;
-  const componentImportPathChildren = getAllFilesRecursivelyFromDir(tree, dir);
+
+  const componentImportPathChildren: string[] = [];
+  visitNotIgnoredFiles(tree, dir, (filePath) => {
+    componentImportPathChildren.push(normalizePath(filePath));
+  });
+
   for (const candidateFile of componentImportPathChildren) {
     if (candidateFile.endsWith('.ts')) {
       const content = tree.read(candidateFile, 'utf-8');
       const classAndComponentRegex = new RegExp(
-        `@Component[\\s\\S\n]*?\\bclass ${componentName}\\b`,
+        `@Component[\\s\\S\n]*?\\bclass ${symbolName}\\b`,
         'g'
       );
       if (content.match(classAndComponentRegex)) {
@@ -264,15 +295,16 @@ function getComponentInfoFromDir(
   }
 
   if (path === null) {
-    throw new Error(
-      `Path to component ${componentName} couldn't be found. Please open an issue on https://github.com/nrwl/nx/issues.`
+    console.warn(
+      `Couldn't resolve "${symbolName}" imported from ${dir} relative to ${moduleFolderPath}.`
     );
+    return undefined;
   }
 
   return {
     componentFileName,
     moduleFolderPath,
-    name: componentName,
+    name: symbolName,
     path,
     entryPointName: entryPoint.name,
   };

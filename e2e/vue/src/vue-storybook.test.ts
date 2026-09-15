@@ -4,7 +4,7 @@ import {
   newProject,
   runCLI,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('Storybook generators and executors for Vue projects', () => {
   const vueStorybookApp = uniq('vue-app');
@@ -15,12 +15,9 @@ describe('Storybook generators and executors for Vue projects', () => {
     originalEnv = process.env.NX_ADD_PLUGINS;
     process.env.NX_ADD_PLUGINS = 'true';
     proj = newProject({
-      packages: ['@nx/vue'],
-      unsetProjectNameAndRootFormat: false,
+      packages: ['@nx/vue', '@nx/vite', '@nx/storybook'],
     });
-    runCLI(
-      `generate @nx/vue:app ${vueStorybookApp} --project-name-and-root-format=as-provided --no-interactive`
-    );
+    runCLI(`generate @nx/vue:app ${vueStorybookApp} --no-interactive`);
     runCLI(
       `generate @nx/vue:storybook-configuration ${vueStorybookApp} --generateStories --no-interactive`
     );

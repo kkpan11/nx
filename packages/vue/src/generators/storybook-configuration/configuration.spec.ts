@@ -1,6 +1,5 @@
 import { logger, Tree } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { Linter } from '@nx/eslint';
 import applicationGenerator from '../application/application';
 import componentGenerator from '../component/component';
 import libraryGenerator from '../library/library';
@@ -55,13 +54,6 @@ describe('vue:storybook-configuration', () => {
     const packageJson = JSON.parse(appTree.read('package.json', 'utf-8'));
     expect(packageJson.devDependencies['@storybook/vue3-vite']).toBeDefined();
     expect(packageJson.devDependencies['@storybook/vue3']).toBeDefined();
-    expect(
-      packageJson.devDependencies['@storybook/addon-interactions']
-    ).toBeDefined();
-    expect(packageJson.devDependencies['@storybook/test-runner']).toBeDefined();
-    expect(
-      packageJson.devDependencies['@storybook/testing-library']
-    ).toBeDefined();
   });
 
   it('should generate stories for components', async () => {
@@ -141,13 +133,12 @@ export async function createTestUILib(libName: string): Promise<Tree> {
   let appTree = createTreeWithEmptyWorkspace();
 
   await libraryGenerator(appTree, {
-    linter: Linter.EsLint,
+    linter: 'eslint',
     component: true,
     skipFormat: true,
     skipTsConfig: false,
     unitTestRunner: 'none',
-    name: libName,
-    projectNameAndRootFormat: 'as-provided',
+    directory: libName,
   });
   return appTree;
 }
@@ -160,19 +151,16 @@ export async function createTestAppLib(
 
   await applicationGenerator(appTree, {
     e2eTestRunner: 'none',
-    linter: Linter.EsLint,
+    linter: 'eslint',
     skipFormat: false,
     style: 'css',
     unitTestRunner: 'none',
-    name: libName,
+    directory: libName,
     js: plainJS,
-    projectNameAndRootFormat: 'as-provided',
   });
 
   await componentGenerator(appTree, {
-    name: 'my-component',
-    project: libName,
-    directory: 'app',
+    path: `${libName}/src/app/my-component/my-component`,
   });
 
   return appTree;

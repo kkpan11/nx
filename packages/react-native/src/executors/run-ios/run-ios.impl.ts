@@ -1,10 +1,12 @@
 import { ExecutorContext, GeneratorCallback, workspaceRoot } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 import { platform } from 'os';
 
 import { runCliStart } from '../start/start.impl';
 import { getCliOptions } from '../../utils/get-cli-options';
+import { warnReactNativeExecutorDeprecation } from '../../utils/deprecation';
 
 import { ReactNativeRunIosOptions } from './schema';
 export interface ReactNativeRunIosOutput {
@@ -15,6 +17,8 @@ export default async function* runIosExecutor(
   options: ReactNativeRunIosOptions,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeRunIosOutput> {
+  warnReactNativeExecutorDeprecation('run-ios');
+
   if (platform() !== 'darwin') {
     throw new Error(`The run-ios build requires Mac to run`);
   }
@@ -73,7 +77,8 @@ function runCliRunIOS(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(childProcess);
       } else {

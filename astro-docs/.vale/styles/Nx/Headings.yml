@@ -1,0 +1,162 @@
+extends: capitalization
+message: "Use sentence case for headings. '%s' should be '%s'."
+level: error
+scope: heading
+match: $sentence
+indicators:
+  - ':'
+exceptions:
+  - Nx
+  - Nx Cloud
+  - Nx Console
+  - Nx Agents
+  - Enterprise
+  - Nx Replay
+  - AI
+  - CI
+  - CD
+  - API
+  - APIs
+  - URL
+  - URLs
+  - CLI
+  - PR
+  - PRs
+  - IDE
+  - TypeScript
+  - JavaScript
+  - Angular
+  - React
+  - Vue
+  - Nuxt
+  - Vite
+  - Webpack
+  - Rspack
+  - Rollup
+  - ESLint
+  - Prettier
+  - GitHub
+  - GitHub Actions
+  - GitLab
+  - BitBucket
+  - BitBucket Cloud
+  - Azure DevOps
+  - Azure AI Foundry
+  - Azure
+  - AWS Bedrock
+  - Google Vertex AI
+  - Anthropic
+  - Claude Code
+  - Claude
+  - Docker
+  - Dockerfile
+  - Kubernetes
+  - Gradle
+  - Maven
+  - Rust
+  - Cargo
+  - Clippy
+  - Node.js
+  - Deno
+  - Bun
+  - pnpm
+  - npm
+  - Yarn
+  - Next.js
+  - Remix
+  - Astro
+  - Storybook
+  - Jest
+  - Vitest
+  - Cypress
+  - Playwright
+  - Express
+  - Fastify
+  - Nest.js
+  - NestJS
+  - Expo
+  - React Native
+  - Module Federation
+  - TanStack
+  - TanStack Router
+  - IntelliJ
+  - VS Code
+  - VSCode
+  - WebStorm
+  - Turborepo
+  - Lerna
+  - Bazel
+  - Rush Stack
+  - Rush
+  - Depot
+  - Blacksmith
+  - Buildkite
+  - Develocity
+  - JSON
+  - YAML
+  - TOML
+  - CSS
+  - HTML
+  - SSR
+  - SSG
+  - MFE
+  - DTE
+  - SWC
+  - Rsbuild
+  - Rolldown
+  # Abbreviations and acronyms
+  - AI
+  - UI
+  - DX
+  - ID
+  - FAQ
+  - SAML
+  - DPE
+  - WSL
+  - EJS
+  - AST
+  - TTG
+  - PATs
+  - IDEs
+  - MCP
+  - HTTP
+  - HTTPS
+  - INI
+  - VCS
+  - LTS
+  - DTS
+  - SVG
+  - SVGs
+  - SVGR
+  - EAS
+  - iOS
+  - AWS
+  - S3
+  - E2E
+  - TL;DR
+  - NuGet
+  - MongoDB
+  - OpenShift
+  - Vercel
+  - Netlify
+  # Proper nouns
+  - RxJS
+  - JetBrains
+  - Neovim
+  - PnP
+  - Self-Healing
+  - AMD64
+  - ARM64
+  - macOS
+  - Windows
+  - Linux
+  - Ubuntu
+  - OS
+  - Homebrew
+  - Chocolatey
+  - apt
+  # Filenames and env vars
+  - SELF_HEALING.md
+  - CLAUDE.md
+  - NODE_AUTH_TOKEN
+  - NX_REJECT_UNKNOWN_LOCAL_CACHE

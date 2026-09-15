@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import type { Tree } from '@nx/devkit';
 import { readJson } from '@nx/devkit';
@@ -19,7 +19,7 @@ describe('NgRxRootStoreGenerator', () => {
           name: '',
           skipFormat: true,
         })
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it('should error when minimal false, but name is undefined or falsy', async () => {
@@ -35,7 +35,7 @@ describe('NgRxRootStoreGenerator', () => {
           name: undefined,
           skipFormat: true,
         })
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it('should add an empty root module when --minimal=true', async () => {
@@ -52,7 +52,7 @@ describe('NgRxRootStoreGenerator', () => {
 
       // ASSERT
       expect(
-        tree.read('my-app/src/app/app.module.ts', 'utf-8')
+        tree.read('my-app/src/app/app-module.ts', 'utf-8')
       ).toMatchSnapshot();
       expect(tree.exists('/my-app/src/app/+state/users.actions.ts')).toBe(
         false
@@ -88,7 +88,7 @@ describe('NgRxRootStoreGenerator', () => {
 
       // ASSERT
       expect(
-        tree.read('my-app/src/app/app.module.ts', 'utf-8')
+        tree.read('my-app/src/app/app-module.ts', 'utf-8')
       ).toMatchSnapshot();
       expect(
         tree.read('/my-app/src/app/+state/users.actions.ts', 'utf-8')
@@ -125,7 +125,7 @@ describe('NgRxRootStoreGenerator', () => {
 
       // ASSERT
       expect(
-        tree.read('my-app/src/app/app.module.ts', 'utf-8')
+        tree.read('my-app/src/app/app-module.ts', 'utf-8')
       ).toMatchSnapshot();
       expect(
         tree.read('/my-app/src/app/+state/users.facade.ts', 'utf-8')
@@ -147,7 +147,7 @@ describe('NgRxRootStoreGenerator', () => {
 
       // ASSERT
       expect(
-        tree.read('my-app/src/app/app.module.ts', 'utf-8')
+        tree.read('my-app/src/app/app-module.ts', 'utf-8')
       ).toMatchSnapshot();
     });
 
@@ -242,7 +242,7 @@ describe('NgRxRootStoreGenerator', () => {
           name: '',
           skipFormat: true,
         })
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it('should error when minimal false, but name is undefined or falsy', async () => {
@@ -258,7 +258,7 @@ describe('NgRxRootStoreGenerator', () => {
           name: undefined,
           skipFormat: true,
         })
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it('should add an empty root module when --minimal=true', async () => {
@@ -459,7 +459,7 @@ describe('NgRxRootStoreGenerator', () => {
 
 async function createNgModuleApp(tree: Tree, name = 'my-app') {
   await generateTestApplication(tree, {
-    name,
+    directory: name,
     standalone: false,
     routing: true,
     skipFormat: true,
@@ -468,7 +468,7 @@ async function createNgModuleApp(tree: Tree, name = 'my-app') {
 
 async function createStandaloneApp(tree: Tree, name = 'my-app') {
   await generateTestApplication(tree, {
-    name,
+    directory: name,
     standalone: true,
     routing: true,
     skipFormat: true,

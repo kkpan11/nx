@@ -1,505 +1,428 @@
 {
   "generators": {
-    "remove-deprecated-expo-targets": {
-      "version": "16.0.0-beta.0",
+    "update-21-4-0-remove-deprecated-deps": {
+      "requires": {
+        "expo": ">= 53.0.0"
+      },
+      "version": "21.4.0-beta.0",
       "cli": "nx",
-      "description": "Remove deprecated expo targets",
-      "factory": "./src/migrations/update-16-0-0/remove-deprecated-targets"
+      "description": "Remove deprecated dependencies from package.json",
+      "factory": "./dist/src/migrations/update-21-4-0/remove-deprecated-deps"
     },
-    "update-16-0-0-add-nx-packages": {
+    "update-21-4-0-update-splash-screen-config": {
+      "requires": {
+        "expo": ">= 53.0.0"
+      },
+      "version": "21.4.0-beta.0",
       "cli": "nx",
-      "version": "16.0.0-beta.1",
-      "description": "Replace @nrwl/expo with @nx/expo",
-      "implementation": "./src/migrations/update-16-0-0-add-nx-packages/update-16-0-0-add-nx-packages"
+      "description": "Update Expo splash screen configuration to use the new format",
+      "factory": "./dist/src/migrations/update-21-4-0/update-splash-screen-config"
     },
-    "update-eas-scripts-16-1-4": {
+    "update-21-4-0-add-jest-resolver": {
+      "requires": {
+        "expo": ">= 53.0.0 < 54.0.0"
+      },
+      "version": "21.4.0-beta.0",
       "cli": "nx",
-      "version": "16.1.4-beta.0",
-      "description": "Update package.json eas build lifecycle scripts",
-      "implementation": "./src/migrations/update-16-1-4/update-eas-scripts"
+      "description": "Add custom Jest resolver to handle Expo winter runtime issues",
+      "factory": "./dist/src/migrations/update-21-4-0/add-jest-resolver"
     },
-    "update-16-6-0-add-dependsOn": {
+    "update-22-2-0-create-ai-instructions-for-expo-54": {
+      "version": "22.2.0-beta.3",
       "cli": "nx",
-      "version": "16.6.0-beta.0",
-      "description": "Add dependsOn like ensure-symlink or sync-deps to targets",
-      "implementation": "./src/migrations/update-16-6-0/add-depends-on"
+      "description": "Create AI migration instructions for Expo SDK 54 upgrade",
+      "prompt": "./dist/src/migrations/update-22-2-0/ai-instructions-for-expo-54.md"
     },
-    "update-16-6-0-update-metro-config": {
+    "update-22-2-0-add-expo-system-ui": {
+      "requires": {
+        "expo": ">= 54.0.0"
+      },
+      "version": "22.2.0-beta.3",
       "cli": "nx",
-      "version": "16.6.0-beta.0",
-      "description": "Update metro.config.js to use the new metro config format",
-      "implementation": "./src/migrations/update-16-6-0/update-metro-config"
+      "description": "Add expo-system-ui dependency for Expo SDK 54",
+      "factory": "./dist/src/migrations/update-22-2-0/add-expo-system-ui"
     },
-    "update-16-9-0-remove-types-react-native": {
+    "update-22-2-0-update-jest-for-expo-54": {
+      "requires": {
+        "expo": ">= 54.0.0"
+      },
+      "version": "22.2.0-beta.3",
       "cli": "nx",
-      "version": "16.9.0-beta.1",
-      "description": "Remove @types/react-native from package.json",
-      "implementation": "./src/migrations/update-16-9-0/remove-types-react-native"
+      "description": "Update Jest configuration for Expo SDK 54",
+      "factory": "./dist/src/migrations/update-22-2-0/update-jest-for-expo-54"
     },
-    "update-16-9-0-update-eas-json-cli-version": {
-      "cli": "nx",
-      "version": "16.9.0-beta.1",
-      "description": "Update eas.json cli version",
-      "implementation": "./src/migrations/update-16-9-0/update-eas-cli-version"
+    "update-23-0-0-migrate-create-nodes-v2-import": {
+      "version": "23.0.0-beta.24",
+      "description": "Rename imports of `createNodesV2` from `@nx/expo/plugin` to the canonical `createNodes` export.",
+      "implementation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes",
+      "documentation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes.md"
     },
-    "update-18-0-0-remove-block-list": {
+    "update-23-1-0-update-metro-config-for-expo-56": {
+      "version": "23.1.0-beta.1",
       "cli": "nx",
-      "version": "18.0.0-beta.0",
-      "description": "Remove blockList in metro.config.js",
-      "implementation": "./src/migrations/update-18-0-0/remove-block-list"
+      "requires": {
+        "expo": ">= 56.0.0"
+      },
+      "description": "Update generated metro.config.js to use @expo/metro for Expo SDK 56",
+      "factory": "./dist/src/migrations/update-23-1-0/update-metro-config-for-expo-56",
+      "prompt": "./dist/src/migrations/update-23-1-0/ai-instructions-for-expo-56.md"
     },
-    "update-18-0-0-remove-symlink-target": {
+    "update-23-1-0-replace-standalone-metro-for-expo-56": {
+      "version": "23.1.0-beta.1",
       "cli": "nx",
-      "version": "18.0.0-beta.0",
-      "description": "Remove symlink target in project.json",
-      "implementation": "./src/migrations/update-18-0-0/remove-symlink-target"
+      "requires": {
+        "expo": ">= 56.0.0"
+      },
+      "description": "Replace standalone metro-config/metro-resolver with @expo/metro for Expo SDK 56",
+      "factory": "./dist/src/migrations/update-23-1-0/replace-standalone-metro-for-expo-56"
     },
-    "update-18-0-0-remove-eas-cli": {
+    "update-23-1-0-update-jest-winter-runtime-for-expo-56": {
+      "version": "23.1.0-beta.1",
       "cli": "nx",
-      "version": "18.0.0-beta.0",
-      "description": "Remove eas-cli from package.json",
-      "implementation": "./src/migrations/update-18-0-0/remove-eas-cli"
-    },
-    "update-18-0-0-remove-offset-export-outputDir": {
-      "cli": "nx",
-      "version": "18.0.0-beta.0",
-      "description": "Remove the offset from the outputDir of the export target",
-      "implementation": "./src/migrations/update-18-0-0/change-outputDir-export-target"
-    },
-    "update-19-0-0-change-webpack-to-metro": {
-      "version": "19.0.0-beta.9",
-      "cli": "nx",
-      "description": "Change webpack to metro in expo projects",
-      "factory": "./src/migrations/update-19-0-0/change-webpack-to-metro"
-    },
-    "update-19-2-0-remove-webpack-config": {
-      "version": "19.2.0-beta.2",
-      "cli": "nx",
-      "description": "Remove deprecated webpack.config.js",
-      "factory": "./src/migrations/update-19-2-0/remove-deprecated-webpack-config"
+      "requires": {
+        "expo": ">= 56.0.0"
+      },
+      "description": "Update Jest test-setup for the Expo SDK 56 winter runtime",
+      "factory": "./dist/src/migrations/update-23-1-0/update-jest-winter-runtime-for-expo-56"
     }
   },
   "packageJsonUpdates": {
-    "16.0.0": {
-      "version": "16.0.0-beta.0",
+    "21.4.0": {
+      "version": "21.4.0-beta.0",
+      "requires": {
+        "expo": ">=52.0.0 <53.0.0"
+      },
       "packages": {
         "expo": {
-          "version": "48.0.11",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.71.6",
-          "alwaysAddToPackageJson": false
-        },
-        "@types/react-native": {
-          "version": "0.71.6",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.10.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.7.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/react-native": {
-          "version": "12.0.1",
-          "alwaysAddToPackageJson": false
-        },
-        "jest-expo": {
-          "version": "~48.0.2",
-          "alwaysAddToPackageJson": false,
-          "addToPackageJson": "devDependencies"
-        }
-      }
-    },
-    "16.0.2": {
-      "version": "16.0.2-beta.0",
-      "packages": {
-        "expo": {
-          "version": "48.0.15",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.71.7",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.10.2",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.7.1",
+          "version": "~53.0.10",
           "alwaysAddToPackageJson": false
         },
         "expo-splash-screen": {
-          "version": "~0.18.2",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.1.5": {
-      "version": "16.1.5-beta.0",
-      "packages": {
-        "expo": {
-          "version": "^48.0.16",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.12.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/react-native": {
-          "version": "12.1.2",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.2.2": {
-      "version": "16.2.2-beta.0",
-      "packages": {
-        "expo": {
-          "version": "^48.0.17",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.13.2",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.71.8",
-          "alwaysAddToPackageJson": false
-        },
-        "@types/react-native": {
-          "version": "0.71.7",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.4.0": {
-      "version": "16.4.0-beta.5",
-      "packages": {
-        "expo": {
-          "version": "^48.0.19",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.13.3",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.7.3",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.6.0": {
-      "version": "16.6.0-beta.0",
-      "packages": {
-        "expo": {
-          "version": "^49.0.3",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-config": {
-          "version": "~0.10.6",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-splash-screen": {
-          "version": "~0.20.4",
+          "version": "~0.30.9",
           "alwaysAddToPackageJson": false
         },
         "expo-status-bar": {
-          "version": "~1.6.0",
+          "version": "~2.2.3",
           "alwaysAddToPackageJson": false
         },
         "@expo/cli": {
-          "version": "~0.10.10",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~3.15.0",
+          "version": "~0.24.14",
           "alwaysAddToPackageJson": false
         },
         "babel-preset-expo": {
-          "version": "~9.5.0",
+          "version": "~13.2.0",
           "alwaysAddToPackageJson": false
         },
-        "jest-expo": {
-          "version": "~49.0.0",
+        "react": {
+          "version": "19.0.0",
           "alwaysAddToPackageJson": false
         },
-        "metro-resolver": {
-          "version": "0.76.7",
-          "alwaysAddToPackageJson": false
-        },
-        "metro": {
-          "version": "0.76.7",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.72.3",
-          "alwaysAddToPackageJson": false
-        },
-        "@types/react-native": {
-          "version": "0.72.2",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-web": {
-          "version": "~0.19.6",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-svg": {
-          "version": "13.9.0",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.9.0": {
-      "version": "16.9.0-beta.1",
-      "packages": {
-        "expo": {
-          "version": "49.0.10",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-config": {
-          "version": "~0.10.7",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-splash-screen": {
-          "version": "~0.20.5",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.10.12",
-          "alwaysAddToPackageJson": false
-        },
-        "eas-cli": {
-          "version": "~5.2.0",
-          "alwaysAddToPackageJson": false
-        },
-        "babel-preset-expo": {
-          "version": "~9.5.2",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.72.4",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-web": {
-          "version": "~0.19.8",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/react-native": {
-          "version": "~12.3.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/jest-native": {
-          "version": "~5.4.3",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "17.1.0": {
-      "version": "17.1.0-beta.0",
-      "packages": {
-        "expo": {
-          "version": "49.0.16",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.10.13",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.72.6",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-web": {
-          "version": "~0.19.9",
-          "alwaysAddToPackageJson": false
-        },
-        "metro-resolver": {
-          "version": "0.76.8",
-          "alwaysAddToPackageJson": false
-        },
-        "metro": {
-          "version": "0.76.8",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "18.0.0": {
-      "version": "18.0.0-beta.0",
-      "packages": {
-        "expo": {
-          "version": "50.0.1",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-splash-screen": {
-          "version": "~0.26.1",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-status-bar": {
-          "version": "~1.11.1",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.16.5",
-          "alwaysAddToPackageJson": false
-        },
-        "babel-preset-expo": {
-          "version": "~10.0.0",
+        "react-dom": {
+          "version": "19.0.0",
           "alwaysAddToPackageJson": false
         },
         "@types/react": {
-          "version": "~18.2.45",
+          "version": "~19.0.10",
           "alwaysAddToPackageJson": false
         },
         "react-native": {
-          "version": "~0.73.2",
+          "version": "~0.79.3",
           "alwaysAddToPackageJson": false
         },
         "react-native-web": {
-          "version": "~0.19.9",
+          "version": "~0.20.0",
           "alwaysAddToPackageJson": false
         },
         "@expo/metro-config": {
-          "version": "~0.17.3",
+          "version": "~0.20.14",
           "alwaysAddToPackageJson": false
         },
         "@expo/metro-runtime": {
-          "version": "~3.1.1",
-          "addToPackageJson": "devDependencies"
-        },
-        "react-native-svg-transformer": {
-          "version": "1.2.0",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-svg": {
-          "version": "14.1.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/react-native": {
-          "version": "~12.4.2",
-          "alwaysAddToPackageJson": false
-        },
-        "jest-expo": {
-          "version": "~50.0.1",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "19.0.0": {
-      "version": "19.0.0-beta.7",
-      "packages": {
-        "expo": {
-          "version": "~50.0.14",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-splash-screen": {
-          "version": "~0.26.4",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.17.8",
-          "alwaysAddToPackageJson": false
-        },
-        "babel-preset-expo": {
-          "version": "~10.0.1",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "~0.73.6",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-web": {
-          "version": "~0.19.10",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-config": {
-          "version": "~0.17.6",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-runtime": {
-          "version": "~3.1.3",
+          "version": "~5.0.4",
           "alwaysAddToPackageJson": false
         },
         "react-native-svg-transformer": {
-          "version": "1.3.0",
+          "version": "~1.5.1",
           "alwaysAddToPackageJson": false
         },
         "react-native-svg": {
-          "version": "15.1.0",
+          "version": "~15.11.2",
           "alwaysAddToPackageJson": false
         },
         "@testing-library/react-native": {
-          "version": "~12.4.5",
+          "version": "~13.2.0",
           "alwaysAddToPackageJson": false
         },
         "jest-expo": {
-          "version": "~50.0.4",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "19.2.0": {
-      "version": "19.2.0-beta.2",
-      "packages": {
-        "expo": {
-          "version": "~51.0.8",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-splash-screen": {
-          "version": "~0.27.4",
-          "alwaysAddToPackageJson": false
-        },
-        "expo-status-bar": {
-          "version": "~1.12.1",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/cli": {
-          "version": "~0.18.13",
-          "alwaysAddToPackageJson": false
-        },
-        "babel-preset-expo": {
-          "version": "~11.0.0",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native": {
-          "version": "0.74.1",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-web": {
-          "version": "~0.19.11",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-config": {
-          "version": "~0.18.1",
-          "alwaysAddToPackageJson": false
-        },
-        "@expo/metro-runtime": {
-          "version": "~3.2.1",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-svg-transformer": {
-          "version": "1.3.0",
-          "alwaysAddToPackageJson": false
-        },
-        "react-native-svg": {
-          "version": "15.2.0",
-          "alwaysAddToPackageJson": false
-        },
-        "@testing-library/react-native": {
-          "version": "~12.5.0",
-          "alwaysAddToPackageJson": false
-        },
-        "jest-expo": {
-          "version": "~51.0.2",
+          "version": "~53.0.7",
           "alwaysAddToPackageJson": false
         },
         "@babel/runtime": {
-          "version": "7.24.5",
+          "version": "~7.27.6",
+          "alwaysAddToPackageJson": false
+        }
+      }
+    },
+    "22.2.0": {
+      "version": "22.2.0-beta.3",
+      "requires": {
+        "expo": ">=53.0.0 <54.0.0"
+      },
+      "packages": {
+        "expo": {
+          "version": "~54.0.0",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-splash-screen": {
+          "version": "~31.0.11",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-status-bar": {
+          "version": "~3.0.8",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-system-ui": {
+          "version": "~6.0.8",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/cli": {
+          "version": "~54.0.16",
+          "alwaysAddToPackageJson": false
+        },
+        "babel-preset-expo": {
+          "version": "~54.0.7",
+          "alwaysAddToPackageJson": false
+        },
+        "react": {
+          "version": "^19.1.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-dom": {
+          "version": "^19.1.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@types/react": {
+          "version": "^19.1.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native": {
+          "version": "~0.81.5",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-web": {
+          "version": "~0.21.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-config": {
+          "version": "~54.0.9",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-runtime": {
+          "version": "~6.1.2",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg-transformer": {
+          "version": "~1.5.1",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg": {
+          "version": "15.12.1",
+          "alwaysAddToPackageJson": false
+        },
+        "@testing-library/react-native": {
+          "version": "~13.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "jest-expo": {
+          "version": "~54.0.13",
+          "alwaysAddToPackageJson": false
+        },
+        "@babel/runtime": {
+          "version": "~7.27.6",
+          "alwaysAddToPackageJson": false
+        },
+        "metro-config": {
+          "version": "~0.83.0",
+          "alwaysAddToPackageJson": false
+        },
+        "metro-resolver": {
+          "version": "~0.83.0",
+          "alwaysAddToPackageJson": false
+        }
+      }
+    },
+    "23.0.0": {
+      "version": "23.0.0-beta.25",
+      "requires": {
+        "expo": ">=54.0.0 <55.0.0"
+      },
+      "packages": {
+        "expo": {
+          "version": "~55.0.26",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-splash-screen": {
+          "version": "~55.0.21",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-status-bar": {
+          "version": "~55.0.6",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-system-ui": {
+          "version": "~55.0.18",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/cli": {
+          "version": "~55.0.11",
+          "alwaysAddToPackageJson": false
+        },
+        "babel-preset-expo": {
+          "version": "~55.0.7",
+          "alwaysAddToPackageJson": false
+        },
+        "react": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-dom": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@types/react": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native": {
+          "version": "~0.83.6",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-web": {
+          "version": "~0.21.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-config": {
+          "version": "~55.0.8",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-runtime": {
+          "version": "~55.0.11",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg-transformer": {
+          "version": "~1.5.1",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg": {
+          "version": "15.12.1",
+          "alwaysAddToPackageJson": false
+        },
+        "@testing-library/react-native": {
+          "version": "~13.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "jest-expo": {
+          "version": "~55.0.18",
+          "alwaysAddToPackageJson": false
+        },
+        "@babel/runtime": {
+          "version": "~7.27.6",
+          "alwaysAddToPackageJson": false
+        },
+        "metro-config": {
+          "version": "~0.83.0",
+          "alwaysAddToPackageJson": false
+        },
+        "metro-resolver": {
+          "version": "~0.83.0",
+          "alwaysAddToPackageJson": false
+        }
+      }
+    },
+    "23.1.0": {
+      "version": "23.1.0-beta.1",
+      "requires": {
+        "expo": ">=55.0.0 <56.0.0"
+      },
+      "packages": {
+        "expo": {
+          "version": "~56.0.0",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-splash-screen": {
+          "version": "~56.0.10",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-status-bar": {
+          "version": "~56.0.4",
+          "alwaysAddToPackageJson": false
+        },
+        "expo-system-ui": {
+          "version": "~56.0.5",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/cli": {
+          "version": "~56.1.14",
+          "alwaysAddToPackageJson": false
+        },
+        "babel-preset-expo": {
+          "version": "~56.0.14",
+          "alwaysAddToPackageJson": false
+        },
+        "react": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-dom": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@types/react": {
+          "version": "^19.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native": {
+          "version": "0.85.3",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-web": {
+          "version": "~0.21.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro": {
+          "version": "~56.0.0",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-config": {
+          "version": "~56.0.13",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/metro-runtime": {
+          "version": "~56.0.14",
+          "alwaysAddToPackageJson": false
+        },
+        "@expo/vector-icons": {
+          "version": "~15.1.0",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg-transformer": {
+          "version": "~1.5.1",
+          "alwaysAddToPackageJson": false
+        },
+        "react-native-svg": {
+          "version": "15.12.1",
+          "alwaysAddToPackageJson": false
+        },
+        "@testing-library/react-native": {
+          "version": "~13.2.0",
+          "alwaysAddToPackageJson": false
+        },
+        "jest-expo": {
+          "version": "~56.0.4",
+          "alwaysAddToPackageJson": false
+        },
+        "@babel/runtime": {
+          "version": "~7.27.6",
           "alwaysAddToPackageJson": false
         }
       }

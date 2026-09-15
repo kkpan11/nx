@@ -9,11 +9,13 @@ import {
   normalizeViteConfigFilePath,
 } from '../../utils/options-utils';
 import { ViteDevServerExecutorOptions } from './schema';
+import schema from './schema.json';
 import { ViteBuildExecutorOptions } from '../build/schema';
 import {
   createBuildableTsConfig,
   loadViteDynamicImport,
 } from '../../utils/executor-utils';
+import { warnViteDevServerExecutorDeprecation } from '../../utils/deprecation';
 import { relative } from 'path';
 import { getBuildExtraArgs } from '../build/build.impl';
 
@@ -21,9 +23,11 @@ export async function* viteDevServerExecutor(
   options: ViteDevServerExecutorOptions,
   context: ExecutorContext
 ): AsyncGenerator<{ success: boolean; baseUrl: string }> {
+  warnViteDevServerExecutorDeprecation();
+
   process.env.VITE_CJS_IGNORE_WARNING = 'true';
   // Allows ESM to be required in CJS modules. Vite will be published as ESM in the future.
-  const { mergeConfig, createServer, loadConfigFromFile } =
+  const { mergeConfig, createServer, resolveConfig } =
     await loadViteDynamicImport();
 
   const projectRoot =
@@ -56,12 +60,16 @@ export async function* viteDevServerExecutor(
     buildOptions,
     otherOptionsFromBuild
   );
-  const resolved = await loadConfigFromFile(
+  const defaultMode =
+    otherOptions?.mode ?? buildTargetOptions?.['mode'] ?? 'development';
+  const resolved = await resolveConfig(
     {
-      mode: otherOptions?.mode ?? buildTargetOptions?.['mode'] ?? 'development',
-      command: 'serve',
+      configFile: viteConfigPath,
+      mode: defaultMode,
     },
-    viteConfigPath
+    'serve',
+    defaultMode,
+    process.env.NODE_ENV ?? defaultMode
   );
 
   // vite InlineConfig
@@ -69,7 +77,7 @@ export async function* viteDevServerExecutor(
     {
       // This should not be needed as it's going to be set in vite.config.ts
       // but leaving it here in case someone did not migrate correctly
-      root: resolved.config.root ?? root,
+      root: resolved.root ?? root,
       configFile: viteConfigPath,
     },
     {
@@ -107,6 +115,7 @@ export async function* viteDevServerExecutor(
     process.once('exit', () => resolve());
   });
 }
+
 // vite ViteDevServer
 async function runViteDevServer(server: Record<string, any>): Promise<void> {
   await server.listen();
@@ -135,7 +144,6 @@ async function getServerExtraArgs(
   otherOptions: Record<string, any>;
 }> {
   // support passing extra args to vite cli
-  const schema = await import('./schema.json');
   const extraArgs = {};
   for (const key of Object.keys(options)) {
     if (!schema.properties[key]) {
@@ -173,10 +181,19 @@ async function getServerExtraArgs(
   }
 
   if (configuration) {
+    const normalizeWatchOption = <T>(
+      watch: T | false | undefined
+    ): T | undefined => {
+      return watch === false ? undefined : watch;
+    };
+
     serverOptions = {
       ...serverOptions,
-      watch: buildOptionsFromBuildTarget?.watch ?? serverOptions?.watch,
+      watch:
+        normalizeWatchOption(buildOptionsFromBuildTarget?.watch) ??
+        normalizeWatchOption(serverOptions?.watch),
     };
+
     otherOptions = {
       ...otherOptions,
       ...(otherOptionsFromBuildTarget ?? {}),

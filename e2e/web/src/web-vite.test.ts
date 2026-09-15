@@ -10,15 +10,29 @@ import {
   runCLIAsync,
   runE2ETests,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('Web Components Applications with bundler set as vite', () => {
-  beforeEach(() => newProject());
+  beforeEach(() =>
+    newProject({
+      packages: [
+        '@nx/web',
+        '@nx/react',
+        '@nx/vite',
+        '@nx/vitest',
+        '@nx/eslint',
+        '@nx/cypress',
+        '@nx/playwright',
+      ],
+    })
+  );
   afterEach(() => cleanupProject());
 
   it('should be able to generate a web app', async () => {
     const appName = uniq('app');
-    runCLI(`generate @nx/web:app ${appName} --bundler=vite --no-interactive`);
+    runCLI(
+      `generate @nx/web:app apps/${appName} --bundler=vite --no-interactive --linter=eslint --unitTestRunner=vitest`
+    );
 
     const lintResults = runCLI(`lint ${appName}`);
     expect(lintResults).toContain('Successfully ran target lint');
@@ -28,13 +42,15 @@ describe('Web Components Applications with bundler set as vite', () => {
 
     const testResults = await runCLIAsync(`test ${appName}`);
 
-    expect(testResults.combinedOutput).toContain(`PASS ${appName}`);
+    expect(testResults.combinedOutput).toContain(
+      `Successfully ran target test for project ${appName}`
+    );
 
     const lintE2eResults = runCLI(`lint ${appName}-e2e`);
 
     expect(lintE2eResults).toContain('Successfully ran target lint');
 
-    if (isNotWindows() && runE2ETests()) {
+    if (isNotWindows() && (await runE2ETests())) {
       const e2eResults = runCLI(`e2e ${appName}-e2e`);
       expect(e2eResults).toContain('Successfully ran target e2e for project');
       await killPorts();
@@ -45,9 +61,11 @@ describe('Web Components Applications with bundler set as vite', () => {
     const appName = uniq('app');
     const libName = uniq('lib');
 
-    runCLI(`generate @nx/web:app ${appName} --bundler=vite --no-interactive`);
     runCLI(
-      `generate @nx/react:lib ${libName} --bundler=vite --no-interactive --unitTestRunner=vitest`
+      `generate @nx/web:app apps/${appName} --bundler=vite --no-interactive --linter=eslint --unitTestRunner=vitest`
+    );
+    runCLI(
+      `generate @nx/react:lib libs/${libName} --bundler=vite --no-interactive --unitTestRunner=vitest --linter=eslint`
     );
 
     createFile(`dist/apps/${appName}/_should_remove.txt`);

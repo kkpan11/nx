@@ -15,11 +15,11 @@ import type {
 } from 'typescript';
 import { getDecoratorMetadata } from '../../../utils/nx-devkit/ast-utils';
 import type { EntryPoint } from './entry-point';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 
 let tsModule: typeof import('typescript');
 
-export function getModuleDeclaredComponents(
+export function getModuleDeclarations(
   file: SourceFile,
   moduleFilePath: string,
   projectName: string
@@ -47,7 +47,9 @@ export function getModuleDeclaredComponents(
     return [];
   }
 
-  return getDeclaredComponentsInDeclarations(declarationsArray);
+  return getDeclaredComponentNodes(declarationsArray).map((node) =>
+    node.getText()
+  );
 }
 
 export function getModuleFilePaths(
@@ -81,24 +83,15 @@ export function getModuleFilePaths(
 
 function hasNgModule(tree: Tree, filePath: string): boolean {
   ensureTypescript();
-  const { tsquery } = require('@phenomnomnominal/tsquery');
+  const { ast, query } = require('@phenomnomnominal/tsquery');
   const fileContent = tree.read(filePath, 'utf-8');
-  const ast = tsquery.ast(fileContent);
-  const ngModule = tsquery(
-    ast,
-    'ClassDeclaration > Decorator > CallExpression > Identifier[name=NgModule]',
-    { visitAllChildren: true }
+  const sourceFile = ast(fileContent);
+  const ngModule = query(
+    sourceFile,
+    'ClassDeclaration > Decorator > CallExpression > Identifier[name=NgModule]'
   );
 
   return ngModule.length > 0;
-}
-
-function getDeclaredComponentsInDeclarations(
-  declarationsArray: Node
-): string[] {
-  return getDeclaredComponentNodes(declarationsArray)
-    .map((node) => node.getText())
-    .filter((name) => name.endsWith('Component'));
 }
 
 function getDeclaredComponentNodes(declarationsArray: Node): Node[] {

@@ -1,0 +1,1019 @@
+import {
+  calculateHashesForCreateNodes,
+  getNamedInputs,
+  PluginCache,
+  hashObject,
+  workspaceDataDirectory,
+} from '@nx/devkit/internal';
+import {
+  AggregateCreateNodesError,
+  type CreateNodesContext,
+  createNodesFromFiles,
+  type CreateNodesResult,
+  CreateNodesResultArray,
+  type CreateNodes,
+  detectPackageManager,
+  getPackageManagerCommand,
+  type ProjectConfiguration,
+  readJsonFile,
+  type Target,
+  type TargetConfiguration,
+} from '@nx/devkit';
+import { getLockFileName } from '@nx/js';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative } from 'node:path';
+import * as posix from 'node:path/posix';
+import { targetFromTargetString } from '../utils/targets';
+import { findVitestBaseConfig, loadVite } from './utils/vitest';
+
+export interface AngularPluginOptions {
+  targetNamePrefix?: string;
+}
+
+type AngularProjects = Record<
+  string,
+  Pick<ProjectConfiguration, 'projectType' | 'sourceRoot' | 'targets'>
+>;
+
+type AngularTargetConfiguration = {
+  builder: string;
+  options?: Record<string, any>;
+  configurations?: Record<string, any>;
+  defaultConfiguration?: string;
+};
+export type AngularProjectConfiguration = {
+  projectType: 'application' | 'library';
+  root: string;
+  sourceRoot?: string;
+  architect?: Record<string, AngularTargetConfiguration>;
+  targets?: Record<string, AngularTargetConfiguration>;
+};
+type AngularJson = { projects?: Record<string, AngularProjectConfiguration> };
+
+const knownExecutors = {
+  appShell: new Set(['@angular-devkit/build-angular:app-shell']),
+  build: new Set([
+    '@angular-devkit/build-angular:application',
+    '@angular/build:application',
+    '@angular-devkit/build-angular:browser-esbuild',
+    '@angular-devkit/build-angular:browser',
+    '@angular-devkit/build-angular:ng-packagr',
+    '@angular/build:ng-packagr',
+  ]),
+  devServer: new Set([
+    '@angular-devkit/build-angular:dev-server',
+    '@angular/build:dev-server',
+  ]),
+  extractI18n: new Set([
+    '@angular-devkit/build-angular:extract-i18n',
+    '@angular/build:extract-i18n',
+  ]),
+  prerender: new Set([
+    '@angular-devkit/build-angular:prerender',
+    '@nguniversal/builders:prerender',
+  ]),
+  server: new Set(['@angular-devkit/build-angular:server']),
+  serveSsr: new Set([
+    '@angular-devkit/build-angular:ssr-dev-server',
+    '@nguniversal/builders:ssr-dev-server',
+  ]),
+  test: new Set([
+    '@angular-devkit/build-angular:karma',
+    '@angular/build:karma',
+    '@angular/build:unit-test',
+  ]),
+};
+
+export const createNodes: CreateNodes<AngularPluginOptions> = [
+  '**/angular.json',
+  async (configFiles, options, context) => {
+    const optionsHash = hashObject(options);
+    const cachePath = join(
+      workspaceDataDirectory,
+      `angular-${optionsHash}.hash`
+    );
+    const projectsCache = new PluginCache<AngularProjects>(cachePath);
+    const packageManager = detectPackageManager(context.workspaceRoot);
+    const pmc = getPackageManagerCommand(packageManager);
+    const lockFileName = getLockFileName(packageManager);
+
+    try {
+      const { entries, preErrors } = await filterAngularConfigs(
+        configFiles,
+        context
+      );
+
+      const projectHashes = await calculateHashesForCreateNodes(
+        entries.map((e) => e.angularWorkspaceRoot),
+        options ?? {},
+        context,
+        entries.map(() => [lockFileName])
+      );
+
+      let results: CreateNodesResultArray = [];
+      let nodeErrors: Array<[string | null, Error]> = [];
+      try {
+        results = await createNodesFromFiles(
+          (configFile, opts, ctx, idx) =>
+            createNodesInternal(
+              configFile,
+              opts,
+              ctx,
+              projectsCache,
+              pmc,
+              projectHashes[idx]
+            ),
+          entries.map((e) => e.configFile),
+          options,
+          context
+        );
+      } catch (e) {
+        if (e instanceof AggregateCreateNodesError) {
+          results = e.partialResults ?? [];
+          nodeErrors = e.errors;
+        } else {
+          throw e;
+        }
+      }
+
+      const allErrors = [...preErrors, ...nodeErrors];
+      if (allErrors.length > 0) {
+        throw new AggregateCreateNodesError(allErrors, results);
+      }
+      return results;
+    } finally {
+      projectsCache.writeToDisk();
+    }
+  },
+];
+
+/**
+ * @deprecated Use {@link createNodes} instead. This will be removed in Nx 24.
+ */
+export const createNodesV2 = createNodes;
+
+async function createNodesInternal(
+  configFilePath: string,
+  options: {} | undefined,
+  context: CreateNodesContext,
+  projectsCache: PluginCache<AngularProjects>,
+  pmc: ReturnType<typeof getPackageManagerCommand>,
+  hash: string
+): Promise<CreateNodesResult> {
+  const angularWorkspaceRoot = dirname(configFilePath);
+
+  if (!projectsCache.has(hash)) {
+    projectsCache.set(
+      hash,
+      await buildAngularProjects(
+        configFilePath,
+        options,
+        angularWorkspaceRoot,
+        context,
+        pmc
+      )
+    );
+  }
+
+  return { projects: projectsCache.get(hash) };
+}
+
+async function buildAngularProjects(
+  configFilePath: string,
+  options: AngularPluginOptions,
+  angularWorkspaceRoot: string,
+  context: CreateNodesContext,
+  pmc: ReturnType<typeof getPackageManagerCommand>
+): Promise<AngularProjects> {
+  const projects: Record<string, AngularProjects[string] & { root: string }> =
+    {};
+
+  const absoluteConfigFilePath = join(context.workspaceRoot, configFilePath);
+  const angularJson = readJsonFile<AngularJson>(absoluteConfigFilePath);
+
+  const appShellTargets: Target[] = [];
+  const prerenderTargets: Target[] = [];
+  for (const [projectName, project] of Object.entries(
+    angularJson.projects ?? {}
+  )) {
+    const targets: Record<string, TargetConfiguration> = {};
+
+    const projectTargets = getAngularJsonProjectTargets(project);
+    if (!projectTargets) {
+      continue;
+    }
+
+    const namedInputs = getNamedInputs(project.root, context);
+
+    for (const [angularTargetName, angularTarget] of Object.entries(
+      projectTargets
+    )) {
+      const nxTargetName = options?.targetNamePrefix
+        ? `${options.targetNamePrefix}${angularTargetName}`
+        : angularTargetName;
+      const externalDependencies = ['@angular/cli'];
+
+      targets[nxTargetName] = {
+        command:
+          // For targets that are also Angular CLI commands, infer the simplified form.
+          // Otherwise, use `ng run` to support non-command targets so that they will run.
+          angularTargetName === 'build' ||
+          angularTargetName === 'deploy' ||
+          angularTargetName === 'extract-i18n' ||
+          angularTargetName === 'e2e' ||
+          angularTargetName === 'lint' ||
+          angularTargetName === 'serve' ||
+          angularTargetName === 'test'
+            ? `ng ${angularTargetName}`
+            : `ng run ${projectName}:${angularTargetName}`,
+        options: { cwd: angularWorkspaceRoot },
+        metadata: {
+          technologies: ['angular'],
+          description: `Run the "${angularTargetName}" target for "${projectName}".`,
+          help: {
+            command: `${pmc.exec} ng run ${projectName}:${angularTargetName} --help`,
+            example: {},
+          },
+        },
+      };
+
+      if (knownExecutors.appShell.has(angularTarget.builder)) {
+        appShellTargets.push({ target: nxTargetName, project: projectName });
+      } else if (knownExecutors.build.has(angularTarget.builder)) {
+        await updateBuildTarget(
+          projectName,
+          nxTargetName,
+          targets[nxTargetName],
+          angularTarget,
+          context,
+          angularWorkspaceRoot,
+          project.root,
+          namedInputs
+        );
+      } else if (knownExecutors.devServer.has(angularTarget.builder)) {
+        targets[nxTargetName].continuous = true;
+        targets[nxTargetName].metadata.help.example.options = { port: 4201 };
+      } else if (knownExecutors.extractI18n.has(angularTarget.builder)) {
+        targets[nxTargetName].metadata.help.example.options = {
+          format: 'json',
+        };
+      } else if (knownExecutors.test.has(angularTarget.builder)) {
+        await updateTestTarget(
+          projectName,
+          targets[nxTargetName],
+          angularTarget,
+          context,
+          angularWorkspaceRoot,
+          project.root,
+          namedInputs,
+          externalDependencies
+        );
+      } else if (knownExecutors.server.has(angularTarget.builder)) {
+        updateServerTarget(
+          targets[nxTargetName],
+          angularTarget,
+          context,
+          angularWorkspaceRoot,
+          project.root,
+          namedInputs
+        );
+      } else if (knownExecutors.serveSsr.has(angularTarget.builder)) {
+        targets[nxTargetName].continuous = true;
+        targets[nxTargetName].metadata.help.example.options = { port: 4201 };
+      } else if (knownExecutors.prerender.has(angularTarget.builder)) {
+        prerenderTargets.push({ target: nxTargetName, project: projectName });
+      }
+
+      if (targets[nxTargetName].inputs?.length) {
+        targets[nxTargetName].inputs.push({ externalDependencies });
+      }
+
+      if (angularTarget.configurations) {
+        for (const configurationName of Object.keys(
+          angularTarget.configurations
+        )) {
+          targets[nxTargetName].configurations = {
+            ...targets[nxTargetName].configurations,
+            [configurationName]: {
+              command: `ng run ${projectName}:${angularTargetName}:${configurationName}`,
+            },
+          };
+        }
+      }
+
+      if (angularTarget.defaultConfiguration) {
+        targets[nxTargetName].defaultConfiguration =
+          angularTarget.defaultConfiguration;
+      }
+    }
+
+    projects[projectName] = {
+      projectType: project.projectType,
+      root: posix.join(angularWorkspaceRoot, project.root),
+      sourceRoot: project.sourceRoot
+        ? posix.join(angularWorkspaceRoot, project.sourceRoot)
+        : undefined,
+      targets,
+    };
+  }
+
+  for (const { project, target } of appShellTargets) {
+    updateAppShellTarget(
+      project,
+      target,
+      projects,
+      angularJson,
+      angularWorkspaceRoot,
+      context
+    );
+  }
+
+  for (const { project, target } of prerenderTargets) {
+    updatePrerenderTarget(project, target, projects, angularJson);
+  }
+
+  return Object.entries(projects).reduce((acc, [projectName, project]) => {
+    acc[project.root] = {
+      projectType: project.projectType,
+      sourceRoot: project.sourceRoot,
+      targets: project.targets,
+    };
+    return acc;
+  }, {} as AngularProjects);
+}
+
+function updateAppShellTarget(
+  projectName: string,
+  targetName: string,
+  projects: AngularProjects,
+  angularJson: AngularJson,
+  angularWorkspaceRoot: string,
+  context: CreateNodesContext
+): void {
+  // it must exist since we collected it when processing it
+  const target = projects[projectName].targets[targetName];
+
+  target.metadata.help.example.options = { route: '/some/route' };
+
+  const { inputs, outputs } = getBrowserAndServerTargetInputsAndOutputs(
+    projectName,
+    targetName,
+    projects,
+    angularJson
+  );
+
+  const outputIndexPath = getAngularJsonProjectTargets(
+    angularJson.projects[projectName]
+  )[targetName].options?.outputIndexPath;
+  if (outputIndexPath) {
+    const fullOutputIndexPath = join(
+      context.workspaceRoot,
+      angularWorkspaceRoot,
+      outputIndexPath
+    );
+    outputs.push(
+      getOutput(
+        fullOutputIndexPath,
+        context.workspaceRoot,
+        angularWorkspaceRoot,
+        angularJson.projects[projectName].root
+      )
+    );
+  }
+
+  if (!outputs.length) {
+    // no outputs were identified for the build or server target, so we don't
+    // set any Nx cache options
+    return;
+  }
+
+  target.cache = true;
+  target.inputs = inputs;
+  target.outputs = outputs;
+}
+
+async function updateBuildTarget(
+  projectName: string,
+  targetName: string,
+  target: TargetConfiguration,
+  angularTarget: AngularTargetConfiguration,
+  context: CreateNodesContext,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  namedInputs: ReturnType<typeof getNamedInputs>
+): Promise<void> {
+  target.dependsOn = [`^${targetName}`];
+
+  if (
+    angularTarget.builder === '@angular-devkit/build-angular:ng-packagr' ||
+    angularTarget.builder === '@angular/build:ng-packagr'
+  ) {
+    const outputs = await getNgPackagrOutputs(
+      angularTarget,
+      angularWorkspaceRoot,
+      projectRoot,
+      context
+    );
+    if (outputs.length) {
+      target.outputs = outputs;
+    }
+  } else {
+    const fullOutputPath = join(
+      context.workspaceRoot,
+      angularWorkspaceRoot,
+      angularTarget.options?.outputPath ?? posix.join('dist', projectName)
+    );
+    target.outputs = [
+      getOutput(
+        fullOutputPath,
+        context.workspaceRoot,
+        angularWorkspaceRoot,
+        projectRoot
+      ),
+    ];
+  }
+
+  if (target.outputs?.length) {
+    // make it cacheable if we were able to identify outputs
+    target.cache = true;
+    target.inputs =
+      'production' in namedInputs
+        ? ['production', '^production']
+        : ['default', '^default'];
+  }
+
+  if (
+    angularTarget.builder === '@angular-devkit/build-angular:ng-packagr' ||
+    angularTarget.builder === '@angular/build:ng-packagr'
+  ) {
+    target.metadata.help.example.options = { watch: true };
+  } else {
+    target.metadata.help.example.options = { localize: true };
+  }
+}
+
+async function updateTestTarget(
+  projectName: string,
+  target: TargetConfiguration,
+  angularTarget: AngularTargetConfiguration,
+  context: CreateNodesContext,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  namedInputs: ReturnType<typeof getNamedInputs>,
+  externalDependencies: string[]
+): Promise<void> {
+  target.cache = true;
+  target.inputs =
+    'production' in namedInputs
+      ? ['default', '^production']
+      : ['default', '^default'];
+
+  const isKarmaRunner =
+    angularTarget.builder === '@angular-devkit/build-angular:karma' ||
+    angularTarget.builder === '@angular/build:karma' ||
+    angularTarget.options?.runner === 'karma';
+
+  if (isKarmaRunner) {
+    target.outputs = getKarmaTargetOutputs(
+      angularTarget,
+      angularWorkspaceRoot,
+      projectRoot,
+      context
+    );
+    externalDependencies.push('karma');
+  } else {
+    target.outputs = await getVitestTargetOutputs(
+      angularTarget,
+      angularWorkspaceRoot,
+      projectRoot,
+      context
+    );
+    externalDependencies.push('vitest');
+  }
+
+  if (angularTarget.builder === '@angular/build:unit-test') {
+    target.metadata.help.example.options = { coverage: true };
+  } else {
+    target.metadata.help.example.options = { codeCoverage: true };
+  }
+}
+
+function updateServerTarget(
+  target: TargetConfiguration,
+  angularTarget: AngularTargetConfiguration,
+  context: CreateNodesContext,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  namedInputs: ReturnType<typeof getNamedInputs>
+): void {
+  target.metadata.help.example.options = { localize: true };
+
+  if (!angularTarget.options?.outputPath) {
+    // only make it cacheable if we were able to identify outputs
+    return;
+  }
+
+  target.cache = true;
+  target.inputs =
+    'production' in namedInputs
+      ? ['production', '^production']
+      : ['default', '^default'];
+
+  const fullOutputPath = join(
+    context.workspaceRoot,
+    angularWorkspaceRoot,
+    angularTarget.options.outputPath
+  );
+  target.outputs = [
+    getOutput(
+      fullOutputPath,
+      context.workspaceRoot,
+      angularWorkspaceRoot,
+      projectRoot
+    ),
+  ];
+}
+
+function updatePrerenderTarget(
+  projectName: string,
+  targetName: string,
+  projects: AngularProjects,
+  angularJson: AngularJson
+): void {
+  // it must exist since we collected it when processing it
+  const target = projects[projectName].targets[targetName];
+
+  target.metadata.help.example.options =
+    getAngularJsonProjectTargets(angularJson.projects[projectName])[targetName]
+      .builder === '@angular-devkit/build-angular:prerender'
+      ? { discoverRoutes: false }
+      : { guessRoutes: false };
+
+  const { inputs, outputs } = getBrowserAndServerTargetInputsAndOutputs(
+    projectName,
+    targetName,
+    projects,
+    angularJson
+  );
+
+  if (!outputs.length) {
+    // no outputs were identified for the build or server target, so we don't
+    // set any Nx cache options
+    return;
+  }
+
+  target.cache = true;
+  target.inputs = inputs;
+  target.outputs = outputs;
+}
+
+async function getNgPackagrOutputs(
+  target: AngularTargetConfiguration,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  context: CreateNodesContext
+): Promise<string[]> {
+  let ngPackageJsonPath = join(
+    context.workspaceRoot,
+    angularWorkspaceRoot,
+    target.options?.project ?? join(projectRoot, 'ng-package.json')
+  );
+
+  const readConfig = async (configPath: string) => {
+    if (!existsSync(configPath)) {
+      return undefined;
+    }
+
+    try {
+      if (configPath.endsWith('.js')) {
+        const result = await import(configPath);
+
+        return result['default'] ?? result;
+      }
+
+      return readJsonFile(configPath);
+    } catch {}
+
+    return undefined;
+  };
+
+  let ngPackageJson: { dest?: string };
+  let basePath: string;
+  if (statSync(ngPackageJsonPath).isDirectory()) {
+    basePath = ngPackageJsonPath;
+    ngPackageJson = await readConfig(
+      join(ngPackageJsonPath, 'ng-package.json')
+    );
+    if (!ngPackageJson) {
+      ngPackageJson = await readConfig(
+        join(ngPackageJsonPath, 'ng-package.js')
+      );
+    }
+  } else {
+    basePath = dirname(ngPackageJsonPath);
+    ngPackageJson = await readConfig(ngPackageJsonPath);
+  }
+
+  if (!ngPackageJson) {
+    return [];
+  }
+
+  const destination = ngPackageJson.dest
+    ? join(basePath, ngPackageJson.dest)
+    : join(basePath, 'dist');
+
+  return [
+    getOutput(
+      destination,
+      context.workspaceRoot,
+      angularWorkspaceRoot,
+      projectRoot
+    ),
+  ];
+}
+
+function getKarmaTargetOutputs(
+  target: AngularTargetConfiguration,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  context: CreateNodesContext
+): string[] {
+  const defaultOutput = posix.join(
+    '{workspaceRoot}',
+    angularWorkspaceRoot,
+    'coverage/{projectName}'
+  );
+
+  let karmaConfigPath: string | undefined;
+  if (target.builder === '@angular/build:unit-test') {
+    karmaConfigPath =
+      typeof target.options?.runnerConfig === 'string'
+        ? target.options?.runnerConfig
+        : target.options?.runnerConfig === true
+          ? 'karma.conf.js'
+          : undefined;
+  } else {
+    karmaConfigPath = target.options?.karmaConfig;
+  }
+
+  if (!karmaConfigPath) {
+    return [defaultOutput];
+  }
+
+  try {
+    const { parseConfig } = require('karma/lib/config');
+
+    const karmaConfigFullPath = join(
+      context.workspaceRoot,
+      angularWorkspaceRoot,
+      projectRoot,
+      karmaConfigPath
+    );
+    const config = parseConfig(karmaConfigFullPath);
+
+    if (config.coverageReporter.dir) {
+      return [
+        getOutput(
+          config.coverageReporter.dir,
+          context.workspaceRoot,
+          angularWorkspaceRoot,
+          projectRoot
+        ),
+      ];
+    }
+  } catch {
+    // we silently ignore any error here and fall back to the default output
+  }
+
+  return [defaultOutput];
+}
+
+function normalizeVitestOutputPath(
+  outputPath: string,
+  workspaceRoot: string,
+  angularWorkspaceRoot: string,
+  projectRoot: string
+): string {
+  const fullPath = isAbsolute(outputPath)
+    ? outputPath
+    : join(workspaceRoot, angularWorkspaceRoot, projectRoot, outputPath);
+
+  return getOutput(fullPath, workspaceRoot, angularWorkspaceRoot, projectRoot);
+}
+
+async function getVitestTargetOutputs(
+  target: AngularTargetConfiguration,
+  angularWorkspaceRoot: string,
+  projectRoot: string,
+  context: CreateNodesContext
+): Promise<string[]> {
+  // https://github.com/angular/angular-cli/blob/d9cd609c5d13fe492b1f31973d9be518f8529387/packages/angular/build/src/builders/unit-test/runners/vitest/plugins.ts#L365
+  const defaultOutput = posix.join(
+    '{workspaceRoot}',
+    angularWorkspaceRoot,
+    'coverage/{projectName}'
+  );
+  const outputs: string[] = [];
+
+  try {
+    const runnerConfig = target.options?.runnerConfig;
+    let vitestConfigPath: string | false = false;
+
+    if (typeof runnerConfig === 'string') {
+      vitestConfigPath = join(
+        context.workspaceRoot,
+        angularWorkspaceRoot,
+        projectRoot,
+        runnerConfig
+      );
+    } else if (runnerConfig === true) {
+      vitestConfigPath = await findVitestBaseConfig([
+        join(context.workspaceRoot, angularWorkspaceRoot, projectRoot),
+        join(context.workspaceRoot, angularWorkspaceRoot),
+      ]);
+    }
+
+    let vitestConfig: Record<string, unknown> | undefined;
+    if (vitestConfigPath) {
+      const { resolveConfig } = await loadVite();
+      vitestConfig = await resolveConfig(
+        { configFile: vitestConfigPath, mode: 'development' },
+        'build'
+      );
+    }
+
+    // coverage.reportsDirectory from config
+    const configReportsDir = (
+      vitestConfig?.test as { coverage?: { reportsDirectory?: string } }
+    )?.coverage?.reportsDirectory;
+    if (configReportsDir) {
+      outputs.push(
+        normalizeVitestOutputPath(
+          configReportsDir,
+          context.workspaceRoot,
+          angularWorkspaceRoot,
+          projectRoot
+        )
+      );
+    } else {
+      outputs.push(defaultOutput);
+    }
+
+    // outputFile - executor wins over config
+    if (target.options?.outputFile) {
+      outputs.push(
+        normalizeVitestOutputPath(
+          target.options.outputFile,
+          context.workspaceRoot,
+          angularWorkspaceRoot,
+          projectRoot
+        )
+      );
+    } else {
+      const configOutputFile = (vitestConfig?.test as { outputFile?: unknown })
+        ?.outputFile;
+      if (typeof configOutputFile === 'string') {
+        outputs.push(
+          normalizeVitestOutputPath(
+            configOutputFile,
+            context.workspaceRoot,
+            angularWorkspaceRoot,
+            projectRoot
+          )
+        );
+      } else if (typeof configOutputFile === 'object' && configOutputFile) {
+        for (const path of Object.values(
+          configOutputFile as Record<string, unknown>
+        )) {
+          if (typeof path === 'string') {
+            outputs.push(
+              normalizeVitestOutputPath(
+                path,
+                context.workspaceRoot,
+                angularWorkspaceRoot,
+                projectRoot
+              )
+            );
+          }
+        }
+      }
+    }
+
+    // reporters outputFile - executor wins over config
+    if (Array.isArray(target.options?.reporters)) {
+      for (const reporter of target.options.reporters) {
+        if (Array.isArray(reporter) && reporter[1]?.outputFile) {
+          outputs.push(
+            normalizeVitestOutputPath(
+              reporter[1].outputFile,
+              context.workspaceRoot,
+              angularWorkspaceRoot,
+              projectRoot
+            )
+          );
+        }
+      }
+    } else {
+      const configReporters = (vitestConfig?.test as { reporters?: unknown[] })
+        ?.reporters;
+      if (Array.isArray(configReporters)) {
+        for (const reporter of configReporters) {
+          if (
+            Array.isArray(reporter) &&
+            (reporter[1] as { outputFile?: string })?.outputFile
+          ) {
+            outputs.push(
+              normalizeVitestOutputPath(
+                (reporter[1] as { outputFile: string }).outputFile,
+                context.workspaceRoot,
+                angularWorkspaceRoot,
+                projectRoot
+              )
+            );
+          }
+        }
+      }
+    }
+  } catch {
+    // Silent fallback to defaults on any error
+  }
+
+  const uniqueOutputs = [...new Set(outputs)];
+  return uniqueOutputs.length > 0 ? uniqueOutputs : [defaultOutput];
+}
+
+function getBrowserAndServerTargetInputsAndOutputs(
+  projectName: string,
+  targetName: string,
+  projects: AngularProjects,
+  angularJson: AngularJson
+) {
+  const { browserTarget, serverTarget } = extractBrowserAndServerTargets(
+    angularJson,
+    projectName,
+    targetName
+  );
+  if (!browserTarget || !serverTarget) {
+    // if any of these are missing, the target is invalid so we return empty values
+    return { inputs: [], outputs: [] };
+  }
+
+  const browserTargetInputs =
+    projects[browserTarget.project]?.targets?.[browserTarget.target]?.inputs ??
+    [];
+  const serverTargetInputs =
+    projects[serverTarget.project]?.targets?.[serverTarget.target]?.inputs ??
+    [];
+  const browserTargetOutputs =
+    projects[browserTarget.project]?.targets?.[browserTarget.target]?.outputs ??
+    [];
+  const serverTargetOutputs =
+    projects[serverTarget.project]?.targets?.[serverTarget.target]?.outputs ??
+    [];
+
+  return {
+    inputs: mergeInputs(...browserTargetInputs, ...serverTargetInputs),
+    outputs: Array.from(
+      new Set([...browserTargetOutputs, ...serverTargetOutputs])
+    ),
+  };
+}
+
+function extractBrowserAndServerTargets(
+  angularJson: AngularJson,
+  projectName: string,
+  targetName: string
+): {
+  browserTarget: Target;
+  serverTarget: Target;
+} {
+  let browserTarget: Target | undefined;
+  let serverTarget: Target | undefined;
+
+  try {
+    const targets = getAngularJsonProjectTargets(
+      angularJson.projects[projectName]
+    );
+    const target = targets[targetName];
+
+    let browserTargetSpecifier = target.options?.browserTarget;
+    if (!browserTargetSpecifier) {
+      const configuration = Object.values(target.configurations ?? {}).find(
+        (config) => !!config.browserTarget
+      );
+      browserTargetSpecifier = configuration?.browserTarget;
+    }
+
+    if (browserTargetSpecifier) {
+      browserTarget = targetFromTargetString(
+        browserTargetSpecifier,
+        projectName,
+        targetName
+      );
+    }
+
+    let serverTargetSpecifier = target.options?.serverTarget;
+    if (!serverTargetSpecifier) {
+      serverTargetSpecifier = Object.values(target.configurations ?? {}).find(
+        (config) => !!config.serverTarget
+      )?.serverTarget;
+    }
+
+    if (serverTargetSpecifier) {
+      serverTarget = targetFromTargetString(
+        serverTargetSpecifier,
+        projectName,
+        targetName
+      );
+    }
+  } catch {}
+
+  return { browserTarget: browserTarget, serverTarget };
+}
+
+function mergeInputs(
+  ...inputs: TargetConfiguration['inputs']
+): TargetConfiguration['inputs'] {
+  const stringInputs = new Set<string>();
+  const externalDependencies = new Set<string>();
+
+  for (const input of inputs) {
+    if (typeof input === 'string') {
+      stringInputs.add(input);
+    } else if ('externalDependencies' in input) {
+      // we only infer external dependencies, so we don't need to handle the other input definitions
+      for (const externalDependency of input.externalDependencies) {
+        externalDependencies.add(externalDependency);
+      }
+    }
+  }
+
+  return [
+    ...stringInputs,
+    ...(externalDependencies.size
+      ? [{ externalDependencies: Array.from(externalDependencies) }]
+      : []),
+  ];
+}
+
+function getOutput(
+  path: string,
+  workspaceRoot: string,
+  angularWorkspaceRoot: string,
+  projectRoot: string
+): string {
+  const relativePath = relative(
+    join(workspaceRoot, angularWorkspaceRoot, projectRoot),
+    path
+  );
+  if (relativePath.startsWith('..')) {
+    return posix.join(
+      '{workspaceRoot}',
+      join(angularWorkspaceRoot, projectRoot, relativePath)
+    );
+  } else {
+    return posix.join('{projectRoot}', relativePath);
+  }
+}
+
+function getAngularJsonProjectTargets(
+  project: AngularProjectConfiguration
+): Record<string, AngularTargetConfiguration> {
+  return project.architect ?? project.targets;
+}
+
+interface AngularEntry {
+  configFile: string;
+  angularWorkspaceRoot: string;
+}
+
+async function filterAngularConfigs(
+  configFiles: readonly string[],
+  context: CreateNodesContext
+): Promise<{
+  entries: AngularEntry[];
+  preErrors: Array<[string, Error]>;
+}> {
+  const preErrors: Array<[string, Error]> = [];
+  const candidates = await Promise.all(
+    configFiles.map(async (configFile): Promise<AngularEntry | null> => {
+      try {
+        const angularWorkspaceRoot = dirname(configFile);
+        const siblingFiles = readdirSync(
+          join(context.workspaceRoot, angularWorkspaceRoot)
+        );
+        if (!siblingFiles.includes('package.json')) {
+          return null;
+        }
+        return { configFile, angularWorkspaceRoot };
+      } catch (e) {
+        preErrors.push([configFile, e as Error]);
+        return null;
+      }
+    })
+  );
+  return {
+    entries: candidates.filter((c): c is AngularEntry => c !== null),
+    preErrors,
+  };
+}

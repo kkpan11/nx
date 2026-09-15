@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { cx } from '@nx/nx-dev/ui-primitives';
+import { cx } from '@nx/nx-dev-ui-primitives';
 import {
   AnchorHTMLAttributes,
   ForwardedRef,
@@ -7,7 +7,7 @@ import {
   ReactNode,
 } from 'react';
 
-type AllowedVariants = 'primary' | 'secondary';
+type AllowedVariants = 'primary' | 'secondary' | 'contrast';
 type AllowedSizes = 'large' | 'default' | 'small';
 
 interface ButtonProps {
@@ -17,11 +17,19 @@ interface ButtonProps {
   children: ReactNode | ReactNode[];
 }
 
+export type ButtonLinkProps = ButtonProps & {
+  className?: string;
+  href: string;
+  title: string;
+} & AnchorHTMLAttributes<HTMLAnchorElement>;
+
 const variantStyles: Record<AllowedVariants, string> = {
   primary:
-    'bg-blue-500 dark:bg-sky-500 text-white group-hover:bg-blue-600 dark:group-hover:bg-sky-600 group-focus:ring-2 group-focus:ring-blue-500 dark:group-focus:ring-sky-500 focus:group-ring-offset-2',
+    'bg-blue-500 dark:bg-blue-500 text-white group-hover:bg-blue-600 dark:group-hover:bg-blue-600 group-focus:ring-2 group-focus:ring-blue-500 dark:group-focus:ring-blue-500 focus:group-ring-offset-2',
   secondary:
-    'border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 group-hover:bg-slate-50 dark:group-hover:bg-slate-700 group-focus:ring-2 group-focus:ring-blue-500 dark:group-focus:ring-sky-500 focus:ring-offset-2',
+    'border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 group-hover:bg-zinc-50 dark:group-hover:bg-zinc-700 group-focus:ring-2 group-focus:ring-blue-500 dark:group-focus:ring-blue-500 focus:ring-offset-2',
+  contrast:
+    'bg-zinc-950 dark:bg-white text-zinc-100 dark:text-zinc-950 group-hover:bg-zinc-800 dark:group-hover:bg-zinc-100 group-focus:ring-2 group-focus:ring-blue-500 dark:group-focus:ring-blue-500 focus:ring-offset-2',
 };
 const sizes: Record<AllowedSizes, string> = {
   large: 'space-x-4 px-4 py-2 text-lg',
@@ -34,7 +42,7 @@ const sizes: Record<AllowedSizes, string> = {
  */
 function getLayoutClassName(className = ''): string {
   return cx(
-    'group relative inline-flex opacity-100 focus:outline-none disabled:opacity-80 disabled:cursor-not-allowed transition',
+    'group relative inline-flex opacity-100 focus:outline-none disabled:opacity-80 disabled:cursor-not-allowed transition no-underline',
     className
   );
 }
@@ -44,7 +52,7 @@ function getLayoutClassName(className = ''): string {
  */
 function ButtonInner({
   children,
-  variant = 'primary',
+  variant = 'contrast',
   size = 'default',
   rounded = 'default',
 }: ButtonProps): JSX.Element {
@@ -71,7 +79,7 @@ function ButtonInner({
 export function Button({
   children,
   className = '',
-  variant = 'primary',
+  variant = 'contrast',
   size = 'large',
   rounded = 'default',
   ...props
@@ -94,14 +102,10 @@ export const ButtonLink = forwardRef(function (
     className = '',
     href,
     size = 'default',
-    variant = 'primary',
+    variant = 'contrast',
     title = '',
     ...props
-  }: ButtonProps & {
-    className?: string;
-    href: string;
-    title: string;
-  } & AnchorHTMLAttributes<HTMLAnchorElement>,
+  }: ButtonLinkProps,
   ref: ForwardedRef<HTMLAnchorElement>
 ): JSX.Element {
   return (

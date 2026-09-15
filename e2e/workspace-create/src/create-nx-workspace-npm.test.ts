@@ -8,7 +8,7 @@ import {
   runCommand,
   runCreateWorkspace,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('create-nx-workspace --preset=npm', () => {
   const wsName = uniq('npm');
@@ -29,7 +29,7 @@ describe('create-nx-workspace --preset=npm', () => {
 
   afterEach(() => {
     // cleanup previous projects
-    runCommand(`rm -rf packages/** tsconfig.base.json`);
+    runCommand(`rm -rf packages/** tsconfig.base.json tsconfig.json`);
   });
 
   afterAll(() => {
@@ -46,6 +46,9 @@ describe('create-nx-workspace --preset=npm', () => {
     } else {
       expect(packageJson.workspaces).toEqual(['packages/*']);
     }
+
+    const nxJson = readJson(`nx.json`);
+    expect(nxJson.nxCloudId).toBeUndefined();
   });
 
   it('should add angular application', () => {
@@ -53,10 +56,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/angular:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/angular:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   }, 1_000_000);
 
@@ -65,14 +66,12 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() => {
-      runCLI(
-        `generate @nx/angular:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/angular:lib packages/${libName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
     const tsconfig = readJson(`tsconfig.base.json`);
     expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
+      [`@${wsName}/${libName}`]: [`./packages/${libName}/src/index.ts`],
     });
   }, 1_000_000);
 
@@ -82,15 +81,16 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() =>
-      runCLI(
-        `generate @nx/js:library packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      )
-    ).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-    });
+      runCLI(`generate @nx/js:library packages/${libName} --no-interactive`)
+    ).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add web application', () => {
@@ -99,10 +99,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() =>
-      runCLI(
-        `generate @nx/web:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      )
-    ).not.toThrowError();
+      runCLI(`generate @nx/web:app packages/${appName} --no-interactive`)
+    ).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -112,10 +110,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/react:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/react:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -125,15 +121,16 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() => {
-      runCLI(
-        `generate @nx/react:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-    });
+      runCLI(`generate @nx/react:lib packages/${libName} --no-interactive`);
+    }).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add next application', () => {
@@ -142,10 +139,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/next:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/next:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -155,16 +150,16 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() => {
-      runCLI(
-        `generate @nx/next:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-      [`${libName}/server`]: [`packages/${libName}/src/server.ts`],
-    });
+      runCLI(`generate @nx/next:lib packages/${libName} --no-interactive`);
+    }).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add react-native application', () => {
@@ -174,9 +169,9 @@ describe('create-nx-workspace --preset=npm', () => {
 
     expect(() => {
       runCLI(
-        `generate @nx/react-native:app packages/${appName} --install=false --projectNameAndRootFormat as-provided --no-interactive`
+        `generate @nx/react-native:app packages/${appName} --install=false --no-interactive`
       );
-    }).not.toThrowError();
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -187,14 +182,17 @@ describe('create-nx-workspace --preset=npm', () => {
 
     expect(() => {
       runCLI(
-        `generate @nx/react-native:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
+        `generate @nx/react-native:lib packages/${libName} --no-interactive`
       );
-    }).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-    });
+    }).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add node application', () => {
@@ -203,10 +201,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/node:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/node:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -216,15 +212,16 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() => {
-      runCLI(
-        `generate @nx/node:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-    });
+      runCLI(`generate @nx/node:lib packages/${libName} --no-interactive`);
+    }).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add nest application', () => {
@@ -233,10 +230,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/nest:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/nest:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 
@@ -246,15 +241,16 @@ describe('create-nx-workspace --preset=npm', () => {
     const libName = uniq('lib');
 
     expect(() => {
-      runCLI(
-        `generate @nx/nest:lib packages/${libName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
-    checkFilesExist('tsconfig.base.json');
-    const tsconfig = readJson(`tsconfig.base.json`);
-    expect(tsconfig.compilerOptions.paths).toEqual({
-      [libName]: [`packages/${libName}/src/index.ts`],
-    });
+      runCLI(`generate @nx/nest:lib packages/${libName} --no-interactive`);
+    }).not.toThrow();
+    checkFilesExist('tsconfig.base.json', 'tsconfig.json');
+    const tsconfigBase = readJson(`tsconfig.base.json`);
+    expect(tsconfigBase.compilerOptions.paths).toBeUndefined();
+    const tsconfig = readJson(`tsconfig.json`);
+    expect(tsconfig.extends).toBe('./tsconfig.base.json');
+    expect(tsconfig.references).toStrictEqual([
+      { path: `./packages/${libName}` },
+    ]);
   });
 
   it('should add express application', () => {
@@ -263,10 +259,8 @@ describe('create-nx-workspace --preset=npm', () => {
     const appName = uniq('my-app');
 
     expect(() => {
-      runCLI(
-        `generate @nx/express:app packages/${appName} --projectNameAndRootFormat as-provided --no-interactive`
-      );
-    }).not.toThrowError();
+      runCLI(`generate @nx/express:app packages/${appName} --no-interactive`);
+    }).not.toThrow();
     checkFilesExist('tsconfig.base.json');
   });
 });

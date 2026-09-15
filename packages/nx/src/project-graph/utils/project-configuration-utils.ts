@@ -1,286 +1,46 @@
-import { NxJsonConfiguration, TargetDefaults } from '../../config/nx-json';
+import { NxJsonConfiguration } from '../../config/nx-json';
 import { ProjectGraphExternalNode } from '../../config/project-graph';
-import {
-  ProjectConfiguration,
-  ProjectMetadata,
-  TargetConfiguration,
-  TargetMetadata,
-} from '../../config/workspace-json-project-json';
-import { NX_PREFIX } from '../../utils/logger';
-import { readJsonFile } from '../../utils/fileutils';
+import { ProjectConfiguration } from '../../config/workspace-json-project-json';
 import { workspaceRoot } from '../../utils/workspace-root';
-
-import { minimatch } from 'minimatch';
-import { join } from 'path';
-import { performance } from 'perf_hooks';
-import { LoadedNxPlugin } from '../plugins/internal-api';
 import {
-  MergeNodesError,
-  ProjectConfigurationsError,
-  ProjectsWithNoNameError,
-  MultipleProjectsWithSameNameError,
+  createRootMap,
+  mergeProjectConfigurationIntoRootMap,
+  ProjectNodesManager,
+} from './project-configuration/project-nodes-manager';
+import { validateAndNormalizeProjectRootMap } from './project-configuration/target-normalization';
+
+import { Minimatch } from 'minimatch';
+import { performance } from 'perf_hooks';
+
+import { DelayedSpinner } from '../../utils/delayed-spinner';
+import { formatPluginProgressText } from '../../utils/plugin-progress-text';
+import { ProgressTopics } from '../../utils/progress-topics';
+import {
+  AggregateCreateNodesError,
+  formatAggregateCreateNodesError,
+  isAggregateCreateNodesError,
   isMultipleProjectsWithSameNameError,
   isProjectsWithNoNameError,
-  ProjectWithNoNameError,
-  ProjectWithExistingNameError,
-  isProjectWithExistingNameError,
-  isProjectWithNoNameError,
-  isAggregateCreateNodesError,
-  AggregateCreateNodesError,
+  isWorkspaceValidityError,
+  MergeNodesError,
+  MultipleProjectsWithSameNameError,
+  ProjectConfigurationsError,
+  ProjectsWithNoNameError,
+  WorkspaceValidityError,
 } from '../error-types';
-import { CreateNodesResult } from '../plugins';
-import { isGlobPattern } from '../../utils/globs';
+import type { LoadedNxPlugin } from '../plugins/loaded-nx-plugin';
+import { CreateNodesResult } from '../plugins/public-api';
 
-export type SourceInformation = [file: string | null, plugin: string];
-export type ConfigurationSourceMaps = Record<
-  string,
-  Record<string, SourceInformation>
->;
+import type {
+  ConfigurationSourceMaps,
+  SourceInformation,
+} from './project-configuration/source-maps';
 
-export function mergeProjectConfigurationIntoRootMap(
-  projectRootMap: Record<string, ProjectConfiguration>,
-  project: ProjectConfiguration,
-  configurationSourceMaps?: ConfigurationSourceMaps,
-  sourceInformation?: SourceInformation,
-  // This function is used when reading project configuration
-  // in generators, where we don't want to do this.
-  skipTargetNormalization?: boolean
-): void {
-  if (configurationSourceMaps && !configurationSourceMaps[project.root]) {
-    configurationSourceMaps[project.root] = {};
-  }
-  const sourceMap = configurationSourceMaps?.[project.root];
+import { createTargetDefaultsResults } from './project-configuration/target-defaults';
 
-  let matchingProject = projectRootMap[project.root];
-
-  if (!matchingProject) {
-    projectRootMap[project.root] = {
-      root: project.root,
-    };
-    matchingProject = projectRootMap[project.root];
-    if (sourceMap) {
-      sourceMap[`root`] = sourceInformation;
-    }
-  }
-
-  // This handles top level properties that are overwritten.
-  // e.g. `srcRoot`, `projectType`, or other fields that shouldn't be extended
-  // Note: `name` is set specifically here to keep it from changing. The name is
-  // always determined by the first inference plugin to ID a project, unless it has
-  // a project.json in which case it was already updated above.
-  const updatedProjectConfiguration = {
-    ...matchingProject,
-  };
-
-  for (const k in project) {
-    if (
-      ![
-        'tags',
-        'implicitDependencies',
-        'generators',
-        'targets',
-        'metadata',
-        'namedInputs',
-      ].includes(k)
-    ) {
-      updatedProjectConfiguration[k] = project[k];
-      if (sourceMap) {
-        sourceMap[`${k}`] = sourceInformation;
-      }
-    }
-  }
-
-  // The next blocks handle properties that should be themselves merged (e.g. targets, tags, and implicit dependencies)
-  if (project.tags) {
-    updatedProjectConfiguration.tags = Array.from(
-      new Set((matchingProject.tags ?? []).concat(project.tags))
-    );
-
-    if (sourceMap) {
-      sourceMap['tags'] ??= sourceInformation;
-      project.tags.forEach((tag) => {
-        sourceMap[`tags.${tag}`] = sourceInformation;
-      });
-    }
-  }
-
-  if (project.implicitDependencies) {
-    updatedProjectConfiguration.implicitDependencies = (
-      matchingProject.implicitDependencies ?? []
-    ).concat(project.implicitDependencies);
-
-    if (sourceMap) {
-      sourceMap['implicitDependencies'] ??= sourceInformation;
-      project.implicitDependencies.forEach((implicitDependency) => {
-        sourceMap[`implicitDependencies.${implicitDependency}`] =
-          sourceInformation;
-      });
-    }
-  }
-
-  if (project.generators) {
-    // Start with generators config in new project.
-    updatedProjectConfiguration.generators = { ...project.generators };
-
-    if (sourceMap) {
-      sourceMap['generators'] ??= sourceInformation;
-      for (const generator in project.generators) {
-        sourceMap[`generators.${generator}`] = sourceInformation;
-        for (const property in project.generators[generator]) {
-          sourceMap[`generators.${generator}.${property}`] = sourceInformation;
-        }
-      }
-    }
-
-    if (matchingProject.generators) {
-      // For each generator that was already defined, shallow merge the options.
-      // Project contains the new info, so it has higher priority.
-      for (const generator in matchingProject.generators) {
-        updatedProjectConfiguration.generators[generator] = {
-          ...matchingProject.generators[generator],
-          ...project.generators[generator],
-        };
-      }
-    }
-  }
-
-  if (project.namedInputs) {
-    updatedProjectConfiguration.namedInputs = {
-      ...matchingProject.namedInputs,
-      ...project.namedInputs,
-    };
-
-    if (sourceMap) {
-      sourceMap['namedInputs'] ??= sourceInformation;
-      for (const namedInput in project.namedInputs) {
-        sourceMap[`namedInputs.${namedInput}`] = sourceInformation;
-      }
-    }
-  }
-
-  if (project.metadata) {
-    updatedProjectConfiguration.metadata = mergeMetadata(
-      sourceMap,
-      sourceInformation,
-      'metadata',
-      project.metadata,
-      matchingProject.metadata
-    );
-  }
-
-  if (project.targets) {
-    // We merge the targets with special handling, so clear this back to the
-    // targets as defined originally before merging.
-    updatedProjectConfiguration.targets = matchingProject?.targets ?? {};
-    if (sourceMap) {
-      sourceMap['targets'] ??= sourceInformation;
-    }
-
-    // For each target defined in the new config
-    for (const targetName in project.targets) {
-      // Always set source map info for the target, but don't overwrite info already there
-      // if augmenting an existing target.
-
-      const target = project.targets?.[targetName];
-
-      if (sourceMap) {
-        sourceMap[`targets.${targetName}`] = sourceInformation;
-      }
-
-      const normalizedTarget = skipTargetNormalization
-        ? target
-        : resolveCommandSyntacticSugar(target, project.root);
-
-      const mergedTarget = mergeTargetConfigurations(
-        normalizedTarget,
-        matchingProject.targets?.[targetName],
-        sourceMap,
-        sourceInformation,
-        `targets.${targetName}`
-      );
-
-      updatedProjectConfiguration.targets[targetName] = mergedTarget;
-    }
-  }
-
-  projectRootMap[updatedProjectConfiguration.root] =
-    updatedProjectConfiguration;
-}
-
-export function mergeMetadata<T = ProjectMetadata | TargetMetadata>(
-  sourceMap: Record<string, [file: string, plugin: string]>,
-  sourceInformation: [file: string, plugin: string],
-  baseSourceMapPath: string,
-  metadata: T,
-  matchingMetadata?: T
-): T {
-  const result: T = {
-    ...(matchingMetadata ?? ({} as T)),
-  };
-  for (const [metadataKey, value] of Object.entries(metadata)) {
-    const existingValue = matchingMetadata?.[metadataKey];
-
-    if (Array.isArray(value) && Array.isArray(existingValue)) {
-      for (const item of [...value]) {
-        const newLength = result[metadataKey].push(item);
-        if (sourceMap) {
-          sourceMap[`${baseSourceMapPath}.${metadataKey}.${newLength - 1}`] =
-            sourceInformation;
-        }
-      }
-    } else if (Array.isArray(value) && existingValue === undefined) {
-      result[metadataKey] ??= value;
-      if (sourceMap) {
-        sourceMap[`${baseSourceMapPath}.${metadataKey}`] = sourceInformation;
-      }
-      for (let i = 0; i < value.length; i++) {
-        if (sourceMap) {
-          sourceMap[`${baseSourceMapPath}.${metadataKey}.${i}`] =
-            sourceInformation;
-        }
-      }
-    } else if (typeof value === 'object' && typeof existingValue === 'object') {
-      for (const key in value) {
-        const existingValue = matchingMetadata?.[metadataKey]?.[key];
-
-        if (Array.isArray(value[key]) && Array.isArray(existingValue)) {
-          for (const item of value[key]) {
-            const i = result[metadataKey][key].push(item);
-            if (sourceMap) {
-              sourceMap[`${baseSourceMapPath}.${metadataKey}.${key}.${i - 1}`] =
-                sourceInformation;
-            }
-          }
-        } else {
-          result[metadataKey] = value;
-          if (sourceMap) {
-            sourceMap[`${baseSourceMapPath}.${metadataKey}`] =
-              sourceInformation;
-          }
-        }
-      }
-    } else {
-      result[metadataKey] = value;
-      if (sourceMap) {
-        sourceMap[`${baseSourceMapPath}.${metadataKey}`] = sourceInformation;
-
-        if (typeof value === 'object') {
-          for (const k in value) {
-            sourceMap[`${baseSourceMapPath}.${metadataKey}.${k}`] =
-              sourceInformation;
-            if (Array.isArray(value[k])) {
-              for (let i = 0; i < value[k].length; i++) {
-                sourceMap[`${baseSourceMapPath}.${metadataKey}.${k}.${i}`] =
-                  sourceInformation;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return result;
-}
+export { mergeTargetConfigurations } from './project-configuration/target-merging';
+import { deepClone } from './project-configuration/target-merging';
+export { readTargetDefaultsForTarget } from './project-configuration/target-defaults';
 
 export type ConfigurationResult = {
   /**
@@ -311,85 +71,142 @@ export type ConfigurationResult = {
 /**
  * Transforms a list of project paths into a map of project configurations.
  *
+ * Plugins are run in parallel, then results are merged in a single ordered pass:
+ *   specified plugins → synthetic target defaults → default plugins
+ *
+ * This ordering ensures '...' spread tokens in default plugin configs
+ * (project.json, package.json) expand against accumulated values from
+ * specified plugins and target defaults.
+ *
  * @param root The workspace root
  * @param nxJson The NxJson configuration
- * @param workspaceFiles A list of non-ignored workspace files
- * @param plugins The plugins that should be used to infer project configuration
+ * @param projectFiles Plugin config files, separated by plugin set
+ * @param plugins The plugins separated into specified and default sets
  */
-export async function createProjectConfigurations(
+export async function createProjectConfigurationsWithPlugins(
   root: string = workspaceRoot,
   nxJson: NxJsonConfiguration,
-  projectFiles: string[], // making this parameter allows devkit to pick up newly created projects
-  plugins: LoadedNxPlugin[]
+  projectFiles: {
+    specifiedPluginFiles: string[][];
+    defaultPluginFiles: string[][];
+  },
+  plugins: {
+    specifiedPlugins: LoadedNxPlugin[];
+    defaultPlugins: LoadedNxPlugin[];
+  }
 ): Promise<ConfigurationResult> {
   performance.mark('build-project-configs:start');
 
-  const results: Array<ReturnType<LoadedNxPlugin['createNodes'][1]>> = [];
+  let spinner: DelayedSpinner;
+  const inProgressPlugins = new Set<string>();
+
+  const getSpinnerText = () =>
+    spinner
+      ? formatPluginProgressText(
+          'Creating project graph nodes',
+          inProgressPlugins
+        )
+      : '';
+
+  const specifiedCreateNodesPlugins = plugins.specifiedPlugins.filter(
+    (plugin) => plugin.createNodes?.[0]
+  );
+  const defaultCreateNodesPlugins = plugins.defaultPlugins.filter(
+    (plugin) => plugin.createNodes?.[0]
+  );
+  const allCreateNodesPlugins = [
+    ...specifiedCreateNodesPlugins,
+    ...defaultCreateNodesPlugins,
+  ];
+  const allProjectFiles = [
+    ...projectFiles.specifiedPluginFiles,
+    ...projectFiles.defaultPluginFiles,
+  ];
+  const specifiedCount = specifiedCreateNodesPlugins.length;
+  spinner = new DelayedSpinner(getSpinnerText(), {
+    progressTopic: ProgressTopics.GraphConstruction,
+  });
+
+  const results: Promise<
+    (readonly [
+      plugin: string,
+      file: string,
+      result: CreateNodesResult,
+      index?: number,
+    ])[]
+  >[] = [];
   const errors: Array<
     | AggregateCreateNodesError
     | MergeNodesError
     | ProjectsWithNoNameError
     | MultipleProjectsWithSameNameError
+    | WorkspaceValidityError
   > = [];
 
   // We iterate over plugins first - this ensures that plugins specified first take precedence.
-  for (const {
-    createNodes: createNodesTuple,
-    include,
-    exclude,
-    name: pluginName,
-  } of plugins) {
-    const [pattern, createNodes] = createNodesTuple ?? [];
-
-    if (!pattern) {
-      continue;
-    }
+  for (const [
+    index,
+    {
+      index: pluginIndex,
+      createNodes: createNodesTuple,
+      include,
+      exclude,
+      name: pluginName,
+    },
+  ] of allCreateNodesPlugins.entries()) {
+    const [, createNodes] = createNodesTuple;
 
     const matchingConfigFiles: string[] = findMatchingConfigFiles(
-      projectFiles,
-      pattern,
+      allProjectFiles[index],
       include,
       exclude
     );
 
+    inProgressPlugins.add(pluginName);
     let r = createNodes(matchingConfigFiles, {
       nxJsonConfiguration: nxJson,
       workspaceRoot: root,
-    }).catch((e: Error) => {
-      const errorBodyLines = [
-        `An error occurred while processing files for the ${pluginName} plugin.`,
-      ];
-      const error: AggregateCreateNodesError = isAggregateCreateNodesError(e)
-        ? // This is an expected error if something goes wrong while processing files.
-          e
-        : // This represents a single plugin erroring out with a hard error.
-          new AggregateCreateNodesError([[null, e]], []);
-
-      const innerErrors = error.errors;
-      for (const [file, e] of innerErrors) {
-        if (file) {
-          errorBodyLines.push(`  - ${file}: ${e.message}`);
-        } else {
-          errorBodyLines.push(`  - ${e.message}`);
+    })
+      .catch((e: Error) => {
+        const error: AggregateCreateNodesError = isAggregateCreateNodesError(e)
+          ? // This is an expected error if something goes wrong while processing files.
+            e
+          : // This represents a single plugin erroring out with a hard error.
+            new AggregateCreateNodesError([[null, e]], []);
+        if (pluginIndex !== undefined) {
+          error.pluginIndex = pluginIndex;
         }
-        const innerStackTrace = '    ' + e.stack.split('\n').join('\n    ');
-        errorBodyLines.push(innerStackTrace);
-      }
-
-      error.stack = errorBodyLines.join('\n');
-
-      // This represents a single plugin erroring out with a hard error.
-      errors.push(error);
-      // The plugin didn't return partial results, so we return an empty array.
-      return error.partialResults.map((r) => [pluginName, r[0], r[1]] as const);
-    });
+        formatAggregateCreateNodesError(error, pluginName);
+        // This represents a single plugin erroring out with a hard error.
+        errors.push(error);
+        // The plugin didn't return partial results, so we return an empty array.
+        return error.partialResults.map(
+          (r) => [pluginName, r[0], r[1], index] as const
+        );
+      })
+      .finally(() => {
+        inProgressPlugins.delete(pluginName);
+        spinner.setMessage(getSpinnerText());
+      });
 
     results.push(r);
   }
 
   return Promise.all(results).then((results) => {
+    spinner?.cleanup();
+
+    // Split results into specified and default plugin sets
+    const specifiedResults = results.slice(0, specifiedCount);
+    const defaultResults = results.slice(specifiedCount);
+
     const { projectRootMap, externalNodes, rootMap, configurationSourceMaps } =
-      mergeCreateNodesResults(results, nxJson, errors);
+      mergeCreateNodesResults(
+        specifiedResults,
+        defaultResults,
+        nxJson,
+        root,
+        errors
+      );
 
     performance.mark('build-project-configs:end');
     performance.measure(
@@ -398,13 +215,18 @@ export async function createProjectConfigurations(
       'build-project-configs:end'
     );
 
+    const allProjectFilesFlat = [
+      ...projectFiles.specifiedPluginFiles.flat(),
+      ...projectFiles.defaultPluginFiles.flat(),
+    ];
+
     if (errors.length === 0) {
       return {
         projects: projectRootMap,
         externalNodes,
         projectRootMap: rootMap,
         sourceMaps: configurationSourceMaps,
-        matchingProjectFiles: projectFiles,
+        matchingProjectFiles: allProjectFilesFlat,
       };
     } else {
       throw new ProjectConfigurationsError(errors, {
@@ -412,85 +234,263 @@ export async function createProjectConfigurations(
         externalNodes,
         projectRootMap: rootMap,
         sourceMaps: configurationSourceMaps,
-        matchingProjectFiles: projectFiles,
+        matchingProjectFiles: allProjectFilesFlat,
       });
     }
   });
 }
 
-function mergeCreateNodesResults(
-  results: (readonly [
-    plugin: string,
-    file: string,
-    result: CreateNodesResult
-  ])[][],
-  nxJsonConfiguration: NxJsonConfiguration,
-  errors: (
-    | AggregateCreateNodesError
-    | MergeNodesError
-    | ProjectsWithNoNameError
-    | MultipleProjectsWithSameNameError
-  )[]
-) {
-  performance.mark('createNodes:merge - start');
-  const projectRootMap: Record<string, ProjectConfiguration> = {};
-  const externalNodes: Record<string, ProjectGraphExternalNode> = {};
-  const configurationSourceMaps: Record<
-    string,
-    Record<string, SourceInformation>
-  > = {};
+export type CreateNodesResultEntry = readonly [
+  plugin: string,
+  file: string,
+  result: CreateNodesResult,
+  pluginIndex?: number,
+];
 
-  for (const result of results.flat()) {
-    const [pluginName, file, nodes] = result;
+export type MergeError =
+  | AggregateCreateNodesError
+  | MergeNodesError
+  | ProjectsWithNoNameError
+  | MultipleProjectsWithSameNameError
+  | WorkspaceValidityError;
 
+type MergeFn = (
+  project: ProjectConfiguration,
+  sourceInfo: SourceInformation
+) => void;
+
+/**
+ * Runs a single plugin batch through two passes:
+ *
+ * 1. Every project node in every plugin result is handed to `mergeFn`,
+ *    which merges it into the manager's rootMap. Any failure is
+ *    collected into `errors`; processing keeps going. External nodes
+ *    are accumulated onto the shared `externalNodes` record.
+ * 2. After every project in the batch has been merged, name-reference
+ *    sentinels for the batch are registered against the manager's
+ *    rootMap, so sentinels point at the target objects that actually
+ *    received the merges.
+ *
+ * The two passes can't be collapsed: a sentinel registered too early
+ * would point at the pre-merge object, and a later project in the same
+ * batch may still rename a project the sentinel refers to. Splitting
+ * the registration into a second pass also lets forward references
+ * inside the same batch resolve eagerly.
+ */
+function mergeCreateNodesResultsFromSinglePlugin(
+  pluginResults: CreateNodesResultEntry[],
+  mergeFn: MergeFn,
+  nodesManager: ProjectNodesManager,
+  externalNodes: Record<string, ProjectGraphExternalNode>,
+  errors: MergeError[]
+): void {
+  mergeSinglePluginResults(pluginResults, mergeFn, externalNodes, errors);
+  registerNameRefsFromSinglePlugin(pluginResults, nodesManager, errors);
+}
+
+function mergeSinglePluginResults(
+  pluginResults: CreateNodesResultEntry[],
+  mergeFn: MergeFn,
+  externalNodes: Record<string, ProjectGraphExternalNode>,
+  errors: MergeError[]
+): void {
+  for (const result of pluginResults) {
+    const [pluginName, file, nodes, pluginIndex] = result;
     const { projects: projectNodes, externalNodes: pluginExternalNodes } =
       nodes;
-
     const sourceInfo: SourceInformation = [file, pluginName];
 
-    for (const node in projectNodes) {
-      // Handles `{projects: {'libs/foo': undefined}}`.
-      if (!projectNodes[node]) {
-        continue;
-      }
-      const project = {
-        root: node,
-        ...projectNodes[node],
-      };
+    for (const root in projectNodes) {
+      if (!projectNodes[root]) continue;
+      const project = { root, ...projectNodes[root] };
+
       try {
-        mergeProjectConfigurationIntoRootMap(
-          projectRootMap,
-          project,
-          configurationSourceMaps,
-          sourceInfo
-        );
+        mergeFn(project, sourceInfo);
       } catch (error) {
         errors.push(
-          new MergeNodesError({
-            file,
-            pluginName,
-            error,
-          })
+          new MergeNodesError({ file, pluginName, error, pluginIndex })
         );
       }
     }
+
     Object.assign(externalNodes, pluginExternalNodes);
   }
+}
+
+function registerNameRefsFromSinglePlugin(
+  pluginResults: CreateNodesResultEntry[],
+  nodesManager: ProjectNodesManager,
+  errors: MergeError[]
+): void {
+  for (const result of pluginResults) {
+    const [pluginName, file, nodes, pluginIndex] = result;
+    const { projects: projectNodes } = nodes;
+
+    try {
+      nodesManager.registerNameRefs(projectNodes);
+    } catch (error) {
+      errors.push(
+        new MergeNodesError({ file, pluginName, error, pluginIndex })
+      );
+    }
+  }
+}
+
+/**
+ * Merges create nodes results into a single rootMap.
+ *
+ * Every layer merges into the manager through the same source-map-aware
+ * merge, in precedence order:
+ *
+ *   specified plugins → synthetic target defaults → default plugins
+ *
+ * so field-level provenance is decided by the merge itself for all three
+ * layers — whichever layer a field's final value came from owns its
+ * attribution, and `'...'` spreads in default-plugin configs resolve against
+ * the accumulated specified + target-defaults base.
+ *
+ * Target-default synthesis needs the *merged* shape of the default layer
+ * (to predict each target's eventual executor/command) before that layer
+ * merges into the manager. To get it, default results are first staged into
+ * a throwaway intermediate rootMap with unresolvable `'...'` spreads
+ * deferred. The staging output feeds only `createTargetDefaultsResults`; the
+ * default plugins then merge into the manager from their original results.
+ */
+export function mergeCreateNodesResults(
+  specifiedResults: CreateNodesResultEntry[][],
+  defaultResults: CreateNodesResultEntry[][],
+  nxJsonConfiguration: NxJsonConfiguration,
+  workspaceRoot: string,
+  errors: MergeError[]
+) {
+  performance.mark('createNodes:merge - start');
+
+  const nodesManager = new ProjectNodesManager();
+  const externalNodes: Record<string, ProjectGraphExternalNode> = {};
+  const configurationSourceMaps: ConfigurationSourceMaps = {};
+
+  const mergeToManager: MergeFn = (project, sourceInfo) =>
+    nodesManager.mergeProjectNode(project, configurationSourceMaps, sourceInfo);
+
+  for (const pluginResults of specifiedResults) {
+    mergeCreateNodesResultsFromSinglePlugin(
+      pluginResults,
+      mergeToManager,
+      nodesManager,
+      externalNodes,
+      errors
+    );
+  }
+
+  // Without target defaults there is nothing to synthesize, and the staging
+  // pass exists only to feed synthesis — skip straight to the default-plugin
+  // merge.
+  if (Object.keys(nxJsonConfiguration.targetDefaults ?? {}).length > 0) {
+    // Throwaway staging area: the default layer's merged shape (unresolvable
+    // `'...'` spreads deferred), read only by target-default synthesis. The
+    // default plugins merge into the manager from their original results, not
+    // from this map. No source maps are kept for it — synthesis attributes
+    // targets without them (a default plugin can never be named by a
+    // `filter.plugin`); the real default merge writes the manager's.
+    const intermediateDefaultRootMap: Record<string, ProjectConfiguration> = {};
+
+    // The rootMap merge adopts input arrays/objects by reference and grows
+    // them in place (e.g. `mergeMetadata`), so staging works on deep clones —
+    // handing it the plugin results themselves would corrupt them before the
+    // real merge below reads them.
+    const mergeToIntermediate: MergeFn = (project, sourceInfo) => {
+      mergeProjectConfigurationIntoRootMap(
+        intermediateDefaultRootMap,
+        deepClone(project),
+        undefined,
+        sourceInfo,
+        false,
+        true
+      );
+    };
+
+    // Stage the default layer for synthesis. Merge errors are discarded and
+    // external nodes land in a scratch object — the same results merge into
+    // the manager below, where both surface once with proper plugin context.
+    // The discard is safe because every merge throw is base-independent in
+    // both its condition and its reachability: each throw's condition reads
+    // only the plugin's own config, and the spread-ambiguity throws fire even
+    // when a key is dropped by a base-owns-key shortcut, because those
+    // shortcuts eagerly validate the dropped value (`assertNoIntegerLikeSpreadKey`).
+    // So a given config raises the same error in this pass and the real merge
+    // below despite their bases differing.
+    // Name references are NOT registered here: `applySubstitutions` sweeps only
+    // the manager's `rootMap`, so sentinels registered against this throwaway
+    // rootMap would never be visited and would never resolve.
+    const stagingErrors: MergeError[] = [];
+    const stagingExternalNodes: Record<string, ProjectGraphExternalNode> = {};
+    for (const pluginResults of defaultResults) {
+      mergeSinglePluginResults(
+        pluginResults,
+        mergeToIntermediate,
+        stagingExternalNodes,
+        stagingErrors
+      );
+    }
+
+    const targetDefaultsResults = createTargetDefaultsResults(
+      nodesManager.getRootMap(),
+      intermediateDefaultRootMap,
+      nxJsonConfiguration,
+      configurationSourceMaps
+    );
+
+    if (targetDefaultsResults.length > 0) {
+      mergeCreateNodesResultsFromSinglePlugin(
+        targetDefaultsResults,
+        mergeToManager,
+        nodesManager,
+        externalNodes,
+        errors
+      );
+    }
+  }
+
+  // Merge the default plugins into the manager on top of the specified + TD
+  // base, from their original results. This is the same source-map-aware path
+  // the other layers take, so every field a default plugin wins — including
+  // fields it overrides on a specified/TD target — is attributed to it by the
+  // merge itself, `'...'` spreads resolve against the real base (keys a spread
+  // lets the base win keep their base attribution), and identity provenance
+  // follows the node-ownership rules in `recordTargetIdentitySourceMapInfo` /
+  // `getMergeValueResult`.
+  for (const pluginResults of defaultResults) {
+    mergeCreateNodesResultsFromSinglePlugin(
+      pluginResults,
+      mergeToManager,
+      nodesManager,
+      externalNodes,
+      errors
+    );
+  }
+
+  const projectRootMap = nodesManager.getRootMap();
 
   try {
+    nodesManager.applySubstitutions();
     validateAndNormalizeProjectRootMap(
+      workspaceRoot,
       projectRootMap,
       nxJsonConfiguration,
       configurationSourceMaps
     );
-  } catch (e) {
-    if (
-      isProjectsWithNoNameError(e) ||
-      isMultipleProjectsWithSameNameError(e)
-    ) {
-      errors.push(e);
-    } else {
-      throw e;
+  } catch (error) {
+    let _errors = error instanceof AggregateError ? error.errors : [error];
+    for (const e of _errors) {
+      if (
+        isProjectsWithNoNameError(e) ||
+        isMultipleProjectsWithSameNameError(e) ||
+        isWorkspaceValidityError(e)
+      ) {
+        errors.push(e);
+      } else {
+        throw e;
+      }
     }
   }
 
@@ -505,624 +505,62 @@ function mergeCreateNodesResults(
   return { projectRootMap, externalNodes, rootMap, configurationSourceMaps };
 }
 
-function findMatchingConfigFiles(
+/**
+ * Creates a matcher function for the given patterns. Globs are compiled once
+ * here so matching a file list only runs the pre-parsed regex per file, instead
+ * of recompiling every pattern on each call.
+ * @param patterns Array of glob patterns (can include negation patterns starting with '!')
+ * @param emptyValue Value to return when patterns array is empty
+ * @returns A function that checks if a file matches the patterns
+ */
+function createMatcher(
+  patterns: string[],
+  emptyValue: boolean
+): (file: string) => boolean {
+  if (!patterns || patterns.length === 0) {
+    return () => emptyValue;
+  }
+
+  const hasNegationPattern = patterns.some((p) => p.startsWith('!'));
+
+  if (hasNegationPattern) {
+    // Patterns are processed in order, with later matches overriding earlier
+    // ones; a leading negation starts from "matches everything".
+    const compiled = patterns.map((pattern) => {
+      const isNegation = pattern.startsWith('!');
+      return {
+        isNegation,
+        matcher: new Minimatch(isNegation ? pattern.substring(1) : pattern, {
+          dot: true,
+        }),
+      };
+    });
+    const initialMatch = patterns[0].startsWith('!');
+    return (file: string) => {
+      let isMatch = initialMatch;
+      for (const { isNegation, matcher } of compiled) {
+        if (matcher.match(file)) {
+          isMatch = !isNegation;
+        }
+      }
+      return isMatch;
+    };
+  }
+
+  const compiled = patterns.map((p) => new Minimatch(p, { dot: true }));
+  return (file: string) => compiled.some((m) => m.match(file));
+}
+
+export function findMatchingConfigFiles(
   projectFiles: string[],
-  pattern: string,
   include: string[],
   exclude: string[]
-) {
-  const matchingConfigFiles: string[] = [];
+): string[] {
+  // projectFiles already comes from multiGlobWithWorkspaceContext for the
+  // plugin's createNodes pattern, so only include/exclude filters remain here.
+  // Empty include means include everything, empty exclude means exclude nothing
+  const includes = createMatcher(include, true);
+  const excludes = createMatcher(exclude, false);
 
-  for (const file of projectFiles) {
-    if (minimatch(file, pattern, { dot: true })) {
-      if (include) {
-        const included = include.some((includedPattern) =>
-          minimatch(file, includedPattern, { dot: true })
-        );
-        if (!included) {
-          continue;
-        }
-      }
-
-      if (exclude) {
-        const excluded = exclude.some((excludedPattern) =>
-          minimatch(file, excludedPattern, { dot: true })
-        );
-        if (excluded) {
-          continue;
-        }
-      }
-
-      matchingConfigFiles.push(file);
-    }
-  }
-  return matchingConfigFiles;
-}
-
-export function readProjectConfigurationsFromRootMap(
-  projectRootMap: Record<string, ProjectConfiguration>
-) {
-  const projects: Record<string, ProjectConfiguration> = {};
-  // If there are projects that have the same name, that is an error.
-  // This object tracks name -> (all roots of projects with that name)
-  // to provide better error messaging.
-  const conflicts = new Map<string, string[]>();
-  const projectRootsWithNoName: string[] = [];
-
-  for (const root in projectRootMap) {
-    const project = projectRootMap[root];
-    // We're setting `// targets` as a comment `targets` is empty due to Project Crystal.
-    // Strip it before returning configuration for usage.
-    if (project['// targets']) delete project['// targets'];
-
-    try {
-      validateProject(project, projects);
-      projects[project.name] = project;
-    } catch (e) {
-      if (isProjectWithNoNameError(e)) {
-        projectRootsWithNoName.push(e.projectRoot);
-      } else if (isProjectWithExistingNameError(e)) {
-        const rootErrors = conflicts.get(e.projectName) ?? [
-          projects[e.projectName].root,
-        ];
-        rootErrors.push(e.projectRoot);
-        conflicts.set(e.projectName, rootErrors);
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  if (conflicts.size > 0) {
-    throw new MultipleProjectsWithSameNameError(conflicts, projects);
-  }
-  if (projectRootsWithNoName.length > 0) {
-    throw new ProjectsWithNoNameError(projectRootsWithNoName, projects);
-  }
-  return projects;
-}
-
-function validateAndNormalizeProjectRootMap(
-  projectRootMap: Record<string, ProjectConfiguration>,
-  nxJsonConfiguration: NxJsonConfiguration,
-  sourceMaps: ConfigurationSourceMaps = {}
-) {
-  // Name -> Project, used to validate that all projects have unique names
-  const projects: Record<string, ProjectConfiguration> = {};
-  // If there are projects that have the same name, that is an error.
-  // This object tracks name -> (all roots of projects with that name)
-  // to provide better error messaging.
-  const conflicts = new Map<string, string[]>();
-  const projectRootsWithNoName: string[] = [];
-
-  for (const root in projectRootMap) {
-    const project = projectRootMap[root];
-    // We're setting `// targets` as a comment `targets` is empty due to Project Crystal.
-    // Strip it before returning configuration for usage.
-    if (project['// targets']) delete project['// targets'];
-
-    try {
-      validateProject(project, projects);
-      projects[project.name] = project;
-    } catch (e) {
-      if (isProjectWithNoNameError(e)) {
-        projectRootsWithNoName.push(e.projectRoot);
-      } else if (isProjectWithExistingNameError(e)) {
-        const rootErrors = conflicts.get(e.projectName) ?? [
-          projects[e.projectName].root,
-        ];
-        rootErrors.push(e.projectRoot);
-        conflicts.set(e.projectName, rootErrors);
-      } else {
-        throw e;
-      }
-    }
-
-    normalizeTargets(project, sourceMaps, nxJsonConfiguration);
-  }
-
-  if (conflicts.size > 0) {
-    throw new MultipleProjectsWithSameNameError(conflicts, projects);
-  }
-  if (projectRootsWithNoName.length > 0) {
-    throw new ProjectsWithNoNameError(projectRootsWithNoName, projects);
-  }
-  return projectRootMap;
-}
-
-function normalizeTargets(
-  project: ProjectConfiguration,
-  sourceMaps: ConfigurationSourceMaps,
-  nxJsonConfiguration: NxJsonConfiguration<'*' | string[]>
-) {
-  for (const targetName in project.targets) {
-    project.targets[targetName] = normalizeTarget(
-      project.targets[targetName],
-      project
-    );
-
-    const projectSourceMaps = sourceMaps[project.root];
-
-    const targetConfig = project.targets[targetName];
-    const targetDefaults = readTargetDefaultsForTarget(
-      targetName,
-      nxJsonConfiguration.targetDefaults,
-      targetConfig.executor
-    );
-
-    // We only apply defaults if they exist
-    if (targetDefaults && isCompatibleTarget(targetConfig, targetDefaults)) {
-      project.targets[targetName] = mergeTargetDefaultWithTargetDefinition(
-        targetName,
-        project,
-        normalizeTarget(targetDefaults, project),
-        projectSourceMaps
-      );
-    }
-
-    if (
-      // If the target has no executor or command, it doesn't do anything
-      !project.targets[targetName].executor &&
-      !project.targets[targetName].command
-    ) {
-      // But it may have dependencies that do something
-      if (
-        project.targets[targetName].dependsOn &&
-        project.targets[targetName].dependsOn.length > 0
-      ) {
-        project.targets[targetName].executor = 'nx:noop';
-      } else {
-        // If it does nothing, and has no depenencies,
-        // we can remove it.
-        delete project.targets[targetName];
-      }
-    }
-  }
-}
-
-export function validateProject(
-  project: ProjectConfiguration,
-  // name -> project
-  knownProjects: Record<string, ProjectConfiguration>
-) {
-  if (!project.name) {
-    try {
-      const { name } = readJsonFile(join(project.root, 'package.json'));
-      if (!name) {
-        throw new Error(`Project at ${project.root} has no name provided.`);
-      }
-      project.name = name;
-    } catch {
-      throw new ProjectWithNoNameError(project.root);
-    }
-  } else if (
-    knownProjects[project.name] &&
-    knownProjects[project.name].root !== project.root
-  ) {
-    throw new ProjectWithExistingNameError(project.name, project.root);
-  }
-}
-
-function targetDefaultShouldBeApplied(
-  key: string,
-  sourceMap: Record<string, SourceInformation>
-) {
-  const sourceInfo = sourceMap[key];
-  if (!sourceInfo) {
-    return true;
-  }
-  // The defined value of the target is from a plugin that
-  // isn't part of Nx's core plugins, so target defaults are
-  // applied on top of it.
-  const [, plugin] = sourceInfo;
-  return !plugin?.startsWith('nx/');
-}
-
-export function mergeTargetDefaultWithTargetDefinition(
-  targetName: string,
-  project: ProjectConfiguration,
-  targetDefault: Partial<TargetConfiguration>,
-  sourceMap: Record<string, SourceInformation>
-): TargetConfiguration {
-  const targetDefinition = project.targets[targetName] ?? {};
-  const result = JSON.parse(JSON.stringify(targetDefinition));
-
-  for (const key in targetDefault) {
-    switch (key) {
-      case 'options': {
-        const normalizedDefaults = resolveNxTokensInOptions(
-          targetDefault.options,
-          project,
-          targetName
-        );
-        for (const optionKey in normalizedDefaults) {
-          const sourceMapKey = `targets.${targetName}.options.${optionKey}`;
-          if (
-            targetDefinition.options[optionKey] === undefined ||
-            targetDefaultShouldBeApplied(sourceMapKey, sourceMap)
-          ) {
-            result.options[optionKey] = targetDefault.options[optionKey];
-            sourceMap[sourceMapKey] = ['nx.json', 'nx/target-defaults'];
-          }
-        }
-        break;
-      }
-      case 'configurations': {
-        if (!result.configurations) {
-          result.configurations = {};
-          sourceMap[`targets.${targetName}.configurations`] = [
-            'nx.json',
-            'nx/target-defaults',
-          ];
-        }
-        for (const configuration in targetDefault.configurations) {
-          if (!result.configurations[configuration]) {
-            result.configurations[configuration] = {};
-            sourceMap[`targets.${targetName}.configurations.${configuration}`] =
-              ['nx.json', 'nx/target-defaults'];
-          }
-          const normalizedConfigurationDefaults = resolveNxTokensInOptions(
-            targetDefault.configurations[configuration],
-            project,
-            targetName
-          );
-          for (const configurationKey in normalizedConfigurationDefaults) {
-            const sourceMapKey = `targets.${targetName}.configurations.${configuration}.${configurationKey}`;
-            if (
-              targetDefinition.configurations?.[configuration]?.[
-                configurationKey
-              ] === undefined ||
-              targetDefaultShouldBeApplied(sourceMapKey, sourceMap)
-            ) {
-              result.configurations[configuration][configurationKey] =
-                targetDefault.configurations[configuration][configurationKey];
-              sourceMap[sourceMapKey] = ['nx.json', 'nx/target-defaults'];
-            }
-          }
-        }
-        break;
-      }
-      default: {
-        const sourceMapKey = `targets.${targetName}.${key}`;
-        if (
-          targetDefinition[key] === undefined ||
-          targetDefaultShouldBeApplied(sourceMapKey, sourceMap)
-        ) {
-          result[key] = targetDefault[key];
-          sourceMap[sourceMapKey] = ['nx.json', 'nx/target-defaults'];
-        }
-        break;
-      }
-    }
-  }
-  return result;
-}
-
-/**
- * Merges two targets.
- *
- * Most properties from `target` will overwrite any properties from `baseTarget`.
- * Options and configurations are treated differently - they are merged together if the executor definition is compatible.
- *
- * @param target The target definition with higher priority
- * @param baseTarget The target definition that should be overwritten. Can be undefined, in which case the target is returned as-is.
- * @param projectConfigSourceMap The source map to be filled with metadata about where each property came from
- * @param sourceInformation The metadata about where the new target was defined
- * @param targetIdentifier The identifier for the target to merge, used for source map
- * @returns A merged target configuration
- */
-export function mergeTargetConfigurations(
-  target: TargetConfiguration,
-  baseTarget?: TargetConfiguration,
-  projectConfigSourceMap?: Record<string, SourceInformation>,
-  sourceInformation?: SourceInformation,
-  targetIdentifier?: string
-): TargetConfiguration {
-  const {
-    configurations: defaultConfigurations,
-    options: defaultOptions,
-    ...baseTargetProperties
-  } = baseTarget ?? {};
-
-  // Target is "compatible", e.g. executor is defined only once or is the same
-  // in both places. This means that it is likely safe to merge
-  const isCompatible = isCompatibleTarget(baseTarget ?? {}, target);
-
-  if (!isCompatible && projectConfigSourceMap) {
-    // if the target is not compatible, we will simply override the options
-    // we have to delete old entries from the source map
-    for (const key in projectConfigSourceMap) {
-      if (key.startsWith(`${targetIdentifier}`)) {
-        delete projectConfigSourceMap[key];
-      }
-    }
-  }
-
-  // merge top level properties if they're compatible
-  const result = {
-    ...(isCompatible ? baseTargetProperties : {}),
-    ...target,
-  };
-
-  // record top level properties in source map
-  if (projectConfigSourceMap) {
-    projectConfigSourceMap[targetIdentifier] = sourceInformation;
-
-    // record root level target properties to source map
-    for (const targetProperty in target) {
-      const targetPropertyId = `${targetIdentifier}.${targetProperty}`;
-      projectConfigSourceMap[targetPropertyId] = sourceInformation;
-    }
-  }
-
-  // merge options if there are any
-  // if the targets aren't compatible, we simply discard the old options during the merge
-  if (target.options || defaultOptions) {
-    result.options = mergeOptions(
-      target.options,
-      isCompatible ? defaultOptions : undefined,
-      projectConfigSourceMap,
-      sourceInformation,
-      targetIdentifier
-    );
-  }
-
-  // merge configurations if there are any
-  // if the targets aren't compatible, we simply discard the old configurations during the merge
-  if (target.configurations || defaultConfigurations) {
-    result.configurations = mergeConfigurations(
-      target.configurations,
-      isCompatible ? defaultConfigurations : undefined,
-      projectConfigSourceMap,
-      sourceInformation,
-      targetIdentifier
-    );
-  }
-
-  if (target.metadata) {
-    result.metadata = mergeMetadata(
-      projectConfigSourceMap,
-      sourceInformation,
-      `${targetIdentifier}.metadata`,
-      target.metadata,
-      baseTarget?.metadata
-    );
-  }
-
-  return result as TargetConfiguration;
-}
-
-/**
- * Checks if targets options are compatible - used when merging configurations
- * to avoid merging options for @nx/js:tsc into something like @nx/webpack:webpack.
- *
- * If the executors are both specified and don't match, the options aren't considered
- * "compatible" and shouldn't be merged.
- */
-export function isCompatibleTarget(
-  a: TargetConfiguration,
-  b: TargetConfiguration
-) {
-  const oneHasNoExecutor = !a.executor || !b.executor;
-  const bothHaveSameExecutor = a.executor === b.executor;
-
-  if (oneHasNoExecutor) return true;
-  if (!bothHaveSameExecutor) return false;
-
-  const isRunCommands = a.executor === 'nx:run-commands';
-  if (isRunCommands) {
-    const aCommand = a.options?.command ?? a.options?.commands?.join(' && ');
-    const bCommand = b.options?.command ?? b.options?.commands?.join(' && ');
-
-    const oneHasNoCommand = !aCommand || !bCommand;
-    const hasSameCommand = aCommand === bCommand;
-
-    return oneHasNoCommand || hasSameCommand;
-  }
-
-  const isRunScript = a.executor === 'nx:run-script';
-  if (isRunScript) {
-    const aScript = a.options?.script;
-    const bScript = b.options?.script;
-
-    const oneHasNoScript = !aScript || !bScript;
-    const hasSameScript = aScript === bScript;
-
-    return oneHasNoScript || hasSameScript;
-  }
-
-  return true;
-}
-
-function mergeConfigurations<T extends Object>(
-  newConfigurations: Record<string, T> | undefined,
-  baseConfigurations: Record<string, T> | undefined,
-  projectConfigSourceMap?: Record<string, SourceInformation>,
-  sourceInformation?: SourceInformation,
-  targetIdentifier?: string
-): Record<string, T> | undefined {
-  const mergedConfigurations = {};
-
-  const configurations = new Set([
-    ...Object.keys(baseConfigurations ?? {}),
-    ...Object.keys(newConfigurations ?? {}),
-  ]);
-  for (const configuration of configurations) {
-    mergedConfigurations[configuration] = {
-      ...(baseConfigurations?.[configuration] ?? {}),
-      ...(newConfigurations?.[configuration] ?? {}),
-    };
-  }
-
-  // record new configurations & configuration properties in source map
-  if (projectConfigSourceMap) {
-    for (const newConfiguration in newConfigurations) {
-      projectConfigSourceMap[
-        `${targetIdentifier}.configurations.${newConfiguration}`
-      ] = sourceInformation;
-      for (const configurationProperty in newConfigurations[newConfiguration]) {
-        projectConfigSourceMap[
-          `${targetIdentifier}.configurations.${newConfiguration}.${configurationProperty}`
-        ] = sourceInformation;
-      }
-    }
-  }
-
-  return mergedConfigurations;
-}
-
-function mergeOptions(
-  newOptions: Record<string, any> | undefined,
-  baseOptions: Record<string, any> | undefined,
-  projectConfigSourceMap?: Record<string, SourceInformation>,
-  sourceInformation?: SourceInformation,
-  targetIdentifier?: string
-): Record<string, any> | undefined {
-  const mergedOptions = {
-    ...(baseOptions ?? {}),
-    ...(newOptions ?? {}),
-  };
-
-  // record new options & option properties in source map
-  if (projectConfigSourceMap) {
-    for (const newOption in newOptions) {
-      projectConfigSourceMap[`${targetIdentifier}.options.${newOption}`] =
-        sourceInformation;
-    }
-  }
-
-  return mergedOptions;
-}
-
-export function resolveNxTokensInOptions<T extends Object | Array<unknown>>(
-  object: T,
-  project: ProjectConfiguration,
-  key: string
-): T {
-  const result: T = Array.isArray(object) ? ([...object] as T) : { ...object };
-  for (let [opt, value] of Object.entries(object ?? {})) {
-    if (typeof value === 'string') {
-      const workspaceRootMatch = /^(\{workspaceRoot\}\/?)/.exec(value);
-      if (workspaceRootMatch?.length) {
-        value = value.replace(workspaceRootMatch[0], '');
-      }
-      if (value.includes('{workspaceRoot}')) {
-        throw new Error(
-          `${NX_PREFIX} The {workspaceRoot} token is only valid at the beginning of an option. (${key})`
-        );
-      }
-      value = value.replace(/\{projectRoot\}/g, project.root);
-      result[opt] = value.replace(/\{projectName\}/g, project.name);
-    } else if (typeof value === 'object' && value) {
-      result[opt] = resolveNxTokensInOptions(
-        value,
-        project,
-        [key, opt].join('.')
-      );
-    }
-  }
-  return result;
-}
-
-export function readTargetDefaultsForTarget(
-  targetName: string,
-  targetDefaults: TargetDefaults,
-  executor?: string
-): TargetDefaults[string] {
-  if (executor) {
-    // If an executor is defined in project.json, defaults should be read
-    // from the most specific key that matches that executor.
-    // e.g. If executor === run-commands, and the target is named build:
-    // Use, use nx:run-commands if it is present
-    // If not, use build if it is present.
-    const key = [executor, targetName].find((x) => targetDefaults?.[x]);
-    return key ? targetDefaults?.[key] : null;
-  } else if (targetDefaults?.[targetName]) {
-    // If the executor is not defined, the only key we have is the target name.
-    return targetDefaults?.[targetName];
-  }
-
-  let matchingTargetDefaultKey: string | null = null;
-  for (const key in targetDefaults ?? {}) {
-    if (isGlobPattern(key) && minimatch(targetName, key)) {
-      if (
-        !matchingTargetDefaultKey ||
-        matchingTargetDefaultKey.length < key.length
-      ) {
-        matchingTargetDefaultKey = key;
-      }
-    }
-  }
-  if (matchingTargetDefaultKey) {
-    return targetDefaults[matchingTargetDefaultKey];
-  }
-
-  return {};
-}
-
-function createRootMap(projectRootMap: Record<string, ProjectConfiguration>) {
-  const map: Record<string, string> = {};
-  for (const projectRoot in projectRootMap) {
-    const projectName = projectRootMap[projectRoot].name;
-    map[projectRoot] = projectName;
-  }
-  return map;
-}
-
-function resolveCommandSyntacticSugar(
-  target: TargetConfiguration,
-  key: string
-): TargetConfiguration {
-  const { command, ...config } = target ?? {};
-
-  if (!command) {
-    return target;
-  }
-
-  if (config.executor) {
-    throw new Error(
-      `${NX_PREFIX} Project at ${key} should not have executor and command both configured.`
-    );
-  } else {
-    return {
-      ...config,
-      executor: 'nx:run-commands',
-      options: {
-        ...config.options,
-        command: command,
-      },
-    };
-  }
-}
-
-/**
- * Expand's `command` syntactic sugar and replaces tokens in options.
- * @param target The target to normalize
- * @param project The project that the target belongs to
- * @returns The normalized target configuration
- */
-export function normalizeTarget(
-  target: TargetConfiguration,
-  project: ProjectConfiguration
-) {
-  target = resolveCommandSyntacticSugar(target, project.root);
-
-  target.options = resolveNxTokensInOptions(
-    target.options,
-    project,
-    `${project.root}:${target}`
-  );
-
-  target.configurations ??= {};
-  for (const configuration in target.configurations) {
-    target.configurations[configuration] = resolveNxTokensInOptions(
-      target.configurations[configuration],
-      project,
-      `${project.root}:${target}:${configuration}`
-    );
-  }
-
-  target.parallelism ??= true;
-
-  return target;
+  return projectFiles.filter((file) => includes(file) && !excludes(file));
 }

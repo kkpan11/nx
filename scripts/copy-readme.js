@@ -1,10 +1,15 @@
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 const p = process.argv[2];
+const possibleInputPath = process.argv[3];
+const possibleOutputPath = process.argv[4];
 
-let sourceReadmePath = !p.endsWith('-legacy')
-  ? `packages/${p}/README.md`
-  : `packages-legacy/${p.replace('-legacy', '')}/README.md`;
+let sourceReadmePath = `packages/${p}/README.md`;
+if (possibleInputPath && fs.existsSync(possibleInputPath)) {
+  sourceReadmePath = possibleInputPath;
+}
+
 // we need exception for linter
 if (p === 'linter') {
   sourceReadmePath = 'packages/eslint/README.md';
@@ -23,6 +28,14 @@ r = r.replace(
   fs.readFileSync('scripts/readme-fragments/resources.md')
 );
 
-console.log('WRITING', `build/packages/${p}/README.md`);
+const outputPath = possibleOutputPath ?? `dist/packages/${p}/README.md`;
 
-fs.writeFileSync(`build/packages/${p}/README.md`, r);
+console.log('WRITING', outputPath);
+
+fs.writeFileSync(outputPath, r);
+
+try {
+  execSync(`npx prettier --write "${outputPath}"`, { stdio: 'ignore' });
+} catch {
+  // Ignore prettier errors — formatting is best-effort
+}

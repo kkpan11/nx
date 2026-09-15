@@ -1,4 +1,4 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`@nx/vite/plugin Library mode should exclude serve and preview targets when vite.config.ts is in library mode 1`] = `
 [
@@ -48,6 +48,18 @@ exports[`@nx/vite/plugin Library mode should exclude serve and preview targets w
                 "{workspaceRoot}/dist/{projectRoot}",
               ],
             },
+            "build-deps": {
+              "dependsOn": [
+                "^build",
+              ],
+            },
+            "watch-deps": {
+              "command": "npx nx watch --projects my-lib --includeDependencies -- npx nx build-deps my-lib",
+              "continuous": true,
+              "dependsOn": [
+                "build-deps",
+              ],
+            },
           },
         },
       },
@@ -67,6 +79,11 @@ exports[`@nx/vite/plugin not root project should create nodes 1`] = `
           "projectType": "application",
           "root": "my-app",
           "targets": {
+            "build-deps": {
+              "dependsOn": [
+                "^build",
+              ],
+            },
             "build-something": {
               "cache": true,
               "command": "vite build",
@@ -104,9 +121,50 @@ exports[`@nx/vite/plugin not root project should create nodes 1`] = `
                 "{workspaceRoot}/dist/{projectRoot}",
               ],
             },
-            "my-serve": {
-              "command": "vite serve",
+            "dev": {
+              "command": "vite",
+              "continuous": true,
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "metadata": {
+                "description": "Starts Vite dev server",
+                "help": {
+                  "command": "npx vite --help",
+                  "example": {
+                    "options": {
+                      "port": 3000,
+                    },
+                  },
+                },
+                "technologies": [
+                  "vite",
+                ],
+              },
+              "options": {
+                "cwd": "my-app",
+              },
+            },
+            "my-serve": {
+              "command": "vite",
+              "continuous": true,
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
+              "metadata": {
+                "deprecated": "Use devTargetName instead. This option will be removed in Nx 22.",
                 "description": "Starts Vite dev server",
                 "help": {
                   "command": "npx vite --help",
@@ -126,6 +184,19 @@ exports[`@nx/vite/plugin not root project should create nodes 1`] = `
             },
             "preview-site": {
               "command": "vite preview",
+              "continuous": true,
+              "dependsOn": [
+                "build-something",
+              ],
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "metadata": {
                 "description": "Locally preview Vite production build",
                 "help": {
@@ -145,11 +216,28 @@ exports[`@nx/vite/plugin not root project should create nodes 1`] = `
               },
             },
             "serve-static": {
+              "continuous": true,
               "executor": "@nx/web:file-server",
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "options": {
                 "buildTarget": "build-something",
                 "spa": true,
               },
+            },
+            "watch-deps": {
+              "command": "npx nx watch --projects my-app --includeDependencies -- npx nx build-deps my-app",
+              "continuous": true,
+              "dependsOn": [
+                "build-deps",
+              ],
             },
           },
         },
@@ -207,8 +295,51 @@ exports[`@nx/vite/plugin root project should create nodes 1`] = `
                 "{projectRoot}/dist",
               ],
             },
+            "dev": {
+              "command": "vite",
+              "continuous": true,
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
+              "metadata": {
+                "description": "Starts Vite dev server",
+                "help": {
+                  "command": "npx vite --help",
+                  "example": {
+                    "options": {
+                      "port": 3000,
+                    },
+                  },
+                },
+                "technologies": [
+                  "vite",
+                ],
+              },
+              "options": {
+                "cwd": ".",
+              },
+            },
             "preview": {
               "command": "vite preview",
+              "continuous": true,
+              "dependsOn": [
+                "build",
+              ],
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "metadata": {
                 "description": "Locally preview Vite production build",
                 "help": {
@@ -228,8 +359,19 @@ exports[`@nx/vite/plugin root project should create nodes 1`] = `
               },
             },
             "serve": {
-              "command": "vite serve",
+              "command": "vite",
+              "continuous": true,
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "metadata": {
+                "deprecated": "Use devTargetName instead. This option will be removed in Nx 22.",
                 "description": "Starts Vite dev server",
                 "help": {
                   "command": "npx vite --help",
@@ -248,7 +390,17 @@ exports[`@nx/vite/plugin root project should create nodes 1`] = `
               },
             },
             "serve-static": {
+              "continuous": true,
               "executor": "@nx/web:file-server",
+              "inputs": [
+                "production",
+                "^production",
+                {
+                  "externalDependencies": [
+                    "vite",
+                  ],
+                },
+              ],
               "options": {
                 "buildTarget": "build",
                 "spa": true,

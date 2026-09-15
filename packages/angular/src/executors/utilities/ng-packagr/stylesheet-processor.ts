@@ -2,253 +2,88 @@
  * Adapted from the original ng-packagr source.
  *
  * Changes made:
- * - Use our own function to get the TailwindCSS config path to support a
- * config at the root of the workspace.
+ * - Add the project root to the search directories.
  */
 
-import browserslist from 'browserslist';
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
-const Piscina = require('piscina');
-import { colors } from 'ng-packagr/lib/utils/color';
-// using this instead of the one from ng-packagr
-import { getTailwindConfigPath } from './tailwindcss';
 import { workspaceRoot } from '@nx/devkit';
-import type { PostcssConfiguration } from 'ng-packagr/lib/styles/postcss-configuration';
-import { gt, gte } from 'semver';
-import { getInstalledPackageVersionInfo } from '../angular-version-utils';
-
-const maxWorkersVariable = process.env['NG_BUILD_MAX_WORKERS'];
-const maxThreads =
-  typeof maxWorkersVariable === 'string' && maxWorkersVariable !== ''
-    ? +maxWorkersVariable
-    : 4;
+import browserslist from 'browserslist';
+import { ComponentStylesheetBundler } from 'ng-packagr/src/lib/styles/component-stylesheets';
+import {
+  generateSearchDirectories,
+  getTailwindConfig,
+  loadPostcssConfiguration,
+} from 'ng-packagr/src/lib/styles/postcss-configuration';
+import type { NgPackageEntryConfig } from 'ng-packagr/src/ng-entrypoint.schema';
+import { getNgPackagrVersionInfo } from './ng-packagr-version';
 
 export enum CssUrl {
   inline = 'inline',
   none = 'none',
 }
 
-export class StylesheetProcessor {
-  private renderWorker: typeof Piscina | undefined;
+export function getStylesheetProcessor(): new (
+  projectBasePath: string,
+  basePath: string,
+  cssUrl?: CssUrl,
+  includePaths?: string[],
+  sass?: NgPackageEntryConfig['lib']['sass'],
+  cacheDirectory?: string | false,
+  watch?: boolean
+) => {
+  [key: string]: any;
+} {
+  const { major: ngPackagrMajorVersion } = getNgPackagrVersionInfo();
 
-  constructor(
-    private readonly projectBasePath: string,
-    private readonly basePath: string,
-    private readonly cssUrl?: CssUrl,
-    private readonly includePaths?: string[],
-    private readonly cacheDirectory?: string | false
-  ) {
-    // By default, browserslist defaults are too inclusive
-    // https://github.com/browserslist/browserslist/blob/83764ea81ffaa39111c204b02c371afa44a4ff07/index.js#L516-L522
-    // We change the default query to browsers that Angular support.
-    // https://angular.io/guide/browser-support
-    (browserslist.defaults as string[]) = [
-      'last 2 Chrome versions',
-      'last 1 Firefox version',
-      'last 2 Edge major versions',
-      'last 2 Safari major versions',
-      'last 2 iOS major versions',
-      'Firefox ESR',
-    ];
-  }
-
-  async process({
-    filePath,
-    content,
-  }: {
-    filePath: string;
-    content: string;
-  }): Promise<string> {
-    this.createRenderWorker();
-
-    return this.renderWorker.run({ content, filePath });
-  }
-
-  /** Destory workers in pool. */
-  destroy(): void {
-    void this.renderWorker?.destroy();
-  }
-
-  private createRenderWorker(): Promise<void> {
-    if (this.renderWorker) {
-      return;
-    }
-
-    const styleIncludePaths = [...this.includePaths];
-    let prevDir = null;
-    let currentDir = this.basePath;
-
-    while (currentDir !== prevDir) {
-      const p = join(currentDir, 'node_modules');
-      if (existsSync(p)) {
-        styleIncludePaths.push(p);
+  class StylesheetProcessor extends ComponentStylesheetBundler {
+    constructor(
+      protected readonly projectBasePath: string,
+      protected readonly basePath: string,
+      protected readonly cssUrl?: CssUrl,
+      protected readonly includePaths?: string[],
+      protected readonly sass?: NgPackageEntryConfig['lib']['sass'],
+      protected readonly cacheDirectory?: string | false,
+      protected readonly watch?: boolean
+    ) {
+      if (ngPackagrMajorVersion === 22) {
+        browserslist.defaults = ['baseline widely available on 2026-05-07'];
+      } else if (ngPackagrMajorVersion === 21) {
+        browserslist.defaults = ['baseline widely available on 2025-10-20'];
+      } else if (ngPackagrMajorVersion === 20) {
+        (browserslist.defaults as string[]) = browserslist(undefined, {
+          path: require.resolve('ng-packagr/.browserslistrc'),
+        });
       }
 
-      prevDir = currentDir;
-      currentDir = dirname(prevDir);
-    }
-
-    const browserslistData = browserslist(undefined, { path: this.basePath });
-
-    const { version: ngPackagrVersion } =
-      getInstalledPackageVersionInfo('ng-packagr');
-    let tailwindConfigPath: string | undefined;
-    let postcssConfiguration: PostcssConfiguration | undefined;
-    if (gte(ngPackagrVersion, '18.0.0')) {
-      const {
-        findTailwindConfiguration,
-        generateSearchDirectories,
-        loadPostcssConfiguration,
-      } = require('ng-packagr/lib/styles/postcss-configuration');
-      let searchDirs = generateSearchDirectories([this.projectBasePath]);
-      postcssConfiguration = loadPostcssConfiguration(searchDirs);
+      const browserslistData = browserslist(undefined, { path: basePath });
+      let searchDirs = generateSearchDirectories([projectBasePath]);
+      const postcssConfiguration = loadPostcssConfiguration(searchDirs);
       // (nx-specific): we support loading the TailwindCSS config from the root of the workspace
-      searchDirs = generateSearchDirectories([
-        this.projectBasePath,
-        workspaceRoot,
-      ]);
-      tailwindConfigPath = findTailwindConfiguration(searchDirs);
-    } else if (gt(ngPackagrVersion, '17.2.0')) {
-      const {
-        loadPostcssConfiguration,
-      } = require('ng-packagr/lib/styles/postcss-configuration');
-      postcssConfiguration = loadPostcssConfiguration(this.projectBasePath);
-      tailwindConfigPath = getTailwindConfigPath(
-        this.projectBasePath,
-        workspaceRoot
+      searchDirs = generateSearchDirectories([projectBasePath, workspaceRoot]);
+
+      super(
+        {
+          cacheDirectory: cacheDirectory,
+          postcssConfiguration: postcssConfiguration,
+          tailwindConfiguration: postcssConfiguration
+            ? undefined
+            : getTailwindConfig(searchDirs, projectBasePath),
+          sass: sass as any,
+          workspaceRoot: projectBasePath,
+          cssUrl: cssUrl,
+          target: transformSupportedBrowsersToTargets(browserslistData),
+          includePaths: includePaths,
+        },
+        'css',
+        watch
       );
     }
 
-    this.renderWorker = new Piscina({
-      filename: require.resolve(
-        'ng-packagr/lib/styles/stylesheet-processor-worker'
-      ),
-      maxThreads,
-      recordTiming: false,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '' + colors.enabled,
-      },
-      workerData: {
-        postcssConfiguration,
-        tailwindConfigPath,
-        projectBasePath: this.projectBasePath,
-        browserslistData,
-        targets: transformSupportedBrowsersToTargets(browserslistData),
-        cacheDirectory: this.cacheDirectory,
-        cssUrl: this.cssUrl,
-        styleIncludePaths,
-      },
-    });
-  }
-}
-
-/**
- * This class is used when ng-packagr version is 17.2.0. The async `loadPostcssConfiguration` function
- * introduced in ng-packagr 17.2.0 causes a memory leak due to multiple workers being created. We must
- * keep this class to support any workspace that might be using ng-packagr 17.2.0 where that function
- * need to be awaited.
- */
-export class AsyncStylesheetProcessor {
-  private renderWorker: typeof Piscina | undefined;
-
-  constructor(
-    private readonly projectBasePath: string,
-    private readonly basePath: string,
-    private readonly cssUrl?: CssUrl,
-    private readonly includePaths?: string[],
-    private readonly cacheDirectory?: string | false
-  ) {
-    // By default, browserslist defaults are too inclusive
-    // https://github.com/browserslist/browserslist/blob/83764ea81ffaa39111c204b02c371afa44a4ff07/index.js#L516-L522
-    // We change the default query to browsers that Angular support.
-    // https://angular.io/guide/browser-support
-    (browserslist.defaults as string[]) = [
-      'last 2 Chrome versions',
-      'last 1 Firefox version',
-      'last 2 Edge major versions',
-      'last 2 Safari major versions',
-      'last 2 iOS major versions',
-      'Firefox ESR',
-    ];
-  }
-
-  async process({
-    filePath,
-    content,
-  }: {
-    filePath: string;
-    content: string;
-  }): Promise<string> {
-    await this.createRenderWorker();
-
-    return this.renderWorker.run({ content, filePath });
-  }
-
-  /** Destory workers in pool. */
-  destroy(): void {
-    void this.renderWorker?.destroy();
-  }
-
-  private async createRenderWorker(): Promise<void> {
-    if (this.renderWorker) {
-      return;
+    destroy(): void {
+      void super.dispose();
     }
-
-    const styleIncludePaths = [...this.includePaths];
-    let prevDir = null;
-    let currentDir = this.basePath;
-
-    while (currentDir !== prevDir) {
-      const p = join(currentDir, 'node_modules');
-      if (existsSync(p)) {
-        styleIncludePaths.push(p);
-      }
-
-      prevDir = currentDir;
-      currentDir = dirname(prevDir);
-    }
-
-    const browserslistData = browserslist(undefined, { path: this.basePath });
-
-    const { version: ngPackagrVersion } =
-      getInstalledPackageVersionInfo('ng-packagr');
-    let postcssConfiguration: PostcssConfiguration | undefined;
-    if (ngPackagrVersion === '17.2.0') {
-      const {
-        loadPostcssConfiguration,
-      } = require('ng-packagr/lib/styles/postcss-configuration');
-      postcssConfiguration = await loadPostcssConfiguration(
-        this.projectBasePath
-      );
-    }
-
-    this.renderWorker = new Piscina({
-      filename: require.resolve(
-        'ng-packagr/lib/styles/stylesheet-processor-worker'
-      ),
-      maxThreads,
-      recordTiming: false,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '' + colors.enabled,
-      },
-      workerData: {
-        postcssConfiguration,
-        tailwindConfigPath: getTailwindConfigPath(
-          this.projectBasePath,
-          workspaceRoot
-        ),
-        projectBasePath: this.projectBasePath,
-        browserslistData,
-        targets: transformSupportedBrowsersToTargets(browserslistData),
-        cacheDirectory: this.cacheDirectory,
-        cssUrl: this.cssUrl,
-        styleIncludePaths,
-      },
-    });
   }
+
+  return StylesheetProcessor;
 }
 
 function transformSupportedBrowsersToTargets(

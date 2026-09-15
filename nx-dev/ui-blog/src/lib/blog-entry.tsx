@@ -1,15 +1,16 @@
 import Link from 'next/link';
-import { BlogPostDataEntry } from '@nx/nx-dev/data-access-documents/node-only';
+import { BlogPostDataEntry } from '@nx/nx-dev-data-access-documents/node-only';
 import { BlogAuthors } from './authors';
 import Image from 'next/image';
 
 export interface BlogEntryProps {
   post: BlogPostDataEntry;
+  overrideLink?: string;
 }
 
-export function BlogEntry({ post }: BlogEntryProps) {
+export function BlogEntry({ post, overrideLink }: BlogEntryProps) {
   return (
-    <div className="relative flex h-full transform-gpu flex-col overflow-hidden rounded-2xl border border-slate-200 shadow transition-all duration-300 ease-in-out hover:scale-[1.02] hover:shadow-lg dark:border-slate-800">
+    <div className="relative flex h-full transform-gpu flex-col overflow-hidden rounded-2xl border border-zinc-200 shadow-sm transition-all duration-300 ease-in-out hover:scale-[1.02] hover:shadow-lg dark:border-zinc-800">
       {post.cover_image && (
         <div className="aspect-[1.7] w-full">
           <Image
@@ -25,9 +26,9 @@ export function BlogEntry({ post }: BlogEntryProps) {
       <div className="flex flex-col gap-1 p-4">
         <BlogAuthors authors={post.authors} />
         <Link
-          href={`/blog/${post.slug}`}
+          href={overrideLink ? overrideLink : `/blog/${post.slug}`}
           title={post.title}
-          className="text-balance text-lg font-semibold text-slate-900 dark:text-white"
+          className="text-lg font-semibold text-balance text-zinc-900 dark:text-white"
           prefetch={false}
         >
           <span className="absolute inset-0" aria-hidden="true" />

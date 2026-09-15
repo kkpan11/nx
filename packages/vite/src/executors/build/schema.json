@@ -3,8 +3,9 @@
   "outputCapture": "direct-nodejs",
   "title": "Vite Prod Builder",
   "cli": "nx",
-  "description": "Builds a Vite.js application for production.",
+  "description": "Builds a Vite application for production.",
   "type": "object",
+  "x-deprecated": "The `@nx/vite:build` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/vite:convert-to-inferred` to migrate to the `@nx/vite/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "presets": [
     {
       "name": "Default minimum setup",
@@ -36,7 +37,7 @@
     },
     "configFile": {
       "type": "string",
-      "description": "The name of the Vite.js configuration file.",
+      "description": "The name of the Vite configuration file.",
       "x-completion-type": "file",
       "x-completion-glob": "vite.config.@(js|ts)"
     },
@@ -59,6 +60,20 @@
     "includeDevDependenciesInPackageJson": {
       "description": "Include devDependencies in the generated package.json.",
       "type": "boolean"
+    },
+    "skipOverrides": {
+      "type": "boolean",
+      "description": "Do not add a `overrides` and `resolutions` entries to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
+    "skipPackageManager": {
+      "type": "boolean",
+      "description": "Do not add a `packageManager` entry to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
+    "useEnvironmentsApi": {
+      "alias": "app",
+      "type": "boolean",
+      "description": "Use the new Environments API for building multiple environments at once. Only works with Vite 6.0.0 or higher.",
+      "default": false
     }
   },
   "definitions": {},

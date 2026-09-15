@@ -1,22 +1,31 @@
-import { output, PackageManager, ProjectConfiguration } from '@nx/devkit';
+import {
+  output,
+  PackageManager,
+  ProjectConfiguration,
+  TargetConfiguration,
+} from '@nx/devkit';
+import { ChildProcess, exec, execSync, ExecSyncOptions } from 'child_process';
+import { existsSync } from 'fs-extra';
+import * as isCI from 'is-ci';
+import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
+import { gte } from 'semver';
 import { packageInstall, tmpProjPath } from './create-project-utils';
 import {
-  detectPackageManager,
   ensureCypressInstallation,
   ensurePlaywrightBrowsersInstallation,
+} from './ensure-browser-installation';
+import { fileExists, readJson, updateJson } from './file-utils';
+import {
+  detectPackageManager,
   getNpmMajorVersion,
+  getPnpmVersion,
   getPublishedVersion,
   getStrippedEnvironmentVariables,
   getYarnMajorVersion,
   isVerboseE2ERun,
 } from './get-env-info';
-import { TargetConfiguration } from '@nx/devkit';
-import { ChildProcess, exec, execSync, ExecSyncOptions } from 'child_process';
-import { join } from 'path';
-import * as isCI from 'is-ci';
-import { fileExists, readJson, updateJson } from './file-utils';
-import { logError, stripConsoleColors } from './log-utils';
-import { existsSync } from 'fs-extra';
+import { logError, logInfo } from './log-utils';
 
 export interface RunCmdOpts {
   silenceError?: boolean;
@@ -25,13 +34,13 @@ export interface RunCmdOpts {
   silent?: boolean;
   verbose?: boolean;
   redirectStderr?: boolean;
+  timeout?: number;
+  /** Override daemon mode for this call. Defaults to `true`; set `false` to exercise the non-daemon path. */
+  daemon?: boolean;
 }
 
 /**
- * Sets maxWorkers in CI on all projects that require it
- * so that it doesn't try to run it with 34 workers
- *
- * maxWorkers required for: node, web, jest
+ * Caps maxWorkers in CI for node/web/jest builds so they don't spawn ~34 workers.
  */
 export function setMaxWorkers(projectJsonPath: string) {
   if (isCI) {
@@ -41,7 +50,7 @@ export function setMaxWorkers(projectJsonPath: string) {
       };
 
       if (!build) {
-        return;
+        return project;
       }
 
       const executor = build.executor as string;
@@ -62,14 +71,20 @@ export function runCommand(
   command: string,
   options?: Partial<ExecSyncOptions> & { failOnError?: boolean }
 ): string {
-  const { failOnError, ...childProcessOptions } = options ?? {};
+  const {
+    failOnError,
+    env: optionsEnv,
+    ...childProcessOptions
+  } = options ?? {};
   try {
     const r = execSync(command, {
       cwd: tmpProjPath(),
       stdio: 'pipe',
       env: {
+        // Use new versioning by default in e2e tests
+        NX_INTERNAL_USE_LEGACY_VERSIONING: 'false',
         ...getStrippedEnvironmentVariables(),
-        ...childProcessOptions?.env,
+        ...optionsEnv,
         FORCE_COLOR: 'false',
       },
       encoding: 'utf-8',
@@ -84,13 +99,12 @@ export function runCommand(
       });
     }
 
-    return r as string;
+    return stripVTControlCharacters(r as string);
   } catch (e) {
-    // this is intentional
-    // npm ls fails if package is not found
+    // Intentional: some commands (e.g. `npm ls`) exit non-zero but still produce useful output.
     logError(`Original command: ${command}`, `${e.stdout}\n\n${e.stderr}`);
     if (!failOnError && (e.stdout || e.stderr)) {
-      return e.stdout + e.stderr;
+      return stripVTControlCharacters(e.stdout + e.stderr);
     }
     throw e;
   }
@@ -111,9 +125,11 @@ export function getPackageManagerCommand({
   addDev: string;
   list: string;
   runLerna: string;
+  exec: string;
 } {
   const npmMajorVersion = getNpmMajorVersion();
   const yarnMajorVersion = getYarnMajorVersion(path);
+  const pnpmVersion = getPnpmVersion();
   const publishedVersion = getPublishedVersion();
   const isYarnWorkspace = fileExists(join(path, 'package.json'))
     ? readJson('package.json').workspaces
@@ -131,10 +147,11 @@ export function getPackageManagerCommand({
       runUninstalledPackage: `npx --yes`,
       install: 'npm install',
       ciInstall: 'npm ci',
-      addProd: `npm install --legacy-peer-deps`,
-      addDev: `npm install --legacy-peer-deps -D`,
+      addProd: `npm install`,
+      addDev: `npm install -D`,
       list: 'npm ls --depth 10',
       runLerna: `npx lerna`,
+      exec: 'npx',
     },
     yarn: {
       createWorkspace: `npx ${
@@ -156,23 +173,26 @@ export function getPackageManagerCommand({
         yarnMajorVersion && +yarnMajorVersion >= 2
           ? 'yarn lerna'
           : `yarn --silent lerna`,
+      exec: 'yarn',
     },
-    // Pnpm 3.5+ adds nx to
     pnpm: {
       createWorkspace: `pnpm dlx create-nx-workspace@${publishedVersion}`,
       run: (script: string, args: string) => `pnpm run ${script} -- ${args}`,
       runNx: `pnpm exec nx`,
       runNxSilent: `pnpm exec nx`,
       runUninstalledPackage: 'pnpm dlx',
-      install: 'pnpm i',
+      // --no-frozen-lockfile: pnpm detects CI and would otherwise default to --frozen-lockfile.
+      install: 'pnpm install --no-frozen-lockfile',
       ciInstall: 'pnpm install --frozen-lockfile',
       addProd: isPnpmWorkspace ? 'pnpm add -w' : 'pnpm add',
       addDev: isPnpmWorkspace ? 'pnpm add -Dw' : 'pnpm add -D',
       list: 'pnpm ls --depth 10',
       runLerna: `pnpm exec lerna`,
+      exec: pnpmVersion && gte(pnpmVersion, '6.13.0') ? 'pnpm exec' : 'pnpx',
     },
     bun: {
-      createWorkspace: `bunx create-nx-workspace@${publishedVersion}`,
+      // See note in runCreateWorkspace in create-project-utils.ts for why we don't set @{version} for `bunx create-nx-workspace` right now
+      createWorkspace: `bunx create-nx-workspace`,
       run: (script: string, args: string) => `bun run ${script} -- ${args}`,
       runNx: `bunx nx`,
       runNxSilent: `bunx nx`,
@@ -183,15 +203,21 @@ export function getPackageManagerCommand({
       addDev: 'bun install -D',
       list: 'bun pm ls',
       runLerna: `bunx lerna`,
+      exec: 'bun',
     },
   }[packageManager.trim() as PackageManager];
 }
 
-export function runE2ETests(runner?: 'cypress' | 'playwright') {
+export async function runE2ETests(runner?: 'cypress' | 'playwright') {
   if (process.env.NX_E2E_RUN_E2E === 'true') {
+    // Cypress unzips into a cache shared by the whole machine, so this has to
+    // finish before the suite starts running tests.
     if (!runner || runner === 'cypress') {
-      ensureCypressInstallation();
+      await ensureCypressInstallation();
     }
+    // Playwright is deliberately not awaited: `npx playwright install
+    // --with-deps` takes longer than a test's timeout, so waiting on it here
+    // fails the suite outright.
     if (!runner || runner === 'playwright') {
       ensurePlaywrightBrowsersInstallation();
     }
@@ -225,20 +251,36 @@ export function runCommandAsync(
         cwd: opts.cwd || tmpProjPath(),
         env: {
           CI: 'true',
-          ...(opts.env || getStrippedEnvironmentVariables()),
+          // Force daemon on under CI (matches runCLI); override via opts.daemon = false.
+          NX_DAEMON: opts.daemon === false ? 'false' : 'true',
+          // Use new versioning by default in e2e tests
+          NX_INTERNAL_USE_LEGACY_VERSIONING: 'false',
+          ...(opts.env || getStrippedEnvironmentVariables(opts.cwd)),
           FORCE_COLOR: 'false',
         },
         encoding: 'utf-8',
       },
       (err, stdout, stderr) => {
         if (!opts.silenceError && err) {
+          logError(`Original command: ${command}`, `${stdout}\n\n${stderr}`);
           reject(err);
         }
-        resolve({
-          stdout: stripConsoleColors(stdout),
-          stderr: stripConsoleColors(stderr),
-          combinedOutput: stripConsoleColors(`${stdout}${stderr}`),
-        });
+
+        const outputs = {
+          stdout: stripVTControlCharacters(stdout),
+          stderr: stripVTControlCharacters(stderr),
+          combinedOutput: stripVTControlCharacters(`${stdout}${stderr}`),
+        };
+
+        if (opts.verbose ?? isVerboseE2ERun()) {
+          output.log({
+            title: `Original command: ${command}`,
+            bodyLines: [outputs.combinedOutput],
+            color: 'green',
+          });
+        }
+
+        resolve(outputs);
       }
     );
   });
@@ -247,37 +289,59 @@ export function runCommandAsync(
 export function runCommandUntil(
   command: string,
   criteria: (output: string) => boolean,
-  opts: RunCmdOpts = {
-    env: undefined,
-  }
+  opts: RunCmdOpts & { timeout?: number } = {}
 ): Promise<ChildProcess> {
   const pm = getPackageManagerCommand();
+  const timeout = opts.timeout ?? 30_000;
   const p = exec(`${pm.runNx} ${command}`, {
     cwd: tmpProjPath(),
     encoding: 'utf-8',
     env: {
       CI: 'true',
+      NX_DAEMON: 'true',
+      // Use new versioning by default in e2e tests
+      NX_INTERNAL_USE_LEGACY_VERSIONING: 'false',
       ...getStrippedEnvironmentVariables(),
       ...opts.env,
       FORCE_COLOR: 'false',
     },
+    windowsHide: false,
   });
   return new Promise((res, rej) => {
     let output = '';
     let complete = false;
 
+    const timeoutId = setTimeout(() => {
+      if (!complete) {
+        complete = true;
+        p.kill();
+        logError(
+          `Output did not meet the criteria:`,
+          output
+            .split('\n')
+            .map((l) => `    ${l}`)
+            .join('\n')
+        );
+        rej(new Error(`Timed out after ${timeout}ms waiting for criteria`));
+      }
+    }, timeout);
+
     function checkCriteria(c) {
       output += c.toString();
-      if (criteria(stripConsoleColors(output)) && !complete) {
+      const strippedOutput = stripVTControlCharacters(output);
+      if (criteria(strippedOutput) && !complete) {
         complete = true;
+        clearTimeout(timeoutId);
         res(p);
       }
     }
 
     p.stdout?.on('data', checkCriteria);
     p.stderr?.on('data', checkCriteria);
-    p.on('exit', (code) => {
+    p.on('close', (code) => {
       if (!complete) {
+        complete = true;
+        clearTimeout(timeoutId);
         logError(
           `Original output:`,
           output
@@ -285,9 +349,7 @@ export function runCommandUntil(
             .map((l) => `    ${l}`)
             .join('\n')
         );
-        rej(`Exited with ${code}`);
-      } else {
-        res(p);
+        rej(new Error(`Exited with ${code}`));
       }
     });
   });
@@ -302,10 +364,11 @@ export function runCLIAsync(
   }
 ): Promise<{ stdout: string; stderr: string; combinedOutput: string }> {
   const pm = getPackageManagerCommand();
-  return runCommandAsync(
-    `${opts.silent ? pm.runNxSilent : pm.runNx} ${command}`,
-    opts
-  );
+  const commandToRun = `${opts.silent ? pm.runNxSilent : pm.runNx} ${command} ${
+    (opts.verbose ?? isVerboseE2ERun()) ? ' --verbose' : ''
+  }${opts.redirectStderr ? ' 2>&1' : ''}`;
+
+  return runCommandAsync(commandToRun, opts);
 }
 
 export function runNgAdd(
@@ -329,7 +392,7 @@ export function runNgAdd(
       encoding: 'utf-8',
     });
 
-    const r = stripConsoleColors(result);
+    const r = stripVTControlCharacters(result);
 
     if (opts.verbose ?? isVerboseE2ERun()) {
       output.log({
@@ -350,6 +413,38 @@ export function runNgAdd(
   }
 }
 
+/**
+ * Replaces the run-to-run durations / core counts in Nx's performance report with
+ * stable placeholders so the report can stay in snapshots. Scoped to the report
+ * block (from `Run duration:` to the next `NX` section header or end of output);
+ * no-op when no report is present.
+ *
+ * The Recommendations section is dropped entirely: runs under 30s (every e2e run
+ * when healthy) print none, and a slow run crossing that floor must not flake the
+ * snapshot by re-introducing it.
+ */
+export function normalizePerformanceReport(output: string): string {
+  return output.replace(
+    /\n[ \t]*Run duration:[\s\S]*?(?=\n[ \t]*\n(?:[ \t]*\n)*[ \t]*NX |\s*$)/g,
+    (block) =>
+      block
+        .replace(/\n[ \t]*\n[ \t]*Recommendations?:[\s\S]*$/, '')
+        // Durations: match the minute form ("1m 30s") first so its "30s" isn't matched
+        // alone; the optional "<" also captures a "<1ms" (sub-millisecond) duration.
+        .replace(/<?(?:\b\d+m \d+s\b|\b\d+(?:\.\d+)?m?s\b)/g, '{DURATION}')
+        .replace(/\b\d+(?= cores?\b)/g, '{CORES}')
+        // Longest-tasks list right-aligns durations (padStart); collapse the varying
+        // id→duration gap back to a fixed 4-space separator so the table is deterministic.
+        .replace(/^([ \t]+\S+) {4,}(\{DURATION\})$/gm, '$1    $2')
+        // Stat rows align values by padding the label column, whose width may change;
+        // collapse the label→value gap so the snapshot doesn't depend on that padding.
+        .replace(
+          /^([ \t]*(?:Run duration|Cache|Critical path|Recoverable time):) +/gm,
+          '$1 '
+        )
+  );
+}
+
 export function runCLI(
   command: string,
   opts: RunCmdOpts = {
@@ -359,43 +454,68 @@ export function runCLI(
     redirectStderr: undefined,
   }
 ): string {
+  const timeoutMs = opts.timeout ?? 5 * 60 * 1000;
   try {
     const pm = getPackageManagerCommand();
     const commandToRun = `${pm.runNxSilent} ${command} ${
-      opts.verbose ?? isVerboseE2ERun() ? ' --verbose' : ''
+      (opts.verbose ?? isVerboseE2ERun()) ? ' --verbose' : ''
     }${opts.redirectStderr ? ' 2>&1' : ''}`;
-    const logs = execSync(commandToRun, {
+    logInfo(`Run Command: ${command}`);
+    const startTime = performance.now();
+    const result = execSync(commandToRun, {
       cwd: opts.cwd || tmpProjPath(),
       env: {
         CI: 'true',
-        ...getStrippedEnvironmentVariables(),
+        // Daemon is normally off under CI; force it on so e2e exercises the same
+        // daemon-driven graph + watcher path real users hit. Override via opts.daemon = false.
+        NX_DAEMON: opts.daemon === false ? 'false' : 'true',
+        // Use new versioning by default in e2e tests
+        NX_INTERNAL_USE_LEGACY_VERSIONING: 'false',
+        ...getStrippedEnvironmentVariables(opts.cwd),
         ...opts.env,
       },
       encoding: 'utf-8',
       stdio: 'pipe',
       maxBuffer: 50 * 1024 * 1024,
+      timeout: timeoutMs,
     });
+    const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+    logInfo(`Run Command: ${command} (${elapsed}s)`);
 
     if (opts.verbose ?? isVerboseE2ERun()) {
       output.log({
         title: `Original command: ${command}`,
-        bodyLines: [logs as string],
+        bodyLines: [result as string],
         color: 'green',
       });
     }
 
-    const r = stripConsoleColors(logs);
+    const r = stripVTControlCharacters(result);
 
+    runCLI.lastExitCode = 0;
     return r;
   } catch (e) {
+    if (e.killed || e.signal) {
+      const timeoutSec = Math.round(timeoutMs / 1000);
+      const processOutput = stripVTControlCharacters(
+        `${e.stdout ?? ''}\n\n${e.stderr ?? ''}`
+      ).trim();
+      const msg = `Command timed out after ${timeoutSec}s: ${command}\n\nProcess output:\n${processOutput}`;
+      logError(`Command timed out`, msg);
+      throw new Error(msg);
+    }
     if (opts.silenceError) {
-      return stripConsoleColors(e.stdout + e.stderr);
+      runCLI.lastExitCode = (e.status ?? 1) as number;
+      // Without redirectStderr the shell didn't merge stderr into stdout, so concat both.
+      const output = opts.redirectStderr ? e.stdout : e.stdout + e.stderr;
+      return stripVTControlCharacters(output);
     } else {
       logError(`Original command: ${command}`, `${e.stdout}\n\n${e.stderr}`);
       throw e;
     }
   }
 }
+runCLI.lastExitCode = 0 as number;
 
 export function runLernaCLI(
   command: string,
@@ -404,6 +524,7 @@ export function runLernaCLI(
     env: undefined,
   }
 ): string {
+  const timeoutMs = opts.timeout ?? 2 * 60 * 1000;
   try {
     const pm = getPackageManagerCommand();
     const fullCommand = `${pm.runLerna} ${command}`;
@@ -411,11 +532,12 @@ export function runLernaCLI(
       cwd: opts.cwd || tmpProjPath(),
       env: {
         CI: 'true',
-        ...(opts.env || getStrippedEnvironmentVariables()),
+        ...(opts.env || getStrippedEnvironmentVariables(opts.cwd)),
       },
       encoding: 'utf-8',
       stdio: 'pipe',
       maxBuffer: 50 * 1024 * 1024,
+      timeout: timeoutMs,
     });
 
     if (opts.verbose ?? isVerboseE2ERun()) {
@@ -425,12 +547,21 @@ export function runLernaCLI(
         color: 'green',
       });
     }
-    const r = stripConsoleColors(logs);
+    const r = stripVTControlCharacters(logs);
 
     return r;
   } catch (e) {
+    if (e.killed || e.signal) {
+      const timeoutSec = Math.round(timeoutMs / 1000);
+      const processOutput = stripVTControlCharacters(
+        `${e.stdout ?? ''}\n\n${e.stderr ?? ''}`
+      ).trim();
+      const msg = `Command timed out after ${timeoutSec}s: ${command}\n\nProcess output:\n${processOutput}`;
+      logError(`Command timed out`, msg);
+      throw new Error(msg);
+    }
     if (opts.silenceError) {
-      return stripConsoleColors(e.stdout + e.stderr);
+      return stripVTControlCharacters(e.stdout + e.stderr);
     } else {
       logError(`Original command: ${command}`, `${e.stdout}\n\n${e.stderr}`);
       throw e;
@@ -464,4 +595,13 @@ export function waitUntil(
       reject(new Error(`Timed out waiting for condition to return true`));
     }, opts.timeout);
   });
+}
+
+export function isDockerAvailable() {
+  try {
+    const dockerVersionInfo = runCommand(`docker info -f json`);
+    return !dockerVersionInfo.includes('Cannot connect to the Docker daemon');
+  } catch {
+    return false;
+  }
 }

@@ -1,19 +1,159 @@
 import {
-  formatFiles,
   generateFiles,
   getPackageManagerVersion,
   names,
-  NxJsonConfiguration,
-  PackageManager,
-  Tree,
+  type NxJsonConfiguration,
+  type PackageManager,
+  type Tree,
   updateJson,
   writeJson,
 } from '@nx/devkit';
-import { nxVersion } from '../../utils/versions';
+import {
+  connectToNxCloud,
+  createNxCloudOnboardingURL,
+  setupAiAgentsGenerator,
+} from '@nx/devkit/internal';
 import { join } from 'path';
-import { Preset } from '../utils/presets';
+import { gte } from 'semver';
 import { deduceDefaultBase } from '../../utilities/default-base';
-import { NormalizedSchema } from './new';
+import { nxVersion } from '../../utils/versions';
+import { Preset } from '../utils/presets';
+import type { NormalizedSchema } from './new';
+
+type PresetInfo = {
+  generateAppCmd?: string;
+  generateLibCmd?: string;
+  generateNxReleaseInfo?: boolean;
+  learnMoreLink?: string;
+};
+
+// map from the preset to the name of the plugin s.t. the README can have a more
+// meaningful generator command.
+const presetToPluginMap: { [key in Preset]: PresetInfo } = {
+  [Preset.Apps]: {
+    learnMoreLink:
+      'https://nx.dev/getting-started/intro#learn-nx?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NPM]: {
+    generateNxReleaseInfo: true,
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/npm-workspaces-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.TS]: {
+    generateLibCmd: '@nx/js',
+    generateNxReleaseInfo: true,
+    learnMoreLink:
+      'https://nx.dev/nx-api/js?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.WebComponents]: {
+    generateAppCmd: null,
+    learnMoreLink:
+      'https://nx.dev/getting-started/intro#learn-nx?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.AngularMonorepo]: {
+    generateAppCmd: '@nx/angular',
+    generateLibCmd: '@nx/angular',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/angular-monorepo-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.AngularStandalone]: {
+    generateAppCmd: '@nx/angular',
+    generateLibCmd: '@nx/angular',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/angular-standalone-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.ReactMonorepo]: {
+    generateAppCmd: '@nx/react',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/react-monorepo-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.ReactStandalone]: {
+    generateAppCmd: '@nx/react',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/react-standalone-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NextJsStandalone]: {
+    generateAppCmd: '@nx/next',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/nx-api/next?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.ReactNative]: {
+    generateAppCmd: '@nx/react-native',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/nx-api/react-native?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.VueMonorepo]: {
+    generateAppCmd: '@nx/vue',
+    generateLibCmd: '@nx/vue',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/vue-standalone-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.VueStandalone]: {
+    generateAppCmd: '@nx/vue',
+    generateLibCmd: '@nx/vue',
+    learnMoreLink:
+      'https://nx.dev/getting-started/tutorials/vue-standalone-tutorial?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.Nuxt]: {
+    generateAppCmd: '@nx/nuxt',
+    generateLibCmd: '@nx/vue',
+    learnMoreLink:
+      'https://nx.dev/nx-api/nuxt?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NuxtStandalone]: {
+    generateAppCmd: '@nx/nuxt',
+    generateLibCmd: '@nx/vue',
+    learnMoreLink:
+      'https://nx.dev/nx-api/nuxt?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.Expo]: {
+    generateAppCmd: '@nx/expo',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/nx-api/expo?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NextJs]: {
+    generateAppCmd: '@nx/next',
+    generateLibCmd: '@nx/react',
+    learnMoreLink:
+      'https://nx.dev/nx-api/next?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.Nest]: {
+    generateAppCmd: '@nx/nest',
+    generateLibCmd: '@nx/node',
+    learnMoreLink:
+      'https://nx.dev/nx-api/nest?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.Express]: {
+    generateAppCmd: '@nx/express',
+    generateLibCmd: '@nx/node',
+    learnMoreLink:
+      'https://nx.dev/nx-api/express?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NodeStandalone]: {
+    generateAppCmd: '@nx/node',
+    generateLibCmd: '@nx/node',
+    learnMoreLink:
+      'https://nx.dev/nx-api/node?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.NodeMonorepo]: {
+    generateAppCmd: '@nx/node',
+    generateLibCmd: '@nx/node',
+    learnMoreLink:
+      'https://nx.dev/nx-api/node?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+  [Preset.TsStandalone]: {
+    generateAppCmd: null,
+    generateLibCmd: null,
+    generateNxReleaseInfo: true,
+    learnMoreLink:
+      'https://nx.dev/nx-api/js?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects',
+  },
+};
 
 export async function generateWorkspaceFiles(
   tree: Tree,
@@ -29,13 +169,41 @@ export async function generateWorkspaceFiles(
     tree.root
   );
   options = normalizeOptions(options);
-  createReadme(tree, options);
   createFiles(tree, options);
-  createNxJson(tree, options);
+  const nxJson = createNxJson(tree, options);
+
+  const token =
+    options.nxCloud !== 'skip'
+      ? await connectToNxCloud(
+          tree,
+          {
+            installationSource: 'create-nx-workspace',
+            directory: options.directory,
+            github: options.useGitHub,
+          },
+          nxJson
+        )
+      : null;
+
+  await createReadme(tree, options, token);
+
+  let aiAgentsCallback: () => unknown | undefined = undefined;
+  if (options.aiAgents && options.aiAgents.length > 0) {
+    aiAgentsCallback = await setupAiAgentsGenerator(tree, {
+      directory: options.directory,
+      writeNxCloudRules: options.nxCloud !== 'skip',
+      packageVersion: 'latest',
+      agents: [...options.aiAgents],
+    });
+  }
 
   const [packageMajor] = packageManagerVersion.split('.');
   if (options.packageManager === 'pnpm' && +packageMajor >= 7) {
-    createNpmrc(tree, options);
+    if (gte(packageManagerVersion, '10.6.0')) {
+      addPnpmSettings(tree, options, packageManagerVersion);
+    } else {
+      createNpmrc(tree, options);
+    }
   } else if (options.packageManager === 'yarn') {
     if (+packageMajor >= 2) {
       createYarnrcYml(tree, options);
@@ -47,21 +215,21 @@ export async function generateWorkspaceFiles(
   addNpmScripts(tree, options);
   setUpWorkspacesInPackageJson(tree, options);
 
-  await formatFiles(tree);
+  return { token, aiAgentsCallback };
 }
 
 function setPresetProperty(tree: Tree, options: NormalizedSchema) {
-  updateJson(tree, join(options.directory, 'nx.json'), (json) => {
-    if (options.preset === Preset.NPM) {
+  if (options.preset === Preset.NPM) {
+    updateJson(tree, join(options.directory, 'nx.json'), (json) => {
       addPropertyWithStableKeys(json, 'extends', 'nx/presets/npm.json');
-    }
-    return json;
-  });
+      return json;
+    });
+  }
 }
 
 function createNxJson(
   tree: Tree,
-  { directory, defaultBase, preset }: NormalizedSchema
+  { directory, defaultBase, preset, analytics }: NormalizedSchema
 ) {
   const nxJson: NxJsonConfiguration & { $schema: string } = {
     $schema: './node_modules/nx/schemas/nx-schema.json',
@@ -69,15 +237,11 @@ function createNxJson(
     targetDefaults:
       process.env.NX_ADD_PLUGINS === 'false'
         ? {
-            build: {
-              cache: true,
-              dependsOn: ['^build'],
-            },
-            lint: {
-              cache: true,
-            },
+            build: { cache: true, dependsOn: ['^build'] },
+            lint: { cache: true },
           }
         : undefined,
+    analytics,
   };
 
   if (defaultBase === 'main') {
@@ -90,12 +254,17 @@ function createNxJson(
       sharedGlobals: [],
     };
     if (process.env.NX_ADD_PLUGINS === 'false') {
-      nxJson.targetDefaults.build.inputs = ['production', '^production'];
+      const build = nxJson.targetDefaults?.build;
+      if (build && !Array.isArray(build)) {
+        build.inputs = ['production', '^production'];
+      }
       nxJson.useInferencePlugins = false;
     }
   }
 
   writeJson<NxJsonConfiguration>(tree, join(directory, 'nx.json'), nxJson);
+
+  return nxJson;
 }
 
 function createFiles(tree: Tree, options: NormalizedSchema) {
@@ -107,12 +276,14 @@ function createFiles(tree: Tree, options: NormalizedSchema) {
     options.preset === Preset.NuxtStandalone ||
     options.preset === Preset.NodeStandalone ||
     options.preset === Preset.NextJsStandalone ||
-    options.preset === Preset.RemixStandalone ||
     options.preset === Preset.TsStandalone
       ? './files-root-app'
-      : options.preset === Preset.NPM
-      ? './files-package-based-repo'
-      : './files-integrated-repo';
+      : (options.preset === Preset.TS &&
+            options.workspaces &&
+            process.env.NX_ADD_PLUGINS !== 'false') ||
+          options.preset === Preset.NPM
+        ? './files-package-based-repo'
+        : './files-integrated-repo';
   generateFiles(tree, join(__dirname, filesDirName), options.directory, {
     formattedNames,
     dot: '.',
@@ -122,27 +293,66 @@ function createFiles(tree: Tree, options: NormalizedSchema) {
     ...(options as object),
     nxVersion,
     packageManager: options.packageManager,
+    // After the spread and always defined: `formatter` is optional on the
+    // schema, and EJS throws a ReferenceError on a key that is absent rather
+    // than treating it as undefined.
+    formatter: options.formatter ?? 'none',
   });
 }
 
-function createReadme(
+async function createReadme(
   tree: Tree,
-  { name, appName, directory, preset }: NormalizedSchema
+  { name, appName, directory, preset, nxCloud, workspaces }: NormalizedSchema,
+  nxCloudToken?: string
 ) {
   const formattedNames = names(name);
+
+  // default to an empty one for custom presets
+  const presetInfo: PresetInfo = presetToPluginMap[preset] ?? {
+    package: '',
+    generateLibCmd: null,
+  };
+
+  const nxCloudOnboardingUrl = nxCloudToken
+    ? await createNxCloudOnboardingURL('readme', nxCloudToken, undefined, false)
+    : null;
+
   generateFiles(tree, join(__dirname, './files-readme'), directory, {
     formattedNames,
     isJsStandalone: preset === Preset.TsStandalone,
+    isTsPreset: preset === Preset.TS,
+    isUsingNewTsSolutionSetup:
+      process.env.NX_ADD_PLUGINS !== 'false' && workspaces,
+    isEmptyRepo: !appName,
     appName,
+    generateAppCmd: presetInfo.generateAppCmd,
+    generateLibCmd: presetInfo.generateLibCmd,
+    generateNxReleaseInfo: presetInfo.generateNxReleaseInfo,
+    learnMoreLink: presetInfo.learnMoreLink,
     serveCommand:
       preset === Preset.NextJs || preset === Preset.NextJsStandalone
         ? 'dev'
         : 'serve',
     name,
+    nxCloud,
+    nxCloudOnboardingUrl,
   });
 }
 
-// ensure that pnpm install add all the missing peer deps
+function addPnpmSettings(
+  tree: Tree,
+  options: NormalizedSchema,
+  packageManagerVersion: string
+) {
+  const buildAllowlist = gte(packageManagerVersion, '11.0.0')
+    ? `allowBuilds:\n  nx: true`
+    : `onlyBuiltDependencies:\n  - nx`;
+
+  tree.write(
+    join(options.directory, 'pnpm-workspace.yaml'),
+    `autoInstallPeers: true\n${buildAllowlist}\n`
+  );
+}
 
 function createNpmrc(tree: Tree, options: NormalizedSchema) {
   tree.write(
@@ -217,21 +427,46 @@ function normalizeOptions(options: NormalizedSchema) {
     name,
     ...options,
     defaultBase,
+    nxCloud: options.nxCloud ?? 'skip',
   };
 }
 
 function setUpWorkspacesInPackageJson(tree: Tree, options: NormalizedSchema) {
-  if (options.preset === Preset.NPM) {
+  if (
+    options.preset === Preset.NPM ||
+    (options.preset === Preset.TS &&
+      process.env.NX_ADD_PLUGINS !== 'false' &&
+      options.workspaces) ||
+    ((options.preset === Preset.Expo ||
+      options.preset === Preset.NextJs ||
+      options.preset === Preset.ReactMonorepo ||
+      options.preset === Preset.ReactNative ||
+      options.preset === Preset.VueMonorepo ||
+      options.preset === Preset.Nuxt ||
+      options.preset === Preset.NodeMonorepo ||
+      options.preset === Preset.Express) &&
+      options.workspaces)
+  ) {
+    const workspaces = options.workspaceGlobs ?? ['packages/*'];
     if (options.packageManager === 'pnpm') {
-      tree.write(
-        join(options.directory, 'pnpm-workspace.yaml'),
-        `packages:
-  - 'packages/*'
-`
-      );
+      const pnpmWorkspacePath = join(options.directory, 'pnpm-workspace.yaml');
+
+      let content = `packages:
+  ${workspaces.map((workspace) => `- "${workspace}"`).join('\n  ')}
+`;
+
+      if (tree.exists(pnpmWorkspacePath)) {
+        // already added to set the peer deps settings for pnpm 10.6.0+
+        const existingContent = tree.read(pnpmWorkspacePath, 'utf-8');
+        if (existingContent.trim().length) {
+          content = `${content}\n${existingContent}`;
+        }
+      }
+
+      tree.write(pnpmWorkspacePath, content);
     } else {
       updateJson(tree, join(options.directory, 'package.json'), (json) => {
-        json.workspaces = ['packages/*'];
+        json.workspaces = workspaces;
         return json;
       });
     }

@@ -1,30 +1,31 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
-import { getProjects, readProjectConfiguration, Tree } from '@nx/devkit';
+import { getInstalledCypressMajorVersion } from '@nx/cypress/internal';
+import { readProjectConfiguration, Tree } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { Linter } from '@nx/eslint';
 import { applicationGenerator } from './application';
 import { Schema } from './schema';
 // need to mock cypress otherwise it'll use the nx installed version from package.json
 //  which is v9 while we are testing for the new v10 version
-jest.mock('@nx/cypress/src/utils/cypress-version');
+jest.mock('@nx/cypress/internal', () => ({
+  ...jest.requireActual('@nx/cypress/internal'),
+  getInstalledCypressMajorVersion: jest.fn(),
+}));
 describe('react app generator (legacy)', () => {
   let appTree: Tree;
   let schema: Schema = {
     compiler: 'babel',
     e2eTestRunner: 'cypress',
     skipFormat: false,
-    name: 'my-app',
-    linter: Linter.EsLint,
+    directory: 'my-app',
+    linter: 'eslint',
     style: 'css',
     strict: true,
-    projectNameAndRootFormat: 'as-provided',
     addPlugin: false,
   };
   let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
+    ReturnType<typeof getInstalledCypressMajorVersion>
+  > = getInstalledCypressMajorVersion as never;
 
   beforeEach(() => {
     mockedInstalledCypressVersion.mockReturnValue(10);
@@ -34,7 +35,7 @@ describe('react app generator (legacy)', () => {
   it('should setup webpack config that is compatible without project targets', async () => {
     await applicationGenerator(appTree, {
       ...schema,
-      name: 'my-app',
+      directory: 'my-app',
       bundler: 'webpack',
     });
 
@@ -123,22 +124,83 @@ describe('react app generator (legacy)', () => {
         (config) => {
           // Update the webpack config as needed here.
           // e.g. \`config.plugins.push(new MyPlugin())\`
+          config.output.clean = true;
           return config;
-        }
+        },
       );
       "
     `);
   });
 
+  it('should not write a dev-server port that was never requested', async () => {
+    await applicationGenerator(appTree, {
+      ...schema,
+      directory: 'default-app',
+      bundler: 'webpack',
+      skipFormat: true,
+    });
+
+    // @nx/webpack:dev-server already defaults to 4200; restating it here would be noise.
+    expect(
+      readProjectConfiguration(appTree, 'default-app').targets.serve.options
+    ).not.toHaveProperty('port');
+  });
+
+  it('should write an explicitly requested port to the serve target', async () => {
+    await applicationGenerator(appTree, {
+      ...schema,
+      directory: 'pinned-app',
+      bundler: 'webpack',
+      port: 4321,
+      skipFormat: true,
+    });
+
+    expect(
+      readProjectConfiguration(appTree, 'pinned-app').targets.serve.options.port
+    ).toBe(4321);
+  });
+
+  it('should write port 0, which asks the dev server for a free port', async () => {
+    await applicationGenerator(appTree, {
+      ...schema,
+      directory: 'ephemeral-app',
+      bundler: 'webpack',
+      port: 0,
+      skipFormat: true,
+    });
+
+    // 0 is schema-valid and meaningful; a truthiness guard here would drop it and
+    // silently serve on the executor's 4200.
+    expect(
+      readProjectConfiguration(appTree, 'ephemeral-app').targets.serve.options
+        .port
+    ).toBe(0);
+  });
+
+  it('should accept the deprecated devServerPort from programmatic callers', async () => {
+    await applicationGenerator(appTree, {
+      ...schema,
+      directory: 'aliased-app',
+      bundler: 'webpack',
+      devServerPort: 4322,
+      skipFormat: true,
+    });
+
+    expect(
+      readProjectConfiguration(appTree, 'aliased-app').targets.serve.options
+        .port
+    ).toBe(4322);
+  });
+
   it('should setup vite', async () => {
     await applicationGenerator(appTree, {
       ...schema,
-      name: 'my-vite-app',
+      directory: 'my-vite-app',
       bundler: 'vite',
       skipFormat: true,
     });
     expect(
-      appTree.read('my-vite-app/vite.config.ts', 'utf-8')
+      appTree.read('my-vite-app/vite.config.mts', 'utf-8')
     ).toMatchSnapshot();
   });
 });

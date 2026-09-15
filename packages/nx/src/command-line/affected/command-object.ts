@@ -1,4 +1,6 @@
 import { CommandModule } from 'yargs';
+import { handleErrors } from '../../utils/handle-errors';
+import { handleImport } from '../../utils/handle-import';
 import { linkToNxDevAndExamples } from '../yargs-utils/documentation';
 import {
   withAffectedOptions,
@@ -8,18 +10,21 @@ import {
   withOverrides,
   withRunOptions,
   withTargetAndConfigurationOption,
+  withTuiOptions,
 } from '../yargs-utils/shared-options';
-import { handleErrors } from '../../utils/params';
 
 export const yargsAffectedCommand: CommandModule = {
   command: 'affected',
-  describe: 'Run target for affected projects',
+  describe:
+    'Run target for affected projects. Affected projects are projects that have been changed and projects that depend on the changed projects. See https://nx.dev/ci/features/affected for more details.',
   builder: (yargs) =>
     linkToNxDevAndExamples(
       withAffectedOptions(
-        withRunOptions(
-          withOutputStyleOption(
-            withTargetAndConfigurationOption(withBatch(yargs))
+        withTuiOptions(
+          withRunOptions(
+            withOutputStyleOption(
+              withTargetAndConfigurationOption(withBatch(yargs))
+            )
           )
         )
       )
@@ -40,7 +45,7 @@ export const yargsAffectedCommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        return (await import('./affected')).affected(
+        return (await handleImport('./affected.js', __dirname)).affected(
           'affected',
           withOverrides(args)
         );
@@ -56,7 +61,9 @@ export const yargsAffectedTestCommand: CommandModule = {
   builder: (yargs) =>
     linkToNxDevAndExamples(
       withAffectedOptions(
-        withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        withTuiOptions(
+          withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        )
       ),
       'affected'
     ),
@@ -64,10 +71,13 @@ export const yargsAffectedTestCommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        return (await import('./affected')).affected('affected', {
-          ...withOverrides(args),
-          target: 'test',
-        });
+        return (await handleImport('./affected.js', __dirname)).affected(
+          'affected',
+          {
+            ...withOverrides(args),
+            target: 'test',
+          }
+        );
       }
     );
     process.exit(exitCode);
@@ -80,7 +90,9 @@ export const yargsAffectedBuildCommand: CommandModule = {
   builder: (yargs) =>
     linkToNxDevAndExamples(
       withAffectedOptions(
-        withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        withTuiOptions(
+          withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        )
       ),
       'affected'
     ),
@@ -88,10 +100,13 @@ export const yargsAffectedBuildCommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        return (await import('./affected')).affected('affected', {
-          ...withOverrides(args),
-          target: 'build',
-        });
+        return (await handleImport('./affected.js', __dirname)).affected(
+          'affected',
+          {
+            ...withOverrides(args),
+            target: 'build',
+          }
+        );
       }
     );
     process.exit(exitCode);
@@ -104,7 +119,9 @@ export const yargsAffectedLintCommand: CommandModule = {
   builder: (yargs) =>
     linkToNxDevAndExamples(
       withAffectedOptions(
-        withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        withTuiOptions(
+          withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        )
       ),
       'affected'
     ),
@@ -112,10 +129,13 @@ export const yargsAffectedLintCommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        return (await import('./affected')).affected('affected', {
-          ...withOverrides(args),
-          target: 'lint',
-        });
+        return (await handleImport('./affected.js', __dirname)).affected(
+          'affected',
+          {
+            ...withOverrides(args),
+            target: 'lint',
+          }
+        );
       }
     );
     process.exit(exitCode);
@@ -128,7 +148,9 @@ export const yargsAffectedE2ECommand: CommandModule = {
   builder: (yargs) =>
     linkToNxDevAndExamples(
       withAffectedOptions(
-        withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        withTuiOptions(
+          withRunOptions(withOutputStyleOption(withConfiguration(yargs)))
+        )
       ),
       'affected'
     ),
@@ -136,10 +158,13 @@ export const yargsAffectedE2ECommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        return (await import('./affected')).affected('affected', {
-          ...withOverrides(args),
-          target: 'e2e',
-        });
+        return (await handleImport('./affected.js', __dirname)).affected(
+          'affected',
+          {
+            ...withOverrides(args),
+            target: 'e2e',
+          }
+        );
       }
     );
     process.exit(exitCode);

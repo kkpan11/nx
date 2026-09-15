@@ -1,9 +1,11 @@
 import { output } from '../../utils/output';
 import { TaskStatus } from '../tasks-runner';
-import { getPrintableCommandArgsForTask } from '../utils';
-import type { LifeCycle } from '../life-cycle';
+import {
+  getPrintableCommandArgsForTask,
+  getUnparsedOverrideArgs,
+} from '../utils';
+import type { LifeCycle, TaskResult } from '../life-cycle';
 import { Task } from '../../config/task-graph';
-import { formatFlags, formatTargetsAndProjects } from './formatting-utils';
 
 export class InvokeRunnerTerminalOutputLifeCycle implements LifeCycle {
   failedTasks = [] as Task[];
@@ -15,14 +17,12 @@ export class InvokeRunnerTerminalOutputLifeCycle implements LifeCycle {
     output.log({
       color: 'cyan',
       title: `Running ${this.tasks.length} tasks:`,
-      bodyLines: this.tasks.map(
-        (task) =>
-          `- Task ${task.id} ${
-            task.overrides.__overrides_unparsed__.length > 0
-              ? `Overrides: ${task.overrides.__overrides_unparsed__.join(' ')}`
-              : ''
-          }`
-      ),
+      bodyLines: this.tasks.map((task) => {
+        const unparsed = getUnparsedOverrideArgs(task);
+        return `- Task ${task.id} ${
+          unparsed.length > 0 ? `Overrides: ${unparsed.join(' ')}` : ''
+        }`;
+      }),
     });
 
     output.addVerticalSeparatorWithoutNewLines('cyan');
@@ -33,10 +33,9 @@ export class InvokeRunnerTerminalOutputLifeCycle implements LifeCycle {
     const taskIds = this.tasks.map((task) => {
       const cached = this.cachedTasks.indexOf(task) !== -1;
       const failed = this.failedTasks.indexOf(task) !== -1;
+      const unparsed = getUnparsedOverrideArgs(task);
       return `- Task ${task.id} ${
-        task.overrides.__overrides_unparsed__.length > 0
-          ? `Overrides: ${task.overrides.__overrides_unparsed__.join(' ')}`
-          : ''
+        unparsed.length > 0 ? `Overrides: ${unparsed.join(' ')}` : ''
       } ${cached ? 'CACHED' : ''} ${failed ? 'FAILED' : ''}`;
     });
     if (this.failedTasks.length === 0) {
@@ -54,9 +53,7 @@ export class InvokeRunnerTerminalOutputLifeCycle implements LifeCycle {
     }
   }
 
-  endTasks(
-    taskResults: { task: Task; status: TaskStatus; code: number }[]
-  ): void {
+  endTasks(taskResults: TaskResult[]): void {
     for (let t of taskResults) {
       if (t.status === 'failure') {
         this.failedTasks.push(t.task);

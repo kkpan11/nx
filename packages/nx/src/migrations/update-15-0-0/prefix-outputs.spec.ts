@@ -1,3 +1,5 @@
+import '../../internal-testing-utils/mock-prettier';
+
 import { createTreeWithEmptyWorkspace } from '../../generators/testing-utils/create-tree-with-empty-workspace';
 import type { Tree } from '../../generators/tree';
 import {
@@ -78,6 +80,48 @@ describe('15.0.0 migration (prefix-outputs)', () => {
             "{options.outputPath}",
           ],
         },
+      }
+    `);
+  });
+
+  it('should prefix outputs in array-shaped target defaults, leaving filters intact', async () => {
+    const nxJson = readNxJson(tree);
+    updateNxJson(tree, {
+      ...nxJson,
+      targetDefaults: {
+        build: [
+          { outputs: ['dist', '{projectRoot}/build'] },
+          {
+            filter: { plugin: '@nx/vite' },
+            outputs: ['out', '{options.outputPath}'],
+          },
+        ],
+      },
+    });
+
+    await prefixOutputs(tree);
+
+    const updated = readNxJson(tree);
+
+    expect(updated.targetDefaults).toMatchInlineSnapshot(`
+      {
+        "build": [
+          {
+            "outputs": [
+              "{workspaceRoot}/dist",
+              "{projectRoot}/build",
+            ],
+          },
+          {
+            "filter": {
+              "plugin": "@nx/vite",
+            },
+            "outputs": [
+              "{workspaceRoot}/out",
+              "{options.outputPath}",
+            ],
+          },
+        ],
       }
     `);
   });

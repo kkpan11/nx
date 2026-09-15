@@ -1,15 +1,15 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { assertMinimumCypressVersion } from '@nx/cypress/src/utils/cypress-version';
-import { Tree } from '@nx/devkit';
+import { assertMinimumCypressVersion } from '@nx/cypress/internal';
+import { Tree, updateJson } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { Linter } from '@nx/eslint';
 import { UnitTestRunner } from '../../utils/test-runners';
 import { componentGenerator } from '../component/component';
 import { generateTestLibrary } from '../utils/testing';
 import { componentTestGenerator } from './component-test';
+import { EOL } from 'node:os';
 
-jest.mock('@nx/cypress/src/utils/cypress-version');
+jest.mock('@nx/cypress/internal');
 
 describe('Angular Cypress Component Test Generator', () => {
   let tree: Tree;
@@ -25,37 +25,37 @@ describe('Angular Cypress Component Test Generator', () => {
 
   it('should handle component w/o inputs', async () => {
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       unitTestRunner: UnitTestRunner.None,
-      linter: Linter.None,
+      linter: 'none',
       skipFormat: true,
     });
     await componentGenerator(tree, {
-      project: 'my-lib',
+      path: 'my-lib/src/lib/my-lib/my-lib',
       name: 'my-lib',
       skipFormat: true,
     });
     await componentTestGenerator(tree, {
-      componentName: 'MyLibComponent',
-      componentFileName: './my-lib.component',
+      componentName: 'MyLib',
+      componentFileName: './my-lib',
       project: 'my-lib',
       componentDir: 'src/lib/my-lib',
       skipFormat: true,
     });
     expect(
-      tree.read('my-lib/src/lib/my-lib/my-lib.component.cy.ts', 'utf-8')
+      tree.read('my-lib/src/lib/my-lib/my-lib.cy.ts', 'utf-8')
     ).toMatchSnapshot();
   });
 
   it('should generate a component test', async () => {
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       unitTestRunner: UnitTestRunner.None,
-      linter: Linter.None,
+      linter: 'none',
       skipFormat: true,
     });
     await componentGenerator(tree, {
-      project: 'my-lib',
+      path: 'my-lib/src/lib/my-lib/',
       name: 'my-lib',
       skipFormat: true,
     });
@@ -103,13 +103,13 @@ export class MyLibComponent implements OnInit {
 
   it('should work with standalone components', async () => {
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       unitTestRunner: UnitTestRunner.None,
-      linter: Linter.None,
+      linter: 'none',
       skipFormat: true,
     });
     await componentGenerator(tree, {
-      project: 'my-lib',
+      path: 'my-lib/src/lib/my-lib',
       name: 'my-lib',
       standalone: true,
       skipFormat: true,
@@ -156,15 +156,15 @@ export class MyLibComponent implements OnInit {
 
   it('should not overwrite an existing component test', async () => {
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       unitTestRunner: UnitTestRunner.None,
-      linter: Linter.None,
+      linter: 'none',
       skipFormat: true,
     });
 
     await componentGenerator(tree, {
       name: 'my-lib',
-      project: 'my-lib',
+      path: 'my-lib/src/lib/my-lib',
       skipFormat: true,
     });
     tree.write(
@@ -187,24 +187,24 @@ export class MyLibComponent implements OnInit {
 
   it('should be idempotent', async () => {
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       unitTestRunner: UnitTestRunner.None,
-      linter: Linter.None,
+      linter: 'none',
       skipFormat: true,
     });
 
     await componentGenerator(tree, {
       name: 'my-lib',
-      project: 'my-lib',
+      path: 'my-lib/src/lib/my-lib/my-lib',
       skipFormat: true,
     });
 
     const expected = `import { TestBed } from '@angular/core/testing';
-import { MyLibComponent } from './my-lib.component';
+import { MyLib } from './my-lib';
 
-describe(MyLibComponent.name, () => {
+describe(MyLib.name, () => {
   beforeEach(() => {
-    TestBed.overrideComponent(MyLibComponent, {
+    TestBed.overrideComponent(MyLib, {
       add: {
         imports: [],
         providers: []
@@ -213,31 +213,58 @@ describe(MyLibComponent.name, () => {
   });
 
   it('renders', () => {
-    cy.mount(MyLibComponent);
+    cy.mount(MyLib);
   });
 });
 `;
 
     await componentTestGenerator(tree, {
-      componentName: 'MyLibComponent',
-      componentFileName: './my-lib.component',
+      componentName: 'MyLib',
+      componentFileName: './my-lib',
       project: 'my-lib',
       componentDir: 'src/lib/my-lib',
       skipFormat: true,
     });
     expect(
-      tree.read('my-lib/src/lib/my-lib/my-lib.component.cy.ts', 'utf-8')
+      tree
+        .read('my-lib/src/lib/my-lib/my-lib.cy.ts', 'utf-8')
+        .replaceAll(EOL, '\n')
     ).toEqual(expected);
 
     await componentTestGenerator(tree, {
-      componentName: 'MyLibComponent',
-      componentFileName: './my-lib.component',
+      componentName: 'MyLib',
+      componentFileName: './my-lib',
       project: 'my-lib',
       componentDir: 'src/lib/my-lib',
       skipFormat: true,
     });
     expect(
-      tree.read('my-lib/src/lib/my-lib/my-lib.component.cy.ts', 'utf-8')
+      tree
+        .read('my-lib/src/lib/my-lib/my-lib.cy.ts', 'utf-8')
+        .replaceAll(EOL, '\n')
     ).toEqual(expected);
+  });
+
+  it('should throw an error when the cypress version does not support the angular version', async () => {
+    await generateTestLibrary(tree, {
+      directory: 'my-lib',
+      unitTestRunner: UnitTestRunner.None,
+      linter: 'none',
+      skipFormat: true,
+    });
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = { ...json.dependencies, cypress: '15.20.0' };
+      return json;
+    });
+
+    await expect(
+      componentTestGenerator(tree, {
+        componentName: 'MyLib',
+        componentFileName: './my-lib',
+        project: 'my-lib',
+        componentDir: 'src/lib/my-lib',
+        skipFormat: true,
+      })
+    ).rejects.toThrow(/requires Cypress 15\.20\.1 or higher/);
   });
 });

@@ -50,8 +50,14 @@ export function createCommandGraph(
   nxArgs: NxArgs
 ): CommandGraph {
   const dependencies: Record<string, string[]> = {};
-  for (const projectName of projectNames) {
-    recursiveResolveDeps(projectGraph, projectName, dependencies);
+  if (!nxArgs.excludeTaskDependencies) {
+    for (const projectName of projectNames) {
+      recursiveResolveDeps(projectGraph, projectName, dependencies);
+    }
+  } else {
+    for (const projectName of projectNames) {
+      dependencies[projectName] = [];
+    }
   }
   const roots = Object.keys(dependencies).filter(
     (d) => dependencies[d].length === 0

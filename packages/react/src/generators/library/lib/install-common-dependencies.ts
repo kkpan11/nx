@@ -4,31 +4,32 @@ import {
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
-import { addSwcDependencies } from '@nx/js/src/utils/swc/add-swc-dependencies';
+import { addSwcDependencies } from '@nx/js/internal';
+import { getReactDependenciesVersionsToInstall } from '../../../utils/version-utils';
 import {
   babelCoreVersion,
   babelPresetReactVersion,
-  lessVersion,
   sassVersion,
+  testingLibraryDomVersion,
   testingLibraryReactVersion,
   tsLibVersion,
   typesNodeVersion,
-  typesReactDomVersion,
-  typesReactVersion,
 } from '../../../utils/versions';
 import { NormalizedSchema } from '../schema';
 
-export function installCommonDependencies(
+export async function installCommonDependencies(
   host: Tree,
   options: NormalizedSchema
 ) {
   const tasks: GeneratorCallback[] = [];
 
+  const reactVersions = await getReactDependenciesVersionsToInstall(host);
+
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {
     '@types/node': typesNodeVersion,
-    '@types/react': typesReactVersion,
-    '@types/react-dom': typesReactDomVersion,
+    '@types/react': reactVersions['@types/react'],
+    '@types/react-dom': reactVersions['@types/react-dom'],
   };
 
   if (options.bundler !== 'vite') {
@@ -39,24 +40,22 @@ export function installCommonDependencies(
   // `@nx/webpack` installs them automatically for now.
   // TODO(jack): Once we clean up webpack we can remove this check
   if (options.bundler === 'vite' || options.unitTestRunner === 'vitest') {
-    switch (options.style) {
-      case 'scss':
-        devDependencies['sass'] = sassVersion;
-        break;
-      case 'less':
-        devDependencies['less'] = lessVersion;
-        break;
+    if (options.style === 'scss') {
+      devDependencies['sass'] = sassVersion;
     }
   }
 
   if (options.unitTestRunner && options.unitTestRunner !== 'none') {
     devDependencies['@testing-library/react'] = testingLibraryReactVersion;
+    devDependencies['@testing-library/dom'] = testingLibraryDomVersion;
   }
 
   const baseInstallTask = addDependenciesToPackageJson(
     host,
     dependencies,
-    devDependencies
+    devDependencies,
+    undefined,
+    true
   );
   tasks.push(baseInstallTask);
 
@@ -70,7 +69,9 @@ export function installCommonDependencies(
         {
           '@babel/preset-react': babelPresetReactVersion,
           '@babel/core': babelCoreVersion,
-        }
+        },
+        undefined,
+        true
       )
     );
   }

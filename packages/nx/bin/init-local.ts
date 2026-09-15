@@ -3,22 +3,27 @@ import { performance } from 'perf_hooks';
 import { commandsObject } from '../src/command-line/nx-commands';
 import { WorkspaceTypeAndRoot } from '../src/utils/find-workspace-root';
 import { stripIndents } from '../src/utils/strip-indents';
-
-import * as Mod from 'module';
+import { daemonClient } from '../src/daemon/client/client';
+import { confirmationPrompt } from '../src/utils/prompt-helpers';
+import { output } from '../src/utils/output';
+import { flushAnalytics } from '../src/analytics';
 
 /**
  * Nx is being run inside a workspace.
  *
  * @param workspace Relevant local workspace properties
  */
-
-export function initLocal(workspace: WorkspaceTypeAndRoot) {
+export async function initLocal(workspace: WorkspaceTypeAndRoot) {
   process.env.NX_CLI_SET = 'true';
 
   try {
+    // In case Nx Cloud forcibly exits while the TUI is running, ensure the terminal is restored etc.
+    process.on('exit', (...args) => {
+      if (typeof globalThis.tuiOnProcessExit === 'function') {
+        globalThis.tuiOnProcessExit(...args);
+      }
+    });
     performance.mark('init-local');
-
-    monkeyPatchRequire();
 
     if (workspace.type !== 'nx' && shouldDelegateToAngularCLI()) {
       console.warn(
@@ -29,8 +34,20 @@ export function initLocal(workspace: WorkspaceTypeAndRoot) {
       return;
     }
 
+    // Skip per-TAB shell completion calls — those must not spawn the daemon.
+    if (!process.env.NX_COMPLETE) {
+      try {
+        await ensureNxConsoleInstalledViaDaemon();
+      } catch {}
+    }
+
     const command = process.argv[2];
-    if (command === 'run' || command === 'g' || command === 'generate') {
+    if (
+      command === 'completion' ||
+      command === 'run' ||
+      command === 'g' ||
+      command === 'generate'
+    ) {
       commandsObject.parse(process.argv.slice(2));
     } else if (isKnownCommand(command)) {
       const newArgs = rewriteTargetsAndProjects(process.argv);
@@ -38,6 +55,7 @@ export function initLocal(workspace: WorkspaceTypeAndRoot) {
       const split = newArgs.indexOf('--');
       if (help > -1 && (split === -1 || split > help)) {
         commandsObject.showHelp();
+        process.exit(0);
       } else {
         commandsObject.parse(newArgs);
       }
@@ -46,6 +64,7 @@ export function initLocal(workspace: WorkspaceTypeAndRoot) {
     }
   } catch (e) {
     console.error(e.message);
+    flushAnalytics();
     process.exit(1);
   }
 }
@@ -103,15 +122,49 @@ function isKnownCommand(command: string) {
 
 function shouldDelegateToAngularCLI() {
   const command = process.argv[2];
-  const commands = [
-    'analytics',
-    'cache',
-    'completion',
-    'config',
-    'doc',
-    'update',
-  ];
+  const commands = ['analytics', 'cache', 'config', 'doc', 'update'];
   return commands.indexOf(command) > -1;
+}
+
+async function ensureNxConsoleInstalledViaDaemon(): Promise<void> {
+  // Only proceed if daemon is available
+  if (!daemonClient.enabled() || !(await daemonClient.isServerAvailable())) {
+    return;
+  }
+
+  // Get status from daemon
+  const status = await daemonClient.getNxConsoleStatus();
+
+  // If we should prompt the user
+  if (status.shouldPrompt && process.stdout.isTTY) {
+    output.log({
+      title: "Install Nx's official editor extension to:",
+      bodyLines: [
+        '- Enable your AI assistant to do more by understanding your workspace',
+        '- Add IntelliSense for Nx configuration files',
+        '- Explore your workspace visually',
+      ],
+    });
+
+    try {
+      const shouldInstallNxConsole = await confirmationPrompt({
+        message: 'Install Nx Console? (you can uninstall anytime)',
+        onCancel: () => false,
+      });
+
+      // Set preference and install if user said yes
+      const result = await daemonClient.setNxConsolePreferenceAndInstall(
+        shouldInstallNxConsole
+      );
+
+      if (result.installed) {
+        output.log({ title: 'Successfully installed Nx Console!' });
+      }
+    } catch (error) {
+      // User cancelled or error occurred, save preference as false
+      await daemonClient.setNxConsolePreferenceAndInstall(false);
+    }
+  }
 }
 
 function handleAngularCLIFallbacks(workspace: WorkspaceTypeAndRoot) {
@@ -127,7 +180,7 @@ function handleAngularCLIFallbacks(workspace: WorkspaceTypeAndRoot) {
       `- change versions of packages to match organizational requirements`
     );
     console.log(
-      `And, in general, it is lot more reliable for non-trivial workspaces. Read more at: https://nx.dev/getting-started/nx-and-angular#ng-update-and-nx-migrate`
+      `And, in general, it is lot more reliable for non-trivial workspaces. Read more at: https://nx.dev/docs/technologies/angular/guides/nx-and-angular#ng-update-vs-nx-migrate`
     );
     console.log(
       `Run "nx migrate latest" to update to the latest version of Nx.`
@@ -136,12 +189,6 @@ function handleAngularCLIFallbacks(workspace: WorkspaceTypeAndRoot) {
       `Running "ng update" can still be useful in some dev workflows, so we aren't planning to remove it.`
     );
     console.log(`If you need to use it, run "FORCE_NG_UPDATE=true ng update".`);
-  } else if (process.argv[2] === 'completion') {
-    if (!process.argv[3]) {
-      console.log(`"ng completion" is not natively supported by Nx.
-  Instead, you could try an Nx Editor Plugin for a visual tool to run Nx commands. If you're using VSCode, you can use the Nx Console plugin, or if you're using WebStorm, you could use one of the available community plugins.
-  For more information, see https://nx.dev/getting-started/editor-setup`);
-    }
   } else if (process.argv[2] === 'cache') {
     console.log(`"ng cache" is not natively supported by Nx.
 To clear the cache, you can delete the ".angular/cache" directory (or the directory configured by "cli.cache.path" in the "nx.json" file).
@@ -161,43 +208,4 @@ To update the cache configuration, you can directly update the relevant options 
       process.exit(1);
     }
   }
-}
-
-// TODO(v17): Remove this once the @nrwl/* packages are not
-function monkeyPatchRequire() {
-  const originalRequire = Mod.prototype.require;
-
-  (Mod.prototype.require as any) = function (...args) {
-    const modulePath = args[0];
-    if (!modulePath.startsWith('@nrwl/')) {
-      return originalRequire.apply(this, args);
-    } else {
-      try {
-        // Try the original require
-        return originalRequire.apply(this, args);
-      } catch (e) {
-        if (e.code !== 'MODULE_NOT_FOUND') {
-          throw e;
-        }
-
-        try {
-          // Retry the require with the @nx package
-          return originalRequire.apply(
-            this,
-            args.map((value, i) => {
-              if (i !== 0) {
-                return value;
-              } else {
-                return value.replace('@nrwl/', '@nx/');
-              }
-            })
-          );
-        } catch {
-          // Throw the original error
-          throw e;
-        }
-      }
-    }
-    // do some side-effect of your own
-  };
 }

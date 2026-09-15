@@ -1,4 +1,3 @@
-import { Linter, lintProjectGenerator } from '@nx/eslint';
 import {
   addDependenciesToPackageJson,
   GeneratorCallback,
@@ -6,16 +5,24 @@ import {
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
-import { extraEslintDependencies } from '@nx/react/src/utils/lint';
+import { extraEslintDependencies } from '@nx/react';
 import { NormalizedSchema } from './normalize-options';
 import {
   addExtendsToLintConfig,
   addIgnoresToLintConfig,
-  addOverrideToLintConfig,
+  addPluginsToLintConfig,
+  addPredefinedConfigToFlatLintConfig,
   isEslintConfigSupported,
+  isTypedLintingEnabled,
   updateOverrideInLintConfig,
-} from '@nx/eslint/src/generators/utils/eslint-file';
-import { eslintConfigNextVersion } from '../../../utils/versions';
+  useFlatConfig,
+  addImportToFlatConfig,
+} from '@nx/eslint/internal';
+import {
+  getEslintConfigNextDependenciesVersionsToInstall,
+  isNext16,
+} from '../../../utils/version-utils';
+import { addLintingToProject } from '@nx/js/internal';
 
 export async function addLinting(
   host: Tree,
@@ -24,26 +31,61 @@ export async function addLinting(
   const tasks: GeneratorCallback[] = [];
 
   tasks.push(
-    await lintProjectGenerator(host, {
+    await addLintingToProject(host, {
+      oxlintPlugins: ['nextjs', 'react', 'react-perf', 'jsx-a11y'],
       linter: options.linter,
       project: options.projectName,
       tsConfigPaths: [
         joinPathFragments(options.appProjectRoot, 'tsconfig.app.json'),
       ],
       unitTestRunner: options.unitTestRunner,
-      skipFormat: true,
       rootProject: options.rootProject,
-      setParserOptionsProject: options.setParserOptionsProject,
+      enableTypedLinting: isTypedLintingEnabled(options),
       addPlugin: options.addPlugin,
+      skipPackageJson: options.skipPackageJson,
     })
   );
 
-  if (options.linter === Linter.EsLint && isEslintConfigSupported(host)) {
-    addExtendsToLintConfig(host, options.appProjectRoot, [
-      'plugin:@nx/react-typescript',
-      'next',
-      'next/core-web-vitals',
-    ]);
+  // Everything below configures ESLint — predefined configs, `extends`, ignore
+  // entries — which have no equivalent in other linters.
+
+  if (options.linter === 'eslint' && isEslintConfigSupported(host)) {
+    if (useFlatConfig(host)) {
+      addPredefinedConfigToFlatLintConfig(
+        host,
+        options.appProjectRoot,
+        'flat/react-typescript',
+        { checkBaseConfig: true }
+      );
+      if (await isNext16(host)) {
+        addPluginsToLintConfig(host, options.appProjectRoot, ['@next/next']);
+      } else {
+        // Since Next.js < 16 does not support flat configs yet, we need to use compat fixup.
+        const addExtendsTask = addExtendsToLintConfig(
+          host,
+          options.appProjectRoot,
+          [
+            { name: 'next', needCompatFixup: true },
+            {
+              name: 'next/core-web-vitals',
+              needCompatFixup: true,
+            },
+          ]
+        );
+        tasks.push(addExtendsTask);
+      }
+    } else {
+      const addExtendsTask = addExtendsToLintConfig(
+        host,
+        options.appProjectRoot,
+        [
+          'plugin:@nx/react-typescript',
+          { name: 'next', needCompatFixup: true },
+          { name: 'next/core-web-vitals', needCompatFixup: true },
+        ]
+      );
+      tasks.push(addExtendsTask);
+    }
 
     updateOverrideInLintConfig(
       host,
@@ -65,24 +107,28 @@ export async function addLinting(
         },
       })
     );
-    // add jest specific config
-    if (options.unitTestRunner === 'jest') {
-      addOverrideToLintConfig(host, options.appProjectRoot, {
-        files: ['*.spec.ts', '*.spec.tsx', '*.spec.js', '*.spec.jsx'],
-        env: {
-          jest: true,
-        },
-      });
-    }
-    addIgnoresToLintConfig(host, options.appProjectRoot, ['.next/**/*']);
+    addIgnoresToLintConfig(host, options.appProjectRoot, [
+      '.next/**/*',
+      ...(options.isTsSolutionSetup ? ['**/out-tsc'] : []),
+    ]);
   }
 
-  if (!options.skipPackageJson) {
+  if (options.linter === 'eslint' && !options.skipPackageJson) {
+    const eslintConfigNextVersion =
+      await getEslintConfigNextDependenciesVersionsToInstall(host);
+
     tasks.push(
-      addDependenciesToPackageJson(host, extraEslintDependencies.dependencies, {
-        ...extraEslintDependencies.devDependencies,
-        'eslint-config-next': eslintConfigNextVersion,
-      })
+      addDependenciesToPackageJson(
+        host,
+        extraEslintDependencies.dependencies,
+        {
+          ...extraEslintDependencies.devDependencies,
+          'eslint-config-next': eslintConfigNextVersion,
+          '@next/eslint-plugin-next': eslintConfigNextVersion,
+        },
+        undefined,
+        true
+      )
     );
   }
 

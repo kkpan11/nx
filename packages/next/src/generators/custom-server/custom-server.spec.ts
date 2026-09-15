@@ -1,6 +1,6 @@
 import { Tree, readJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from 'nx/src/devkit-testing-exports';
 import { applicationGenerator } from '../application/application';
+import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 
 describe('app', () => {
   let tree: Tree;
@@ -13,9 +13,8 @@ describe('app', () => {
     const name = uniq('custom-server');
 
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
       customServer: true,
     });
 
@@ -31,9 +30,8 @@ describe('app', () => {
     const name = uniq('custom-server-swc');
 
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
       customServer: true,
       swc: true,
     });

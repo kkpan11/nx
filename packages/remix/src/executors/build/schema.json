@@ -6,6 +6,7 @@
   "title": "Remix Build",
   "description": "Build a Remix app.",
   "type": "object",
+  "x-deprecated": "The `@nx/remix:build` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/remix:convert-to-inferred` to migrate to the `@nx/remix/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "properties": {
     "outputPath": {
       "type": "string",
@@ -27,6 +28,14 @@
       "type": "boolean",
       "description": "Generate a lockfile (e.g. package-lock.json) that matches the workspace lockfile to ensure package versions match.",
       "default": false
+    },
+    "skipOverrides": {
+      "type": "boolean",
+      "description": "Do not add a `overrides` and `resolutions` entries to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
+    "skipPackageManager": {
+      "type": "boolean",
+      "description": "Do not add a `packageManager` entry to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
     },
     "sourcemap": {
       "type": "boolean",

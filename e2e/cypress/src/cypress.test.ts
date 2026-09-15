@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import {
   checkFilesExist,
   cleanupProject,
@@ -6,10 +7,12 @@ import {
   newProject,
   readJson,
   runCLI,
+  runCommand,
   runE2ETests,
+  tmpProjPath,
   uniq,
   updateFile,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 const TEN_MINS_MS = 600_000;
 
@@ -17,7 +20,15 @@ describe('Cypress E2E Test runner', () => {
   const myapp = uniq('myapp');
 
   beforeAll(() => {
-    newProject({ packages: ['@nx/angular', '@nx/next', '@nx/react'] });
+    newProject({
+      packages: [
+        '@nx/angular',
+        '@nx/next',
+        '@nx/react',
+        '@nx/cypress',
+        '@nx/eslint',
+      ],
+    });
   });
 
   afterAll(() => cleanupProject());
@@ -26,8 +37,15 @@ describe('Cypress E2E Test runner', () => {
     'should generate an app with the Cypress as e2e test runner',
     () => {
       runCLI(
-        `generate @nx/react:app ${myapp} --e2eTestRunner=cypress --linter=eslint`
+        `generate @nx/react:app apps/${myapp} --e2eTestRunner=cypress --linter=eslint`
       );
+
+      // Ensure project typechecks (See: https://github.com/nrwl/nx/issues/32930)
+      expect(() =>
+        runCommand(`npx tsc --noEmit`, {
+          cwd: join(tmpProjPath(), 'apps', `${myapp}-e2e`),
+        })
+      ).not.toThrow();
 
       // Making sure the package.json file contains the Cypress dependency
       const packageJson = readJson('package.json');
@@ -75,14 +93,16 @@ describe('env vars', () => {
 });`
       );
 
-      if (runE2ETests('cypress')) {
+      if (await runE2ETests('cypress')) {
         // contains the correct output and works
         const run1 = runCLI(
           `e2e ${myapp}-e2e --config \\'{\\"env\\":{\\"cliArg\\":\\"i am from the cli args\\"}}\\'`
         );
         expect(run1).toContain('All specs passed!');
-        await killPort(4200);
-        // tests should not fail because of a config change
+        // tests should not fail because of a config change. The ESM
+        // shape (import / export default) uses `import.meta.url` rather
+        // than `__filename` so it works under both Nx's native TS strip
+        // (ESM) and Cypress's bundled tsx CJS loader.
         updateFile(
           `apps/${myapp}-e2e/cypress.config.ts`,
           `
@@ -91,7 +111,7 @@ import { nxE2EPreset } from '@nx/cypress/plugins/cypress-preset';
 
 export default defineConfig({
   e2e: {
-    ...nxE2EPreset(__filename, {
+    ...nxE2EPreset(import.meta.url, {
       cypressDir: 'src',
       webServerCommands: {
         default: 'nx run ${myapp}:serve',
@@ -114,9 +134,9 @@ export default defineConfig({
           `e2e ${myapp}-e2e --config \\'{\\"env\\":{\\"cliArg\\":\\"i am from the cli args\\"}}\\'`
         );
         expect(run2).toContain('All specs passed!');
-        await killPort(4200);
 
         // make sure project.json env vars also work
+        checkFilesExist(`apps/${myapp}-e2e/src/e2e/env.cy.ts`);
         updateFile(
           `apps/${myapp}-e2e/src/e2e/env.cy.ts`,
           `
@@ -142,8 +162,6 @@ export default defineConfig({
         );
         const run3 = runCLI(`e2e ${myapp}-e2e`);
         expect(run3).toContain('All specs passed!');
-
-        expect(await killPort(4200)).toBeTruthy();
       }
     },
     TEN_MINS_MS
@@ -154,11 +172,12 @@ export default defineConfig({
     async () => {
       const appName = uniq('next-cy-app');
       runCLI(
-        `generate @nx/next:app ${appName} --directory=apps/${appName} --e2eTestRunner=none --no-interactive  --projectNameAndRootFormat=as-provided`
+        `generate @nx/next:app apps/${appName} --e2eTestRunner=none --no-interactive `
       );
       runCLI(
-        `generate @nx/next:component btn --project=${appName} --directory=apps/${appName}/components --nameAndDirectoryFormat=as-provided --no-interactive`
+        `generate @nx/next:component apps/${appName}/src/components/btn --no-interactive`
       );
+
       runCLI(
         `generate @nx/next:cypress-component-configuration --project=${appName} --generate-tests --no-interactive`
       );
@@ -166,7 +185,7 @@ export default defineConfig({
         `generate @nx/cypress:configuration --project=${appName} --devServerTarget=${appName}:dev --baseUrl=http://localhost:3000 --no-interactive`
       );
 
-      if (runE2ETests('cypress')) {
+      if (await runE2ETests('cypress')) {
         expect(runCLI(`run ${appName}:component-test`)).toContain(
           'All specs passed!'
         );
@@ -182,11 +201,12 @@ export default defineConfig({
     async () => {
       let appName = uniq(`angular-cy-app`);
       runCLI(
-        `generate @nx/angular:app ${appName} --e2eTestRunner=none --no-interactive --bundler=webpack`
+        `generate @nx/angular:app apps/${appName} --e2eTestRunner=none --no-interactive --bundler=webpack --no-zoneless`
       );
       runCLI(
-        `generate @nx/angular:component btn --project=${appName} --no-interactive`
+        `generate @nx/angular:component apps/${appName}/src/app/btn/btn --no-interactive`
       );
+
       runCLI(
         `generate @nx/angular:cypress-component-configuration --project=${appName} --generate-tests --no-interactive`
       );
@@ -194,7 +214,7 @@ export default defineConfig({
         `generate @nx/cypress:e2e --project=${appName} --baseUrl=http://localhost:4200 --no-interactive`
       );
 
-      if (runE2ETests('cypress')) {
+      if (await runE2ETests('cypress')) {
         expect(runCLI(`run ${appName}:component-test`)).toContain(
           'All specs passed!'
         );

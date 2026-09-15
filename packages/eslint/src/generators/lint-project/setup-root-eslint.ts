@@ -4,18 +4,23 @@ import {
   type GeneratorCallback,
   type Tree,
 } from '@nx/devkit';
+import { useFlatConfig } from '../../utils/flat-config';
 import {
   eslintConfigPrettierVersion,
   nxVersion,
-  typescriptESLintVersion,
+  versions,
 } from '../../utils/versions';
-import { getGlobalEsLintConfiguration } from '../init/global-eslint-config';
+import {
+  getGlobalEsLintConfiguration,
+  getGlobalFlatEslintConfiguration,
+} from '../init/global-eslint-config';
 import { findEslintFile } from '../utils/eslint-file';
 
 export type SetupRootEsLintOptions = {
   unitTestRunner?: string;
   skipPackageJson?: boolean;
   rootProject?: boolean;
+  eslintConfigFormat?: 'mjs' | 'cjs';
 };
 
 export function setupRootEsLint(
@@ -26,7 +31,15 @@ export function setupRootEsLint(
   if (rootEslintFile) {
     return () => {};
   }
+  options.eslintConfigFormat ??= 'mjs';
 
+  if (!useFlatConfig(tree)) {
+    return setUpLegacyRootEslintRc(tree, options);
+  }
+  return setUpRootFlatConfig(tree, options);
+}
+
+function setUpLegacyRootEslintRc(tree: Tree, options: SetupRootEsLintOptions) {
   writeJson(
     tree,
     '.eslintrc.json',
@@ -43,16 +56,50 @@ export function setupRootEsLint(
     tree.write('.eslintignore', 'node_modules\n');
   }
 
-  return !options.skipPackageJson
-    ? addDependenciesToPackageJson(
-        tree,
-        {},
-        {
-          '@nx/eslint-plugin': nxVersion,
-          '@typescript-eslint/parser': typescriptESLintVersion,
-          '@typescript-eslint/eslint-plugin': typescriptESLintVersion,
-          'eslint-config-prettier': eslintConfigPrettierVersion,
-        }
-      )
-    : () => {};
+  if (options.skipPackageJson) {
+    return () => {};
+  }
+
+  const { typescriptESLintVersion } = versions(tree);
+  return addDependenciesToPackageJson(
+    tree,
+    {},
+    {
+      '@nx/eslint-plugin': nxVersion,
+      '@typescript-eslint/parser': typescriptESLintVersion,
+      '@typescript-eslint/eslint-plugin': typescriptESLintVersion,
+      'eslint-config-prettier': eslintConfigPrettierVersion,
+    },
+    undefined,
+    true
+  );
+}
+
+function setUpRootFlatConfig(tree: Tree, options: SetupRootEsLintOptions) {
+  tree.write(
+    `eslint.config.${options.eslintConfigFormat}`,
+    getGlobalFlatEslintConfiguration(
+      options.eslintConfigFormat,
+      options.rootProject
+    )
+  );
+
+  if (options.skipPackageJson) {
+    return () => {};
+  }
+
+  const { eslintVersion, typescriptESLintVersion } = versions(tree);
+  return addDependenciesToPackageJson(
+    tree,
+    {},
+    {
+      '@eslint/js': eslintVersion,
+      '@nx/eslint-plugin': nxVersion,
+      eslint: eslintVersion,
+      'eslint-config-prettier': eslintConfigPrettierVersion,
+      'typescript-eslint': typescriptESLintVersion,
+    },
+    undefined,
+    true
+  );
 }

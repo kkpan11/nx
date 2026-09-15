@@ -1,11 +1,11 @@
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
+import { getInstalledCypressMajorVersion } from '@nx/cypress/internal';
 import {
   DependencyType,
   joinPathFragments,
   ProjectGraph,
-  readJson,
   readProjectConfiguration,
   Tree,
+  updateJson,
   updateProjectConfiguration,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
@@ -23,25 +23,50 @@ import { librarySecondaryEntryPointGenerator } from '../library-secondary-entry-
 import { generateTestApplication, generateTestLibrary } from '../utils/testing';
 import { cypressComponentConfiguration } from './cypress-component-configuration';
 
-jest.mock('@nx/cypress/src/utils/cypress-version');
+jest.mock('@nx/cypress/internal', () => ({
+  ...jest.requireActual('@nx/cypress/internal'),
+  getInstalledCypressMajorVersion: jest.fn(),
+}));
 // nested code imports graph from the repo, which might have innacurate graph version
 jest.mock('nx/src/project-graph/project-graph', () => ({
   ...jest.requireActual<any>('nx/src/project-graph/project-graph'),
   readCachedProjectGraph: jest.fn().mockImplementation(() => projectGraph),
 }));
 
+// Cypress below 15.20.1 can't run component tests on Angular 22.1+, so tests
+// exercising older Cypress behavior pin Angular below 22.1.
+// See: https://github.com/cypress-io/cypress/issues/34461
+function useAngularSupportedByCypress(tree: Tree) {
+  updateJson(tree, 'package.json', (json) => {
+    json.dependencies = { ...json.dependencies, '@angular/core': '~22.0.0' };
+    return json;
+  });
+}
+
+// TODO(jack): Remove this when Cypress adds Vite 8 support.
+// See: https://github.com/cypress-io/cypress/issues/33078
+function useVite7ForCypressCT(tree: Tree) {
+  updateJson(tree, 'package.json', (json) => {
+    for (const section of ['dependencies', 'devDependencies'] as const) {
+      if (json[section]?.vite) {
+        json[section].vite = '^7.0.0';
+      }
+    }
+    return json;
+  });
+}
+
 describe('Cypress Component Testing Configuration', () => {
   let tree: Tree;
   let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
+    ReturnType<typeof getInstalledCypressMajorVersion>
+  > = getInstalledCypressMajorVersion as never;
   // TODO(@leosvelperez): Turn this to adding the plugin
 
   beforeEach(() => {
     tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
     tree.write('.gitignore', '');
     mockedInstalledCypressVersion.mockReturnValue(10);
-
     projectGraph = {
       dependencies: {},
       nodes: {},
@@ -55,16 +80,18 @@ describe('Cypress Component Testing Configuration', () => {
   describe('updateProjectConfig', () => {
     it('should add project config with --target=<project>:<target>', async () => {
       await generateTestApplication(tree, {
-        name: 'fancy-app',
+        directory: 'fancy-app',
+        zoneless: false,
         skipFormat: true,
       });
+
       await generateTestLibrary(tree, {
-        name: 'fancy-lib',
+        directory: 'fancy-lib',
         skipFormat: true,
       });
       await componentGenerator(tree, {
         name: 'fancy-cmp',
-        project: 'fancy-lib',
+        path: 'fancy-lib/src/lib/fancy-cmp/fancy-cmp',
         export: true,
         skipFormat: true,
       });
@@ -96,6 +123,7 @@ describe('Cypress Component Testing Configuration', () => {
         },
       };
 
+      useVite7ForCypressCT(tree);
       await cypressComponentConfiguration(tree, {
         project: 'fancy-lib',
         buildTarget: 'fancy-app:build',
@@ -121,16 +149,18 @@ describe('Cypress Component Testing Configuration', () => {
 
     it('should add project config with --target=<project>:<target>:<config>', async () => {
       await generateTestApplication(tree, {
-        name: 'fancy-app',
+        directory: 'fancy-app',
+        zoneless: false,
         skipFormat: true,
       });
+
       await generateTestLibrary(tree, {
-        name: 'fancy-lib',
+        directory: 'fancy-lib',
         skipFormat: true,
       });
       await componentGenerator(tree, {
         name: 'fancy-cmp',
-        project: 'fancy-lib',
+        path: 'fancy-lib/src/lib/fancy-cmp/fancy-cmp',
         export: true,
         skipFormat: true,
       });
@@ -162,6 +192,7 @@ describe('Cypress Component Testing Configuration', () => {
         },
       };
 
+      useVite7ForCypressCT(tree);
       await cypressComponentConfiguration(tree, {
         project: 'fancy-lib',
         buildTarget: 'fancy-app:build:development',
@@ -187,16 +218,18 @@ describe('Cypress Component Testing Configuration', () => {
 
     it('should not throw with invalid --build-target', async () => {
       await generateTestApplication(tree, {
-        name: 'fancy-app',
+        directory: 'fancy-app',
+        zoneless: false,
         skipFormat: true,
       });
+
       await generateTestLibrary(tree, {
-        name: 'fancy-lib',
+        directory: 'fancy-lib',
         skipFormat: true,
       });
       await componentGenerator(tree, {
         name: 'fancy-cmp',
-        project: 'fancy-lib',
+        path: 'fancy-lib/src/lib/fancy-cmp/fancy-cmp/',
         export: true,
         skipFormat: true,
       });
@@ -234,25 +267,65 @@ describe('Cypress Component Testing Configuration', () => {
         },
       };
 
-      await expect(async () => {
-        await cypressComponentConfiguration(tree, {
+      useVite7ForCypressCT(tree);
+      await cypressComponentConfiguration(tree, {
+        project: 'fancy-lib',
+        buildTarget: 'fancy-app:build',
+        generateTests: false,
+        skipFormat: true,
+      });
+    });
+
+    it('should throw when no build target can be found', async () => {
+      await generateTestApplication(tree, {
+        directory: 'fancy-app',
+        zoneless: false,
+        skipFormat: true,
+      });
+      await generateTestLibrary(tree, {
+        directory: 'fancy-lib',
+        buildable: true,
+        skipFormat: true,
+      });
+
+      // no edge between the lib and the app, so there is no app build target to borrow
+      projectGraph = {
+        nodes: {
+          'fancy-app': {
+            name: 'fancy-app',
+            type: 'app',
+            data: { ...readProjectConfiguration(tree, 'fancy-app') } as any,
+          },
+          'fancy-lib': {
+            name: 'fancy-lib',
+            type: 'lib',
+            data: { ...readProjectConfiguration(tree, 'fancy-lib') } as any,
+          },
+        },
+        dependencies: {},
+      };
+
+      await expect(
+        cypressComponentConfiguration(tree, {
           project: 'fancy-lib',
-          buildTarget: 'fancy-app:build',
           generateTests: false,
           skipFormat: true,
-        });
-      }).resolves;
+        })
+      ).rejects.toThrow(
+        'Unable to find a valid build configuration. Try passing in a target for an Angular app (e.g. --build-target=<project>:<target>[:<configuration>]).'
+      );
     });
 
     it('should use own project config', async () => {
       await generateTestApplication(tree, {
-        name: 'fancy-app',
+        directory: 'fancy-app',
         bundler: 'webpack',
+        zoneless: false,
         skipFormat: true,
       });
       await componentGenerator(tree, {
         name: 'fancy-cmp',
-        project: 'fancy-app',
+        path: 'fancy-app/src/lib/fancy-cmp/fancy-cmp',
         export: true,
         skipFormat: true,
       });
@@ -269,6 +342,7 @@ describe('Cypress Component Testing Configuration', () => {
         dependencies: {},
       };
 
+      useVite7ForCypressCT(tree);
       await cypressComponentConfiguration(tree, {
         project: 'fancy-app',
         generateTests: false,
@@ -290,17 +364,19 @@ describe('Cypress Component Testing Configuration', () => {
 
     it('should use the project graph to find the correct project config', async () => {
       await generateTestApplication(tree, {
-        name: 'fancy-app',
+        directory: 'fancy-app',
         bundler: 'webpack',
+        zoneless: false,
         skipFormat: true,
       });
+
       await generateTestLibrary(tree, {
-        name: 'fancy-lib',
+        directory: 'fancy-lib',
         skipFormat: true,
       });
       await componentGenerator(tree, {
         name: 'fancy-cmp',
-        project: 'fancy-lib',
+        path: 'fancy-app/src/app/fancy-lib/fancy-lib',
         export: true,
         skipFormat: true,
       });
@@ -336,6 +412,7 @@ describe('Cypress Component Testing Configuration', () => {
         },
       };
 
+      useVite7ForCypressCT(tree);
       await cypressComponentConfiguration(tree, {
         project: 'fancy-lib',
         generateTests: false,
@@ -357,8 +434,16 @@ describe('Cypress Component Testing Configuration', () => {
   });
 
   it('should setup angular specific configs', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      linter: 'eslint',
+      directory: 'my-lib',
       skipFormat: true,
     });
     await setup(tree, {
@@ -381,6 +466,59 @@ describe('Cypress Component Testing Configuration', () => {
           data: {
             ...readProjectConfiguration(tree, 'my-lib'),
           } as any,
+        },
+      },
+      dependencies: {
+        'my-lib': [
+          {
+            type: DependencyType.static,
+            source: 'my-lib',
+            target: 'something',
+          },
+        ],
+      },
+    };
+
+    useVite7ForCypressCT(tree);
+    await cypressComponentConfiguration(tree, {
+      project: 'my-lib',
+      buildTarget: 'something:build',
+      generateTests: true,
+      skipFormat: true,
+    });
+
+    expect(tree.read('my-lib/cypress.config.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "const { nxComponentTestingPreset } = require('@nx/angular/plugins/component-testing');
+      const { defineConfig } = require('cypress');
+      module.exports = defineConfig({
+          component: nxComponentTestingPreset(__filename)
+      });"
+    `);
+    expect(
+      tree.read('my-lib/cypress/support/component.ts', 'utf-8')
+    ).toMatchSnapshot('component.ts');
+  });
+
+  it('should disable justInTimeCompile on Cypress 14+', async () => {
+    mockedInstalledCypressVersion.mockReturnValue(14);
+    await generateTestLibrary(tree, { directory: 'my-lib', skipFormat: true });
+    await setup(tree, {
+      project: 'my-lib',
+      name: 'something',
+      standalone: false,
+    });
+    projectGraph = {
+      nodes: {
+        something: {
+          name: 'something',
+          type: 'app',
+          data: { ...readProjectConfiguration(tree, 'something') } as any,
+        },
+        'my-lib': {
+          name: 'my-lib',
+          type: 'lib',
+          data: { ...readProjectConfiguration(tree, 'my-lib') } as any,
         },
       },
       dependencies: {
@@ -397,72 +535,25 @@ describe('Cypress Component Testing Configuration', () => {
     await cypressComponentConfiguration(tree, {
       project: 'my-lib',
       buildTarget: 'something:build',
-      generateTests: true,
-      skipFormat: true,
-    });
-
-    expect(tree.read('my-lib/cypress.config.ts', 'utf-8'))
-      .toMatchInlineSnapshot(`
-      "import { nxComponentTestingPreset } from '@nx/angular/plugins/component-testing';
-      import { defineConfig } from 'cypress';
-
-      export default defineConfig({
-        component: nxComponentTestingPreset(__filename)
-      });
-      "
-    `);
-    expect(
-      tree.read('my-lib/cypress/support/component.ts', 'utf-8')
-    ).toMatchSnapshot('component.ts');
-  });
-
-  it('should exclude Cypress-related files from tsconfig.editor.json for applications', async () => {
-    await generateTestApplication(tree, {
-      name: 'fancy-app',
-      bundler: 'webpack',
-      skipFormat: true,
-    });
-    await componentGenerator(tree, {
-      name: 'fancy-cmp',
-      project: 'fancy-app',
-      export: true,
-      skipFormat: true,
-    });
-    projectGraph = {
-      nodes: {
-        'fancy-app': {
-          name: 'fancy-app',
-          type: 'app',
-          data: {
-            ...readProjectConfiguration(tree, 'fancy-app'),
-          } as any,
-        },
-      },
-      dependencies: {},
-    };
-
-    await cypressComponentConfiguration(tree, {
-      project: 'fancy-app',
       generateTests: false,
       skipFormat: true,
     });
 
-    const tsConfig = readJson(tree, 'fancy-app/tsconfig.editor.json');
-    expect(tsConfig.exclude).toStrictEqual(
-      expect.arrayContaining([
-        'cypress/**/*',
-        'cypress.config.ts',
-        '**/*.cy.ts',
-        '**/*.cy.js',
-        '**/*.cy.tsx',
-        '**/*.cy.jsx',
-      ])
-    );
+    const config = tree.read('my-lib/cypress.config.ts', 'utf-8');
+    expect(config).toContain('...nxComponentTestingPreset(__filename)');
+    expect(config).toContain('justInTimeCompile: false');
   });
 
   it('should work with simple components', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'my-lib',
+      directory: 'my-lib',
       skipFormat: true,
     });
     await setup(tree, {
@@ -498,6 +589,7 @@ describe('Cypress Component Testing Configuration', () => {
       },
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       project: 'my-lib',
       buildTarget: 'something:build',
@@ -515,8 +607,15 @@ describe('Cypress Component Testing Configuration', () => {
   });
 
   it('should work with standalone component', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'my-lib-standalone',
+      directory: 'my-lib-standalone',
       skipFormat: true,
     });
     await setup(tree, {
@@ -552,6 +651,7 @@ describe('Cypress Component Testing Configuration', () => {
       },
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       project: 'my-lib-standalone',
       buildTarget: 'something:build',
@@ -568,8 +668,15 @@ describe('Cypress Component Testing Configuration', () => {
   });
 
   it('should work with complex component', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'with-inputs-cmp',
+      directory: 'with-inputs-cmp',
       skipFormat: true,
     });
     await setup(tree, {
@@ -607,6 +714,7 @@ describe('Cypress Component Testing Configuration', () => {
       },
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       project: 'with-inputs-cmp',
       buildTarget: 'something:build',
@@ -624,8 +732,15 @@ describe('Cypress Component Testing Configuration', () => {
   });
 
   it('should work with complex standalone component', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'with-inputs-standalone-cmp',
+      directory: 'with-inputs-standalone-cmp',
       skipFormat: true,
     });
     await setup(tree, {
@@ -663,6 +778,7 @@ describe('Cypress Component Testing Configuration', () => {
       },
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       project: 'with-inputs-standalone-cmp',
       buildTarget: 'something:build',
@@ -680,11 +796,12 @@ describe('Cypress Component Testing Configuration', () => {
 
   it('should work with secondary entry point libs', async () => {
     await generateTestApplication(tree, {
-      name: 'my-cool-app',
+      directory: 'my-cool-app',
+      zoneless: false,
       skipFormat: true,
     });
     await generateTestLibrary(tree, {
-      name: 'secondary',
+      directory: 'secondary',
       buildable: true,
       skipFormat: true,
     });
@@ -695,17 +812,13 @@ describe('Cypress Component Testing Configuration', () => {
     });
     await componentGenerator(tree, {
       name: 'fancy-button',
-      path: 'secondary/src/lib/button',
-      project: 'secondary',
-      flat: true,
+      path: 'secondary/src/lib/button/fancy-button',
       skipFormat: true,
     });
     await componentGenerator(tree, {
       name: 'standalone-fancy-button',
-      path: 'secondary/src/lib/button',
-      project: 'secondary',
+      path: 'secondary/src/lib/button/standalone-fancy-button',
       standalone: true,
-      flat: true,
       skipFormat: true,
     });
     projectGraph = {
@@ -728,6 +841,7 @@ describe('Cypress Component Testing Configuration', () => {
       dependencies: {},
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       generateTests: true,
       project: 'secondary',
@@ -736,36 +850,40 @@ describe('Cypress Component Testing Configuration', () => {
     });
 
     expect(
-      tree.read(
-        'secondary/src/lib/button/fancy-button.component.cy.ts',
-        'utf-8'
-      )
+      tree.read('secondary/src/lib/button/fancy-button.cy.ts', 'utf-8')
     ).toMatchSnapshot();
     expect(
       tree.read(
-        'secondary/src/lib/button/standalone-fancy-button.component.cy.ts',
+        'secondary/src/lib/button/standalone-fancy-button.cy.ts',
         'utf-8'
       )
     ).toMatchSnapshot();
   });
 
   it('should not overwrite existing component test', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        'zone.js': '~0.16.0',
+      };
+      return json;
+    });
     await generateTestLibrary(tree, {
-      name: 'cool-lib',
+      directory: 'cool-lib',
       flat: true,
       skipFormat: true,
     });
     await setup(tree, { project: 'cool-lib', name: 'abc', standalone: false });
     tree.write(
-      'cool-lib/src/lib/abc-one/abc-one.component.cy.ts',
+      'cool-lib/src/lib/abc-one/abc-one.cy.ts',
       `const msg = 'should not overwrite abc-one';`
     );
     tree.write(
-      'cool-lib/src/lib/abc-two/abc-two.component.cy.ts',
+      'cool-lib/src/lib/abc-two/abc-two.cy.ts',
       `const msg = 'should not overwrite abc-two';`
     );
     tree.write(
-      'cool-lib/src/lib/abc-three/abc-three.component.cy.ts',
+      'cool-lib/src/lib/abc-three/abc-three.cy.ts',
       `const msg = 'should not overwrite abc-three';`
     );
     projectGraph = {
@@ -788,6 +906,7 @@ describe('Cypress Component Testing Configuration', () => {
       dependencies: {},
     };
 
+    useVite7ForCypressCT(tree);
     await cypressComponentConfiguration(tree, {
       project: 'cool-lib',
       buildTarget: 'abc:build',
@@ -810,86 +929,245 @@ describe('Cypress Component Testing Configuration', () => {
     );
   });
 
-  // TODO: should we support this?
-  it.skip('should handle multiple components per file', async () => {
-    await generateTestLibrary(tree, {
-      name: 'multiple-components',
-      flat: true,
+  it('should generate a zoneless support file for zoneless applications with cypress 15.8.0+', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        cypress: '15.8.0',
+      };
+      return json;
+    });
+    await generateTestApplication(tree, {
+      linter: 'eslint',
+      directory: 'zoneless-app',
+      bundler: 'webpack',
       skipFormat: true,
     });
-    await componentGenerator(tree, {
-      name: 'cmp-one',
-      project: 'multiple-components',
-      flat: true,
-      skipFormat: true,
-    });
-    await componentGenerator(tree, {
-      name: 'cmp-two',
-      project: 'multiple-components',
-      flat: true,
-      skipFormat: true,
-    });
-    tree.write(
-      `multiple-components/src/lib/cmp-one.component.ts`,
-      `
-import { Component, OnInit } from '@angular/core';
+    // Apps are zoneless by default in v21+, no need to modify
 
-@Component({
-  selector: 'proj-cmp-one',
-  templateUrl: './cmp-one.component.html',
-  styleUrls: ['./cmp-one.component.css']
-})
-export class CmpOneComponent implements OnInit {
+    projectGraph = {
+      nodes: {
+        'zoneless-app': {
+          name: 'zoneless-app',
+          type: 'app',
+          data: { ...readProjectConfiguration(tree, 'zoneless-app') } as any,
+        },
+      },
+      dependencies: {},
+    };
 
-  constructor() { }
-
-  ngOnInit(): void {
-  }
-
-}
-
-@Component({
-  selector: 'proj-cmp-one',
-  template: '<h1>Hello World, {{abc}}</h1>',
-  styles: []
-})
-export class CmpMultiComponent implements OnInit {
-  @Input() name: string = 'abc'
-  constructor() { }
-  ngOnInit(): void {}
-}
-`
-    );
-    tree.write(
-      '',
-      `
-import { NgModule } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { CmpOneComponent, CmpMultiComponent } from './cmp-one.component';
-import { CmpTwoComponent } from './cmp-two.component';
-
-@NgModule({
-  imports: [
-    CommonModule
-  ],
-  declarations: [
-    CmpOneComponent,
-    CmpTwoComponent
-  ]
-})
-export class MultipleComponentsModule { }
-`
-    );
-
+    useVite7ForCypressCT(tree);
+    useAngularSupportedByCypress(tree);
     await cypressComponentConfiguration(tree, {
-      project: 'multiple-components',
-      generateTests: true,
+      project: 'zoneless-app',
+      generateTests: false,
       skipFormat: true,
     });
 
-    expect(
-      tree.read('multiple-components/src/lib/cmp-one.component.cy.ts', 'utf-8')
-    ).toEqual('');
+    expect(tree.read('zoneless-app/cypress/support/component.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { mount } from 'cypress/angular-zoneless';
+      // ***********************************************************
+      // This example support/component.ts is processed and
+      // loaded automatically before your test files.
+      //
+      // This is a great place to put global configuration and
+      // behavior that modifies Cypress.
+      //
+      // You can change the location of this file or turn off
+      // automatically serving support files with the
+      // 'supportFile' configuration option.
+      //
+      // You can read more here:
+      // https://on.cypress.io/configuration
+      // ***********************************************************
+      // Import commands.ts using ES2015 syntax:
+      import './commands';
+      // add component testing only related command here, such as mount
+      declare global {
+          // eslint-disable-next-line @typescript-eslint/no-namespace
+          namespace Cypress {
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              interface Chainable<Subject> {
+                  mount: typeof mount;
+              }
+          }
+      }
+      Cypress.Commands.add('mount', mount);"
+    `);
+  });
+
+  it('should generate a zoneless support file for zoneless libraries with cypress 15.8.0+', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        cypress: '15.8.0',
+      };
+      return json;
+    });
+    await generateTestLibrary(tree, {
+      linter: 'eslint',
+      directory: 'zoneless-lib',
+      skipFormat: true,
+    });
+
+    projectGraph = {
+      nodes: {
+        'zoneless-lib': {
+          name: 'zoneless-lib',
+          type: 'lib',
+          data: { ...readProjectConfiguration(tree, 'zoneless-lib') } as any,
+        },
+      },
+      dependencies: {},
+    };
+
+    useVite7ForCypressCT(tree);
+    useAngularSupportedByCypress(tree);
+    await cypressComponentConfiguration(tree, {
+      project: 'zoneless-lib',
+      buildTarget: 'zoneless-lib:build',
+      generateTests: false,
+      skipFormat: true,
+    });
+
+    expect(tree.read('zoneless-lib/cypress/support/component.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { mount } from 'cypress/angular-zoneless';
+      // ***********************************************************
+      // This example support/component.ts is processed and
+      // loaded automatically before your test files.
+      //
+      // This is a great place to put global configuration and
+      // behavior that modifies Cypress.
+      //
+      // You can change the location of this file or turn off
+      // automatically serving support files with the
+      // 'supportFile' configuration option.
+      //
+      // You can read more here:
+      // https://on.cypress.io/configuration
+      // ***********************************************************
+      // Import commands.ts using ES2015 syntax:
+      import './commands';
+      // add component testing only related command here, such as mount
+      declare global {
+          // eslint-disable-next-line @typescript-eslint/no-namespace
+          namespace Cypress {
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              interface Chainable<Subject> {
+                  mount: typeof mount;
+              }
+          }
+      }
+      Cypress.Commands.add('mount', mount);"
+    `);
+  });
+
+  it('should throw an error when the application is zoneless and cypress version is less than 15.8.0', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        cypress: '15.7.0',
+      };
+      return json;
+    });
+    await generateTestApplication(tree, {
+      directory: 'zoneless-app',
+      bundler: 'webpack',
+      skipFormat: true,
+    });
+    // Apps are zoneless by default in v21+, no need to modify
+
+    projectGraph = {
+      nodes: {
+        'zoneless-app': {
+          name: 'zoneless-app',
+          type: 'app',
+          data: { ...readProjectConfiguration(tree, 'zoneless-app') } as any,
+        },
+      },
+      dependencies: {},
+    };
+
+    useVite7ForCypressCT(tree);
+    useAngularSupportedByCypress(tree);
+    await expect(
+      cypressComponentConfiguration(tree, {
+        project: 'zoneless-app',
+        generateTests: false,
+        skipFormat: true,
+      })
+    ).rejects.toThrow(/zoneless/i);
+  });
+
+  it('should throw an error when the library is in a zoneless workspace and cypress version is less than 15.8.0', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = {
+        ...json.dependencies,
+        cypress: '15.7.0',
+      };
+      return json;
+    });
+    await generateTestLibrary(tree, {
+      directory: 'zoneless-lib',
+      skipFormat: true,
+    });
+
+    projectGraph = {
+      nodes: {
+        'zoneless-lib': {
+          name: 'zoneless-lib',
+          type: 'lib',
+          data: { ...readProjectConfiguration(tree, 'zoneless-lib') } as any,
+        },
+      },
+      dependencies: {},
+    };
+
+    useVite7ForCypressCT(tree);
+    useAngularSupportedByCypress(tree);
+    await expect(
+      cypressComponentConfiguration(tree, {
+        project: 'zoneless-lib',
+        generateTests: false,
+        skipFormat: true,
+      })
+    ).rejects.toThrow(/zoneless/i);
+  });
+
+  it('should throw an error when the cypress version does not support the angular version', async () => {
+    // this cypress version also fails the zoneless check, which the angular
+    // version check must take precedence over
+    updateJson(tree, 'package.json', (json) => {
+      json.dependencies = { ...json.dependencies, cypress: '15.20.0' };
+      return json;
+    });
+    await generateTestApplication(tree, {
+      directory: 'zoneless-app',
+      bundler: 'webpack',
+      skipFormat: true,
+    });
+
+    projectGraph = {
+      nodes: {
+        'zoneless-app': {
+          name: 'zoneless-app',
+          type: 'app',
+          data: { ...readProjectConfiguration(tree, 'zoneless-app') } as any,
+        },
+      },
+      dependencies: {},
+    };
+
+    useVite7ForCypressCT(tree);
+    await expect(
+      cypressComponentConfiguration(tree, {
+        project: 'zoneless-app',
+        generateTests: false,
+        skipFormat: true,
+      })
+    ).rejects.toThrow(/requires Cypress 15\.20\.1 or higher/);
   });
 });
 
@@ -904,7 +1182,7 @@ async function setup(
   }
 ) {
   await generateTestApplication(tree, {
-    name: options.name,
+    directory: options.name,
     standalone: options.standalone,
     skipFormat: true,
   });
@@ -914,17 +1192,13 @@ async function setup(
     `${options.name}-three`,
   ]) {
     await componentGenerator(tree, {
-      project: options.project,
+      path: `${options.project}/src/lib/${name}/${name}`,
       name,
       skipFormat: true,
     });
 
     if (options.withInputs) {
-      const cmpPath = joinPathFragments(
-        options.basePath,
-        name,
-        `${name}.component.ts`
-      );
+      const cmpPath = joinPathFragments(options.basePath, name, `${name}.ts`);
       const oldContent = tree.read(cmpPath, 'utf-8');
 
       const newContent = oldContent.replace(
@@ -956,20 +1230,18 @@ function getCmpsFromTree(
     `${options.name}-three`,
   ].map((n) => {
     expect(
-      tree.exists(joinPathFragments(options.basePath, n, `${n}.component.ts`))
+      tree.exists(joinPathFragments(options.basePath, n, `${n}.ts`))
     ).toBeTruthy();
     expect(
-      tree.exists(
-        joinPathFragments(options.basePath, n, `${n}.component.cy.ts`)
-      )
+      tree.exists(joinPathFragments(options.basePath, n, `${n}.cy.ts`))
     ).toBeTruthy();
     return {
       cmp: tree.read(
-        joinPathFragments(options.basePath, n, `${n}.component.ts`),
+        joinPathFragments(options.basePath, n, `${n}.ts`),
         'utf-8'
       ),
       cy: tree.read(
-        joinPathFragments(options.basePath, n, `${n}.component.cy.ts`),
+        joinPathFragments(options.basePath, n, `${n}.cy.ts`),
         'utf-8'
       ),
     };

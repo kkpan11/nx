@@ -1,10 +1,6 @@
 import * as path from 'path';
-import { ExecutorContext } from 'nx/src/config/misc-interfaces';
-import { LicenseWebpackPlugin } from 'license-webpack-plugin';
-import * as CopyWebpackPlugin from 'copy-webpack-plugin';
-import {
+import type {
   Configuration,
-  ProgressPlugin,
   WebpackOptionsNormalized,
   WebpackPluginInstance,
 } from 'webpack';
@@ -17,16 +13,55 @@ import { NxTsconfigPathsWebpackPlugin } from '../../nx-typescript-webpack-plugin
 import { getTerserEcmaVersion } from './get-terser-ecma-version';
 import { createLoaderFromCompiler } from './compiler-loaders';
 import { NormalizedNxAppWebpackPluginOptions } from '../nx-app-webpack-plugin-options';
-import TerserPlugin = require('terser-webpack-plugin');
-import nodeExternals = require('webpack-node-externals');
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import { getNonBuildableLibs } from './utils';
+import { ExecutorContext } from '@nx/devkit';
 
 const IGNORED_WEBPACK_WARNINGS = [
   /The comment file/i,
   /could not find any license/i,
 ];
 
+const extensionAlias = {
+  '.js': ['.ts', '.tsx', '.js', '.jsx'],
+  '.mjs': ['.mts', '.mjs'],
+  '.cjs': ['.cts', '.cjs'],
+  '.jsx': ['.tsx', '.jsx'],
+};
 const extensions = ['.ts', '.tsx', '.mjs', '.js', '.jsx'];
 const mainFields = ['module', 'main'];
+
+// webpack 5.110 widened `optimization.minimize` to accept an object it fills per
+// asset type. The types shipped with 5.x still declare a boolean, so the real
+// shape is spelled out once here instead of being cast at the assignment.
+type MinimizeOption = boolean | Record<string, never>;
+
+type OptimizationWithMinimize = Omit<
+  NonNullable<Configuration['optimization']>,
+  'minimize'
+> & { minimize?: MinimizeOption };
+
+/**
+ * `withNx` builds a raw config that webpack validates, and only the boolean is
+ * schema-valid before 5.110. `NxAppWebpackPlugin` instead mutates options that
+ * are already normalized, which 5.110 fills by setting `.javascript` on
+ * `minimize`, so a boolean throws there.
+ */
+function setMinimizeValue(
+  optimization: OptimizationWithMinimize,
+  shouldMinify: boolean,
+  configIsNormalized: boolean
+): void {
+  if (!shouldMinify) {
+    optimization.minimize = false;
+    return;
+  }
+  if (configIsNormalized) {
+    optimization.minimize = {};
+    return;
+  }
+  optimization.minimize = true;
+}
 
 export function applyBaseConfig(
   options: NormalizedNxAppWebpackPluginOptions,
@@ -42,24 +77,27 @@ export function applyBaseConfig(
 ): void {
   // Defaults that was applied from executor schema previously.
   options.compiler ??= 'babel';
-  options.deleteOutputPath ??= true;
   options.externalDependencies ??= 'all';
   options.fileReplacements ??= [];
   options.memoryLimit ??= 2048;
   options.transformers ??= [];
 
-  applyNxIndependentConfig(options, config);
+  applyNxIndependentConfig(options, config, !!useNormalizedEntry);
 
   // Some of the options only work during actual tasks, not when reading the webpack config during CreateNodes.
-  if (!process.env['NX_TASK_TARGET_PROJECT']) return;
+  if (global.NX_GRAPH_CREATION) return;
 
   applyNxDependentConfig(options, config, { useNormalizedEntry });
 }
 
 function applyNxIndependentConfig(
   options: NormalizedNxAppWebpackPluginOptions,
-  config: Partial<WebpackOptionsNormalized | Configuration>
+  config: Partial<WebpackOptionsNormalized | Configuration>,
+  configIsNormalized: boolean
 ): void {
+  const TerserPlugin =
+    require('terser-webpack-plugin') as typeof import('terser-webpack-plugin');
+
   const hashFormat = getOutputHashFormat(options.outputHashing as string);
   config.context = path.join(options.root, options.projectRoot);
   config.target ??= options.target;
@@ -69,34 +107,55 @@ function applyNxIndependentConfig(
     config.target === 'node'
       ? 'none'
       : // Otherwise, make sure it matches `process.env.NODE_ENV`.
-      // When mode is development or production, webpack will automatically
-      // configure DefinePlugin to replace `process.env.NODE_ENV` with the
-      // build-time value. Thus, we need to make sure it's the same value to
-      // avoid conflicts.
-      //
-      // When the NODE_ENV is something else (e.g. test), then set it to none
-      // to prevent extra behavior from webpack.
-      process.env.NODE_ENV === 'development' ||
-        process.env.NODE_ENV === 'production'
-      ? (process.env.NODE_ENV as 'development' | 'production')
-      : 'none';
+        // When mode is development or production, webpack will automatically
+        // configure DefinePlugin to replace `process.env.NODE_ENV` with the
+        // build-time value. Thus, we need to make sure it's the same value to
+        // avoid conflicts.
+        //
+        // When the NODE_ENV is something else (e.g. test), then set it to none
+        // to prevent extra behavior from webpack.
+        process.env.NODE_ENV === 'development' ||
+          process.env.NODE_ENV === 'production'
+        ? (process.env.NODE_ENV as 'development' | 'production')
+        : 'none';
   // When target is Node, the Webpack mode will be set to 'none' which disables in memory caching and causes a full rebuild on every change.
   // So to mitigate this we enable in memory caching when target is Node and in watch mode.
   config.cache =
-    options.target === 'node' && options.watch ? { type: 'memory' } : undefined;
+    'cache' in options
+      ? options.cache
+      : options.target === 'node' && options.watch
+        ? { type: 'memory' }
+        : undefined;
 
   config.devtool =
-    options.sourceMap === 'hidden'
-      ? 'hidden-source-map'
-      : options.sourceMap
-      ? 'source-map'
-      : false;
+    options.sourceMap === true ? 'source-map' : options.sourceMap;
 
   config.output = {
     ...config.output,
-    libraryTarget:
-      (config as Configuration).output?.libraryTarget ??
-      (options.target === 'node' ? 'commonjs' : undefined),
+    libraryTarget: (() => {
+      const existingOutputConfig = config.output as Configuration['output'];
+      const existingLibraryTarget = existingOutputConfig?.libraryTarget;
+      const existingLibraryType =
+        typeof existingOutputConfig?.library === 'object' &&
+        'type' in existingOutputConfig?.library
+          ? existingOutputConfig?.library?.type
+          : undefined;
+
+      // If user is using modern library.type, don't set the deprecated libraryTarget
+      if (existingLibraryType !== undefined) {
+        return undefined;
+      }
+
+      // If user has set libraryTarget explicitly, use it
+      if (existingLibraryTarget !== undefined) {
+        return existingLibraryTarget;
+      }
+
+      // Set defaults based on target when user hasn't configured anything
+      if (options.target === 'node') return 'commonjs';
+      if (options.target === 'async-node') return 'commonjs-module';
+      return undefined;
+    })(),
     path:
       config.output?.path ??
       (options.outputPath
@@ -141,15 +200,17 @@ function applyNxIndependentConfig(
       IGNORED_WEBPACK_WARNINGS.some((r) =>
         typeof x === 'string' ? r.test(x) : r.test(x.message)
       ),
+    ...(config.ignoreWarnings ?? []),
   ];
+
+  const shouldMinify =
+    typeof options.optimization === 'object'
+      ? !!options.optimization.scripts
+      : !!options.optimization;
 
   config.optimization = {
     ...config.optimization,
     sideEffects: true,
-    minimize:
-      typeof options.optimization === 'object'
-        ? !!options.optimization.scripts
-        : !!options.optimization,
     minimizer: [
       options.compiler !== 'swc'
         ? new TerserPlugin({
@@ -170,6 +231,10 @@ function applyNxIndependentConfig(
           })
         : new TerserPlugin({
             minify: TerserPlugin.swcMinify,
+            // terser-webpack-plugin 5.6+ forwards `extractComments` into swc's
+            // minify options, which rejects it as an unknown field. Disable it
+            // like the babel branch does above.
+            extractComments: false,
             // `terserOptions` options will be passed to `swc`
             terserOptions: {
               module: true,
@@ -181,6 +246,8 @@ function applyNxIndependentConfig(
     concatenateModules: true,
   };
 
+  setMinimizeValue(config.optimization, shouldMinify, configIsNormalized);
+
   config.stats = {
     hash: true,
     timings: false,
@@ -190,7 +257,7 @@ function applyNxIndependentConfig(
     warnings: true,
     errors: true,
     colors: !options.verbose && !options.statsJson,
-    chunks: !options.verbose,
+    chunks: !!options.verbose,
     assets: !!options.verbose,
     chunkOrigins: !!options.verbose,
     chunkModules: !!options.verbose,
@@ -222,6 +289,14 @@ function applyNxDependentConfig(
   config: Partial<WebpackOptionsNormalized | Configuration>,
   { useNormalizedEntry }: { useNormalizedEntry?: boolean } = {}
 ): void {
+  const { ProgressPlugin } = require('webpack') as typeof import('webpack');
+  const { LicenseWebpackPlugin } =
+    require('license-webpack-plugin') as typeof import('license-webpack-plugin');
+  const CopyWebpackPlugin =
+    require('copy-webpack-plugin') as typeof import('copy-webpack-plugin');
+  const nodeExternals =
+    require('webpack-node-externals') as typeof import('webpack-node-externals');
+
   const tsConfig = options.tsConfig ?? getRootTsConfigPath();
   const plugins: WebpackPluginInstance[] = [];
 
@@ -233,12 +308,42 @@ function applyNxDependentConfig(
     root: options.root,
   };
 
-  plugins.push(new NxTsconfigPathsWebpackPlugin({ ...options, tsConfig }));
+  const isUsingTsSolution = isUsingTsSolutionSetup();
+  options.useTsconfigPaths ??= !isUsingTsSolution;
 
-  if (!options?.skipTypeChecking) {
+  // If the project is using ts solutions setup, the paths are not in tsconfig and we should not use the plugin's paths.
+  if (options.useTsconfigPaths) {
+    plugins.push(new NxTsconfigPathsWebpackPlugin({ ...options, tsConfig }));
+  }
+
+  // Normalize typeCheckOptions from deprecated skipTypeChecking for backward compatibility
+  const defaultTypeCheckOptions = { async: true };
+
+  let typeCheckOptions: boolean | { async: boolean };
+  if (options.typeCheckOptions !== undefined) {
+    if (options.typeCheckOptions === true) {
+      typeCheckOptions = defaultTypeCheckOptions;
+    } else if (options.typeCheckOptions === false) {
+      typeCheckOptions = false;
+    } else {
+      typeCheckOptions = options.typeCheckOptions;
+    }
+  } else if (options.skipTypeChecking) {
+    typeCheckOptions = false;
+  } else {
+    typeCheckOptions = defaultTypeCheckOptions;
+  }
+
+  // New TS Solution already has a typecheck target but allow it to run during serve
+  const shouldTypeCheck =
+    typeCheckOptions !== false &&
+    (!isUsingTsSolution || process.env['WEBPACK_SERVE']);
+
+  if (shouldTypeCheck) {
     const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
     plugins.push(
       new ForkTsCheckerWebpackPlugin({
+        ...typeCheckOptions,
         typescript: {
           configFile: path.isAbsolute(tsConfig)
             ? tsConfig
@@ -320,6 +425,7 @@ function applyNxDependentConfig(
               ],
               dot: true,
             },
+            noErrorOnMissing: true,
           };
         }),
       })
@@ -333,10 +439,27 @@ function applyNxDependentConfig(
     plugins.push(new StatsJsonPlugin());
   }
 
-  const externals = [];
+  const externals =
+    options.mergeExternals && Array.isArray(config.externals)
+      ? [...config.externals]
+      : [];
   if (options.target === 'node' && options.externalDependencies === 'all') {
     const modulesDir = `${options.root}/node_modules`;
-    externals.push(nodeExternals({ modulesDir }));
+
+    const graph = options.projectGraph;
+    const projectName = options.projectName;
+
+    // Collect non-buildable TS project references so that they are bundled
+    // in the final output. This is needed for projects that are not buildable
+    // but are referenced by buildable projects.
+
+    const nonBuildableWorkspaceLibs = isUsingTsSolution
+      ? getNonBuildableLibs(graph, projectName)
+      : [];
+
+    externals.push(
+      nodeExternals({ modulesDir, allowlist: nonBuildableWorkspaceLibs })
+    );
   } else if (Array.isArray(options.externalDependencies)) {
     externals.push(function (ctx, callback: Function) {
       if (options.externalDependencies.includes(ctx.request)) {
@@ -351,6 +474,10 @@ function applyNxDependentConfig(
   config.resolve = {
     ...config.resolve,
     extensions: [...(config?.resolve?.extensions ?? []), ...extensions],
+    extensionAlias: {
+      ...(config.resolve?.extensionAlias ?? {}),
+      ...extensionAlias,
+    },
     alias: {
       ...(config.resolve?.alias ?? {}),
       ...(options.fileReplacements?.reduce(

@@ -2,7 +2,6 @@ import { Task, TaskGraph } from '../../config/task-graph';
 import { getCachedSerializedProjectGraphPromise } from './project-graph-incremental-recomputation';
 import { InProcessTaskHasher } from '../../hasher/task-hasher';
 import { readNxJson } from '../../config/configuration';
-import { DaemonProjectGraphError } from '../../project-graph/error-types';
 
 /**
  * We use this not to recreated hasher for every hash operation
@@ -11,27 +10,21 @@ import { DaemonProjectGraphError } from '../../project-graph/error-types';
 let storedProjectGraph: any = null;
 let storedHasher: InProcessTaskHasher | null = null;
 
-export async function handleHashTasks(payload: {
+interface HashTasksPayload {
   runnerOptions: any;
-  env: any;
   tasks: Task[];
   taskGraph: TaskGraph;
-}) {
-  const {
-    error,
-    projectGraph: _graph,
-    allWorkspaceFiles,
-    fileMap,
-    rustReferences,
-  } = await getCachedSerializedProjectGraphPromise();
+  perTaskEnvs: Record<string, NodeJS.ProcessEnv>;
+  cwd: string;
+  collectInputs?: boolean;
+}
 
-  let projectGraph = _graph;
+async function getHasher(runnerOptions: any): Promise<InProcessTaskHasher> {
+  const { error, projectGraph, rustReferences } =
+    await getCachedSerializedProjectGraphPromise();
+
   if (error) {
-    if (error instanceof DaemonProjectGraphError) {
-      projectGraph = error.projectGraph;
-    } else {
-      throw error;
-    }
+    throw error;
   }
 
   const nxJson = readNxJson();
@@ -39,19 +32,41 @@ export async function handleHashTasks(payload: {
   if (projectGraph !== storedProjectGraph) {
     storedProjectGraph = projectGraph;
     storedHasher = new InProcessTaskHasher(
-      fileMap?.projectFileMap,
-      allWorkspaceFiles,
       projectGraph,
       nxJson,
       rustReferences,
-      payload.runnerOptions
+      runnerOptions
     );
   }
-  const response = JSON.stringify(
-    await storedHasher.hashTasks(payload.tasks, payload.taskGraph, payload.env)
+  return storedHasher;
+}
+
+export async function handleHashTasks(payload: HashTasksPayload) {
+  const hasher = await getHasher(payload.runnerOptions);
+  const response = await hasher.hashTasks(
+    payload.tasks,
+    payload.taskGraph,
+    payload.perTaskEnvs,
+    payload.cwd,
+    payload.collectInputs
   );
   return {
     response,
     description: 'handleHashTasks',
+  };
+}
+
+export async function handleHashTasksUpfront(payload: HashTasksPayload) {
+  const hasher = await getHasher(payload.runnerOptions);
+  const response = await hasher.hashTasksUpfront(
+    payload.tasks,
+    payload.taskGraph,
+    payload.perTaskEnvs,
+    payload.cwd,
+    payload.collectInputs
+  );
+  return {
+    response,
+    description: 'handleHashTasksUpfront',
   };
 }

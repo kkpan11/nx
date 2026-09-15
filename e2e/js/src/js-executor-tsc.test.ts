@@ -19,16 +19,19 @@ import {
   updateFile,
   updateJson,
   waitUntil,
-} from '../../utils';
+} from '@nx/e2e-utils';
 
 describe('js:tsc executor', () => {
   let scope;
-  beforeAll(() => (scope = newProject()));
+  beforeAll(
+    () =>
+      (scope = newProject({ packages: ['@nx/js', '@nx/eslint', '@nx/jest'] }))
+  );
   afterAll(() => cleanupProject());
 
   it('should create libs with js executors (--compiler=tsc)', async () => {
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=tsc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=tsc --no-interactive`);
     const libPackageJson = readJson(`libs/${lib}/package.json`);
     expect(libPackageJson.scripts).toBeUndefined();
 
@@ -109,7 +112,9 @@ describe('js:tsc executor', () => {
     libBuildProcess.kill();
 
     const parentLib = uniq('parentlib');
-    runCLI(`generate @nx/js:lib ${parentLib} --bundler=tsc --no-interactive`);
+    runCLI(
+      `generate @nx/js:lib libs/${parentLib} --bundler=tsc --no-interactive`
+    );
     const parentLibPackageJson = readJson(`libs/${parentLib}/package.json`);
     expect(parentLibPackageJson.scripts).toBeUndefined();
     expect((await runCLIAsync(`test ${parentLib}`)).combinedOutput).toContain(
@@ -129,8 +134,8 @@ describe('js:tsc executor', () => {
 
     const tsconfig = readJson(`tsconfig.base.json`);
     expect(tsconfig.compilerOptions.paths).toEqual({
-      [`@${scope}/${lib}`]: [`libs/${lib}/src/index.ts`],
-      [`@${scope}/${parentLib}`]: [`libs/${parentLib}/src/index.ts`],
+      [`@${scope}/${lib}`]: [`./libs/${lib}/src/index.ts`],
+      [`@${scope}/${parentLib}`]: [`./libs/${parentLib}/src/index.ts`],
     });
 
     updateFile(`libs/${parentLib}/src/index.ts`, () => {
@@ -213,7 +218,7 @@ describe('js:tsc executor', () => {
   it('should not create a `.babelrc` file when creating libs with js executors (--compiler=tsc)', () => {
     const lib = uniq('lib');
     runCLI(
-      `generate @nx/js:lib ${lib} --compiler=tsc --includeBabelRc=false --no-interactive`
+      `generate @nx/js:lib libs/${lib} --compiler=tsc --includeBabelRc=false --no-interactive`
     );
 
     checkFilesDoNotExist(`libs/${lib}/.babelrc`);
@@ -221,10 +226,10 @@ describe('js:tsc executor', () => {
 
   it('should allow wildcard ts path alias', async () => {
     const base = uniq('base');
-    runCLI(`generate @nx/js:lib ${base} --bundler=tsc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${base} --bundler=tsc --no-interactive`);
 
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=tsc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=tsc --no-interactive`);
 
     updateFile(`libs/${base}/src/index.ts`, () => {
       return `
@@ -241,7 +246,7 @@ describe('js:tsc executor', () => {
 
     updateJson('tsconfig.base.json', (json) => {
       json['compilerOptions']['paths'][`@${scope}/${lib}/*`] = [
-        `libs/${lib}/src/*`,
+        `./libs/${lib}/src/*`,
       ];
       return json;
     });
@@ -274,7 +279,7 @@ export function ${lib}Wildcard() {
   it('should update package.json with detected dependencies', async () => {
     const pmc = getPackageManagerCommand();
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=tsc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=tsc --no-interactive`);
 
     // Add a dependency for this lib to check the built package.json
     runCommand(`${pmc.addProd} react`);

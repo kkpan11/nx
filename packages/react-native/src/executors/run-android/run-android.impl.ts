@@ -1,4 +1,5 @@
 import { ExecutorContext } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { join, resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 
@@ -6,6 +7,7 @@ import { ReactNativeRunAndroidOptions } from './schema';
 import { runCliStart } from '../start/start.impl';
 import { chmodAndroidGradlewFiles } from '../../utils/chmod-android-gradle-files';
 import { getCliOptions } from '../../utils/get-cli-options';
+import { warnReactNativeExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ReactNativeRunAndroidOutput {
   success: boolean;
@@ -17,6 +19,8 @@ export default async function* runAndroidExecutor(
   options: ReactNativeRunAndroidOptions,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeRunAndroidOutput> {
+  warnReactNativeExecutorDeprecation('run-android');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
   chmodAndroidGradlewFiles(join(context.root, projectRoot, 'android'));
@@ -73,7 +77,8 @@ function runCliRunAndroid(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(childProcess);
       } else {

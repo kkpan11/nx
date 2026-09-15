@@ -1,55 +1,61 @@
-import * as chalk from 'chalk';
+import * as pc from 'picocolors';
 import { prerelease } from 'semver';
 import { ProjectGraph } from '../../../config/project-graph';
-import { Tree } from '../../../generators/tree';
-import { createFileMapUsingProjectGraph } from '../../../project-graph/file-map-utils';
+import { filterAffected } from '../../../project-graph/affected/affected-project-graph';
+import { calculateFileChanges } from '../../../project-graph/file-utils';
 import { interpolate } from '../../../tasks-runner/utils';
+import type { NxArgs } from '../../../utils/command-line-utils';
 import { output } from '../../../utils/output';
+import { NxReleaseConfig } from '../config/config';
 import type { ReleaseGroupWithName } from '../config/filter-release-groups';
-import { GitCommit, gitAdd, gitCommit } from './git';
+import {
+  gitAdd,
+  GitCommit,
+  gitCommit,
+  sanitizeProjectNameForGitTag,
+} from './git';
+import { findMatchingProjects } from '../../../utils/find-matching-projects';
+import { ReleaseGraph } from './release-graph';
 
-export const noDiffInChangelogMessage = chalk.yellow(
+export const noDiffInChangelogMessage = pc.yellow(
   `NOTE: There was no diff detected for the changelog entry. Maybe you intended to pass alternative git references via --from and --to?`
 );
 
-export type ReleaseVersionGeneratorResult = {
-  data: VersionData;
-  callback: (
-    tree: Tree,
-    opts: {
-      dryRun?: boolean;
-      verbose?: boolean;
-      generatorOptions?: Record<string, unknown>;
-    }
-  ) => Promise<
-    | string[]
-    | {
-        changedFiles: string[];
-        deletedFiles: string[];
-      }
-  >;
-};
+// project name -> version data entry
+export type VersionData = Record<string, VersionDataEntry>;
 
-export type VersionData = Record<
-  string,
-  {
-    /**
-     * newVersion will be null in the case that no changes are detected for the project,
-     * e.g. when using conventional commits
-     */
-    newVersion: string | null;
-    currentVersion: string;
-    /**
-     * The list of projects which depend upon the current project.
-     * TODO: investigate generic type for this once more ecosystems are explored
-     */
-    dependentProjects: any[];
-  }
->;
+export interface VersionDataEntry {
+  currentVersion: string;
+  /**
+   * newVersion will be null in the case that no changes are detected for the project,
+   * e.g. when using conventional commits
+   */
+  newVersion: string | null;
+  /**
+   * dockerVersion will be populated if the project is a docker project and has been
+   * included within this release.
+   */
+  dockerVersion?: string | null;
+  /**
+   * The list of projects which depend upon the current project.
+   */
+  dependentProjects: {
+    source: string;
+    target: string;
+    type: string;
+    dependencyCollection: string | null;
+    rawVersionSpec: string | null;
+  }[];
+}
 
-function isPrerelease(version: string): boolean {
+export function isPrerelease(version: string): boolean {
   // prerelease returns an array of matching prerelease "components", or null if the version is not a prerelease
-  return prerelease(version) !== null;
+  try {
+    return prerelease(version) !== null;
+  } catch {
+    // If non-semver, prerelease will error. Prevent this from erroring the command
+    return false;
+  }
 }
 
 export class ReleaseVersion {
@@ -61,15 +67,20 @@ export class ReleaseVersion {
     version, // short form version string with no prefixes or patterns, e.g. 1.0.0
     releaseTagPattern, // full pattern to interpolate, e.g. "v{version}" or "{projectName}@{version}"
     projectName, // optional project name to interpolate into the releaseTagPattern
+    releaseGroupName, // optional release group name to interpolate into the releaseTagPattern
   }: {
     version: string;
     releaseTagPattern: string;
     projectName?: string;
+    releaseGroupName?: string;
   }) {
     this.rawVersion = version;
     this.gitTag = interpolate(releaseTagPattern, {
       version,
-      projectName,
+      projectName: projectName
+        ? sanitizeProjectNameForGitTag(projectName)
+        : projectName,
+      releaseGroupName,
     });
     this.isPrerelease = isPrerelease(version);
   }
@@ -88,7 +99,7 @@ export async function commitChanges({
   isDryRun?: boolean;
   isVerbose?: boolean;
   gitCommitMessages?: string[];
-  gitCommitArgs?: string;
+  gitCommitArgs?: string | string[];
 }) {
   if (!changedFiles?.length && !deletedFiles?.length) {
     throw new Error('Error: No changed files to commit');
@@ -137,7 +148,8 @@ export function createCommitMessageValues(
     const projectVersionData = versionData[releaseGroupProjectNames[0]]; // all at the same version, so we can just pick the first one
     const releaseVersion = new ReleaseVersion({
       version: projectVersionData.newVersion,
-      releaseTagPattern: releaseGroup.releaseTagPattern,
+      releaseTagPattern: releaseGroup.releaseTag.pattern,
+      releaseGroupName: releaseGroup.name,
     });
     commitMessageValues[0] = interpolate(commitMessageValues[0], {
       version: releaseVersion.rawVersion,
@@ -163,8 +175,9 @@ export function createCommitMessageValues(
       const projectVersionData = versionData[releaseGroupProjectNames[0]];
       const releaseVersion = new ReleaseVersion({
         version: projectVersionData.newVersion,
-        releaseTagPattern: releaseGroup.releaseTagPattern,
+        releaseTagPattern: releaseGroup.releaseTag.pattern,
         projectName: releaseGroupProjectNames[0],
+        releaseGroupName: releaseGroup.name,
       });
       commitMessageValues[0] = interpolate(commitMessageValues[0], {
         version: releaseVersion.rawVersion,
@@ -188,19 +201,22 @@ export function createCommitMessageValues(
   ]);
 
   for (const releaseGroup of releaseGroups) {
-    const releaseGroupProjectNames = Array.from(
-      releaseGroupToFilteredProjects.get(releaseGroup)
-    );
-
     // One entry per project for independent groups
     if (releaseGroup.projectsRelationship === 'independent') {
-      for (const project of releaseGroupProjectNames) {
+      // Include all projects in the release group that were actually versioned,
+      // not just the explicitly filtered ones. This ensures dependent projects
+      // that received side-effect bumps are included in the commit message.
+      const versionedProjects = releaseGroup.projects.filter(
+        (p) => versionData[p] != null && versionData[p].newVersion !== null
+      );
+      for (const project of versionedProjects) {
         const projectVersionData = versionData[project];
         if (projectVersionData.newVersion !== null) {
           const releaseVersion = new ReleaseVersion({
             version: projectVersionData.newVersion,
-            releaseTagPattern: releaseGroup.releaseTagPattern,
+            releaseTagPattern: releaseGroup.releaseTag.pattern,
             projectName: project,
+            releaseGroupName: releaseGroup.name,
           });
           commitMessageValues.push(
             `- project: ${project} ${releaseVersion.rawVersion}`
@@ -211,15 +227,20 @@ export function createCommitMessageValues(
     }
 
     // One entry for the whole group for fixed groups
-    const projectVersionData = versionData[releaseGroupProjectNames[0]]; // all at the same version, so we can just pick the first one
-    const releaseVersion = new ReleaseVersion({
-      version: projectVersionData.newVersion,
-      releaseTagPattern: releaseGroup.releaseTagPattern,
-    });
-
-    commitMessageValues.push(
-      `- release-group: ${releaseGroup.name} ${releaseVersion.rawVersion}`
+    const releaseGroupProjectNames = Array.from(
+      releaseGroupToFilteredProjects.get(releaseGroup)
     );
+    const projectVersionData = versionData[releaseGroupProjectNames[0]]; // all at the same version, so we can just pick the first one
+    if (projectVersionData.newVersion !== null) {
+      const releaseVersion = new ReleaseVersion({
+        version: projectVersionData.newVersion,
+        releaseTagPattern: releaseGroup.releaseTag.pattern,
+        releaseGroupName: releaseGroup.name,
+      });
+      commitMessageValues.push(
+        `- release-group: ${releaseGroup.name} ${releaseVersion.rawVersion}`
+      );
+    }
   }
 
   return commitMessageValues;
@@ -237,6 +258,24 @@ function stripPlaceholders(str: string, placeholders: string[]): string {
   return str;
 }
 
+export function shouldPreferDockerVersionForReleaseGroup(
+  releaseGroup: ReleaseGroupWithName
+): boolean | 'both' {
+  return releaseGroup.releaseTag.preferDockerVersion;
+}
+
+export function shouldSkipVersionActions(
+  dockerOptions: { skipVersionActions?: string[] | boolean },
+  projectName: string
+): boolean {
+  return (
+    dockerOptions.skipVersionActions === true ||
+    (Array.isArray(dockerOptions.skipVersionActions) &&
+      // skipVersionActions as string[] already normalized to matching projects in config.ts
+      dockerOptions.skipVersionActions.includes(projectName))
+  );
+}
+
 export function createGitTagValues(
   releaseGroups: ReleaseGroupWithName[],
   releaseGroupToFilteredProjects: Map<ReleaseGroupWithName, Set<string>>,
@@ -245,32 +284,111 @@ export function createGitTagValues(
   const tags = [];
 
   for (const releaseGroup of releaseGroups) {
-    const releaseGroupProjectNames = Array.from(
-      releaseGroupToFilteredProjects.get(releaseGroup)
-    );
     // For independent groups we want one tag per project, not one for the overall group
     if (releaseGroup.projectsRelationship === 'independent') {
-      for (const project of releaseGroupProjectNames) {
+      // Include all projects in the release group that were actually versioned,
+      // not just the explicitly filtered ones. This ensures dependent projects
+      // that received side-effect bumps get their own tags.
+      const versionedProjects = releaseGroup.projects.filter(
+        (p) =>
+          versionData[p] != null &&
+          (versionData[p].newVersion !== null ||
+            versionData[p].dockerVersion !== null)
+      );
+      for (const project of versionedProjects) {
         const projectVersionData = versionData[project];
-        if (projectVersionData.newVersion !== null) {
-          tags.push(
-            interpolate(releaseGroup.releaseTagPattern, {
-              version: projectVersionData.newVersion,
-              projectName: project,
-            })
-          );
+        if (
+          projectVersionData.newVersion !== null ||
+          projectVersionData.dockerVersion !== null
+        ) {
+          const preferDockerVersion =
+            shouldPreferDockerVersionForReleaseGroup(releaseGroup);
+
+          if (preferDockerVersion === 'both') {
+            // Create tags for both docker and semver versions
+            if (projectVersionData.dockerVersion) {
+              tags.push(
+                interpolate(releaseGroup.releaseTag.pattern, {
+                  version: projectVersionData.dockerVersion,
+                  projectName: sanitizeProjectNameForGitTag(project),
+                  releaseGroupName: releaseGroup.name,
+                })
+              );
+            }
+            if (projectVersionData.newVersion) {
+              tags.push(
+                interpolate(releaseGroup.releaseTag.pattern, {
+                  version: projectVersionData.newVersion,
+                  projectName: sanitizeProjectNameForGitTag(project),
+                  releaseGroupName: releaseGroup.name,
+                })
+              );
+            }
+          } else {
+            // Use either docker version or semver version based on preference, with null fallback
+            const version = preferDockerVersion
+              ? (projectVersionData.dockerVersion ??
+                projectVersionData.newVersion)
+              : (projectVersionData.newVersion ??
+                projectVersionData.dockerVersion);
+            if (version) {
+              tags.push(
+                interpolate(releaseGroup.releaseTag.pattern, {
+                  version,
+                  projectName: sanitizeProjectNameForGitTag(project),
+                  releaseGroupName: releaseGroup.name,
+                })
+              );
+            }
+          }
         }
       }
       continue;
     }
     // For fixed groups we want one tag for the overall group
+    const releaseGroupProjectNames = Array.from(
+      releaseGroupToFilteredProjects.get(releaseGroup)
+    );
     const projectVersionData = versionData[releaseGroupProjectNames[0]]; // all at the same version, so we can just pick the first one
-    if (projectVersionData.newVersion !== null) {
-      tags.push(
-        interpolate(releaseGroup.releaseTagPattern, {
-          version: projectVersionData.newVersion,
-        })
-      );
+    if (
+      projectVersionData.newVersion !== null ||
+      projectVersionData.dockerVersion !== null
+    ) {
+      const preferDockerVersion =
+        shouldPreferDockerVersionForReleaseGroup(releaseGroup);
+
+      if (preferDockerVersion === 'both') {
+        // Create tags for both docker and semver versions
+        if (projectVersionData.dockerVersion) {
+          tags.push(
+            interpolate(releaseGroup.releaseTag.pattern, {
+              version: projectVersionData.dockerVersion,
+              releaseGroupName: releaseGroup.name,
+            })
+          );
+        }
+        if (projectVersionData.newVersion) {
+          tags.push(
+            interpolate(releaseGroup.releaseTag.pattern, {
+              version: projectVersionData.newVersion,
+              releaseGroupName: releaseGroup.name,
+            })
+          );
+        }
+      } else {
+        // Use either docker version or semver version based on preference, with null fallback
+        const version = preferDockerVersion
+          ? (projectVersionData.dockerVersion ?? projectVersionData.newVersion)
+          : (projectVersionData.newVersion ?? projectVersionData.dockerVersion);
+        if (version) {
+          tags.push(
+            interpolate(releaseGroup.releaseTag.pattern, {
+              version,
+              releaseGroupName: releaseGroup.name,
+            })
+          );
+        }
+      }
     }
   }
 
@@ -306,32 +424,124 @@ export function handleDuplicateGitTags(gitTagValues: string[]): void {
   }
 }
 
+function isAutomatedReleaseCommit(
+  message: string,
+  nxReleaseConfig: NxReleaseConfig
+) {
+  // All possible commit message patterns based on config
+  const commitMessagePatterns = [
+    nxReleaseConfig.git.commitMessage,
+    nxReleaseConfig.version.git.commitMessage,
+    nxReleaseConfig.changelog.git.commitMessage,
+  ];
+  // Check if message matches any pattern
+  for (const pattern of commitMessagePatterns) {
+    if (!pattern) continue;
+    // Split on {version}, escape each part for regex, then join with version pattern
+    const parts = pattern.split('{version}');
+    const escapedParts = parts.map((part) =>
+      part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    );
+    const regexPattern = escapedParts.join('\\S+');
+    const regex = new RegExp(`^${regexPattern}$`);
+    if (regex.test(message)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function getCommitsRelevantToProjects(
   projectGraph: ProjectGraph,
   commits: GitCommit[],
-  projects: string[]
-): Promise<GitCommit[]> {
-  const { fileMap } = await createFileMapUsingProjectGraph(projectGraph);
-  const filesInReleaseGroup = new Set<string>(
-    projects.reduce(
-      (files, p) => [...files, ...fileMap.projectFileMap[p].map((f) => f.file)],
-      [] as string[]
-    )
-  );
+  projects: string[],
+  nxReleaseConfig: NxReleaseConfig,
+  releaseGraph: ReleaseGraph,
+  // The full set of projects in the active release group. For release
+  // groups with `projectsRelationship: 'independent'`, `projects` only
+  // contains the single project currently being processed, so the scope
+  // matching/ambiguity check below would not see its sibling projects.
+  // `releaseGroupProjects` lets us match scopes against the whole group
+  // regardless of relationship. Defaults to `projects` for fixed groups.
+  releaseGroupProjects: string[] = projects
+): // Map of projectName to GitCommit[]
+Promise<Map<string, { commit: GitCommit; isProjectScopedCommit: boolean }[]>> {
+  const projectSet = new Set(projects);
+  const releaseGroupProjectSet = new Set(releaseGroupProjects);
+  const relevantCommits: Map<
+    string,
+    { commit: GitCommit; isProjectScopedCommit: boolean }[]
+  > = new Map();
 
-  /**
-   * The relevant commits are those that either:
-   * - touch project files which are contained within the list of projects directly
-   * - touch non-project files and the commit is not scoped
-   */
-  return commits.filter((c) =>
-    c.affectedFiles.some(
-      (f) =>
-        filesInReleaseGroup.has(f) ||
-        (!c.scope &&
-          fileMap.nonProjectFiles.some(
-            (nonProjectFile) => nonProjectFile.file === f
-          ))
-    )
-  );
+  for (const commit of commits) {
+    // Filter out automated release commits
+    if (isAutomatedReleaseCommit(commit.message, nxReleaseConfig)) {
+      continue;
+    }
+
+    // Try to get the graph associated with the commit shortHash
+    // if not available, calculate it and store it in the cache
+    let affectedGraph =
+      await releaseGraph.resolveAffectedFilesPerCommitInProjectGraph(
+        commit,
+        projectGraph
+      );
+
+    // Resolve commit scopes using Nx matcher
+    const scopePatterns = commit.scope
+      ? commit.scope.split(',').map((s) => s.trim())
+      : [];
+
+    let scopedProjects: Set<string> | null = null;
+
+    if (scopePatterns.length > 0) {
+      const matches = findMatchingProjects(scopePatterns, projectGraph.nodes);
+
+      // Detect ambiguity, but only within the active release group's
+      // projects. A scope that resolves ambiguously against projects
+      // outside the group is irrelevant to this group — fall through
+      // to the file-affectedness path used when a commit has no scope
+      // at all. See https://github.com/nrwl/nx/issues/35744.
+      for (const pattern of scopePatterns) {
+        const perPatternMatches = findMatchingProjects(
+          [pattern],
+          projectGraph.nodes
+        );
+        const inGroupMatches = perPatternMatches.filter((p) =>
+          releaseGroupProjectSet.has(p)
+        );
+
+        if (inGroupMatches.length > 1) {
+          throw new Error(
+            `Ambiguous scope "${pattern}" in commit "${commit.message}". ` +
+              `Matches: ${inGroupMatches.join(', ')}`
+          );
+        }
+      }
+
+      // Restrict the scoped-projects set to projects in the active
+      // release group so cross-group matches don't bleed into the
+      // isProjectScopedCommit determination below.
+      scopedProjects = new Set(
+        matches.filter((p) => releaseGroupProjectSet.has(p))
+      );
+    }
+
+    for (const projectName of Object.keys(affectedGraph.nodes)) {
+      if (projectSet.has(projectName)) {
+        if (!relevantCommits.has(projectName)) {
+          relevantCommits.set(projectName, []);
+        }
+
+        const isProjectScopedCommit =
+          scopedProjects === null || scopedProjects.has(projectName);
+
+        relevantCommits
+          .get(projectName)
+          ?.push({ commit, isProjectScopedCommit });
+      }
+    }
+  }
+
+  return relevantCommits;
 }

@@ -1,10 +1,7 @@
 import { minimatch } from 'minimatch';
-import { basename, join, relative } from 'path';
+import { basename, dirname, join, relative } from 'path';
 
-import {
-  buildProjectConfigurationFromPackageJson,
-  getGlobPatternsFromPackageManagerWorkspaces,
-} from '../../plugins/package-json-workspaces';
+import { getGlobPatternsFromPackageManagerWorkspaces } from '../../plugins/package-json';
 import { buildProjectFromProjectJson } from '../../plugins/project-json/build-nodes/project-json';
 import { renamePropertyWithStableKeys } from '../../adapter/angular-json';
 import {
@@ -14,7 +11,7 @@ import {
 import {
   mergeProjectConfigurationIntoRootMap,
   readProjectConfigurationsFromRootMap,
-} from '../../project-graph/utils/project-configuration-utils';
+} from '../../project-graph/utils/project-configuration/project-nodes-manager';
 import { globWithWorkspaceContextSync } from '../../utils/workspace-context';
 import { output } from '../../utils/output';
 import { PackageJson } from '../../utils/package-json';
@@ -23,6 +20,7 @@ import { readJson, writeJson } from './json';
 import { readNxJson } from './nx-json';
 
 import type { Tree } from '../tree';
+import { toProjectName } from '../../config/to-project-name';
 
 export { readNxJson, updateNxJson } from './nx-json';
 
@@ -32,8 +30,27 @@ export { readNxJson, updateNxJson } from './nx-json';
  * @param tree - the file system tree
  * @param projectName - unique name. Often directories are part of the name (e.g., mydir-mylib)
  * @param projectConfiguration - project configuration
- * @param standalone - whether the project is configured in workspace.json or not
  */
+export function addProjectConfiguration(
+  tree: Tree,
+  projectName: string,
+  projectConfiguration: ProjectConfiguration
+): void;
+/**
+ * Adds project configuration to the Nx workspace.
+ *
+ * @param tree - the file system tree
+ * @param projectName - unique name. Often directories are part of the name (e.g., mydir-mylib)
+ * @param projectConfiguration - project configuration
+ * @param standalone - whether the project is configured in workspace.json or not
+ * @deprecated Nx only supports standalone projects. The `standalone` parameter is ignored and will be removed in a future version. Use the 3-argument overload instead.
+ */
+export function addProjectConfiguration(
+  tree: Tree,
+  projectName: string,
+  projectConfiguration: ProjectConfiguration,
+  standalone: boolean
+): void;
 export function addProjectConfiguration(
   tree: Tree,
   projectName: string,
@@ -82,17 +99,83 @@ export function updateProjectConfiguration(
   projectName: string,
   projectConfiguration: ProjectConfiguration
 ): void {
+  if (
+    tree.exists(joinPathFragments(projectConfiguration.root, 'project.json'))
+  ) {
+    updateProjectConfigurationInProjectJson(
+      tree,
+      projectName,
+      projectConfiguration
+    );
+  } else if (
+    tree.exists(joinPathFragments(projectConfiguration.root, 'package.json'))
+  ) {
+    updateProjectConfigurationInPackageJson(
+      tree,
+      projectName,
+      projectConfiguration
+    );
+  } else {
+    throw new Error(
+      `Cannot update Project ${projectName} at ${projectConfiguration.root}. It either doesn't exist yet, or may not use project.json for configuration. Use \`addProjectConfiguration()\` instead if you want to create a new project.`
+    );
+  }
+}
+
+function updateProjectConfigurationInPackageJson(
+  tree: Tree,
+  projectName: string,
+  projectConfiguration: ProjectConfiguration
+) {
+  const packageJsonFile = joinPathFragments(
+    projectConfiguration.root,
+    'package.json'
+  );
+
+  const packageJson = readJson<PackageJson>(tree, packageJsonFile);
+
+  projectConfiguration.name = projectName;
+  if (packageJson.name === projectConfiguration.name) {
+    delete projectConfiguration.name;
+  }
+
+  if (
+    projectConfiguration.targets &&
+    !Object.keys(projectConfiguration.targets).length
+  ) {
+    delete projectConfiguration.targets;
+  }
+
+  packageJson.nx = {
+    ...packageJson.nx,
+    ...projectConfiguration,
+  };
+
+  // We don't want to ever this since it is inferred
+  delete packageJson.nx.root;
+
+  // Only set `nx` property in `package.json` if it is a root project (necessary to mark it as Nx project),
+  // or if there are properties to be set. If it is empty, then avoid it so we don't add unnecessary boilerplate.
+  if (
+    projectConfiguration.root === '.' ||
+    Object.keys(packageJson.nx).length > 0
+  ) {
+    writeJson(tree, packageJsonFile, packageJson);
+  }
+}
+
+function updateProjectConfigurationInProjectJson(
+  tree: Tree,
+  projectName: string,
+  projectConfiguration: ProjectConfiguration
+) {
   const projectConfigFile = joinPathFragments(
     projectConfiguration.root,
     'project.json'
   );
 
-  if (!tree.exists(projectConfigFile)) {
-    throw new Error(
-      `Cannot update Project ${projectName} at ${projectConfiguration.root}. It either doesn't exist yet, or may not use project.json for configuration. Use \`addProjectConfiguration()\` instead if you want to create a new project.`
-    );
-  }
   handleEmptyTargets(projectName, projectConfiguration);
+
   writeJson(tree, projectConfigFile, {
     name: projectConfiguration.name ?? projectName,
     $schema: getRelativeProjectJsonSchemaPath(tree, projectConfiguration),
@@ -190,14 +273,23 @@ function readAndCombineAllProjectConfigurations(tree: Tree): {
   const patterns = [
     '**/project.json',
     'project.json',
-    ...getGlobPatternsFromPackageManagerWorkspaces(tree.root, (p) =>
-      readJson(tree, p, { expectComments: true })
+    ...getGlobPatternsFromPackageManagerWorkspaces(
+      tree.root,
+      (p) => readJson(tree, p, { expectComments: true }),
+      <T extends Object>(p) => {
+        const content = tree.read(p, 'utf-8');
+        const { load } = require('@zkochan/js-yaml');
+        return load(content, { filename: p }) as T;
+      },
+      (p) => tree.exists(p)
     ),
   ];
   const globbedFiles = globWithWorkspaceContextSync(tree.root, patterns);
   const createdFiles = findCreatedProjectFiles(tree, patterns);
   const deletedFiles = findDeletedProjectFiles(tree, patterns);
-  const projectFiles = [...globbedFiles, ...createdFiles].filter(
+  // Ensure we don't duplicate files that are both globbed and in tree changes
+  const allProjectFiles = new Set([...globbedFiles, ...createdFiles]);
+  const projectFiles = Array.from(allProjectFiles).filter(
     (r) => deletedFiles.indexOf(r) === -1
   );
 
@@ -206,6 +298,20 @@ function readAndCombineAllProjectConfigurations(tree: Tree): {
     if (basename(projectFile) === 'project.json') {
       const json = readJson(tree, projectFile);
       const config = buildProjectFromProjectJson(json, projectFile);
+      if (!config.name) {
+        try {
+          const packageJson = readJson<PackageJson>(
+            tree,
+            joinPathFragments(config.root, 'package.json')
+          );
+          if (packageJson.name) {
+            config.name = packageJson.name;
+          }
+        } catch {
+          // Maybe no package json, is ok.
+        }
+        config.name ??= toProjectName(projectFile);
+      }
       mergeProjectConfigurationIntoRootMap(
         rootMap,
         config,
@@ -213,23 +319,25 @@ function readAndCombineAllProjectConfigurations(tree: Tree): {
         undefined,
         true
       );
-    } else if (basename(projectFile) === 'package.json') {
+    }
+    if (basename(projectFile) === 'package.json') {
       const packageJson = readJson<PackageJson>(tree, projectFile);
-      const config = buildProjectConfigurationFromPackageJson(
-        packageJson,
-        tree.root,
-        projectFile,
-        readNxJson(tree)
-      );
+
+      // We don't want to have all of the extra inferred stuff in here, as
+      // when generators update the project they shouldn't inline that stuff.
+      // so rather than using `buildProjectFromPackageJson` and stripping it out
+      // we are going to build the config manually.
+      const config = {
+        root: dirname(projectFile),
+        name: packageJson.name ?? toProjectName(projectFile),
+        ...packageJson.nx,
+      };
       if (!rootMap[config.root]) {
         mergeProjectConfigurationIntoRootMap(
           rootMap,
           // Inferred targets, tags, etc don't show up when running generators
           // This is to help avoid running into issues when trying to update the workspace
-          {
-            name: config.name,
-            root: config.root,
-          },
+          config,
           undefined,
           undefined,
           true
@@ -254,7 +362,10 @@ function findCreatedProjectFiles(tree: Tree, globPatterns: string[]) {
   const createdProjectFiles = [];
 
   for (const change of tree.listChanges()) {
-    if (change.type === 'CREATE') {
+    // Include both CREATE and UPDATE changes to handle project files
+    // created during generator callbacks (which are marked as UPDATE
+    // since the tree has already been flushed to disk)
+    if (change.type === 'CREATE' || change.type === 'UPDATE') {
       const fileName = basename(change.path);
       if (
         globPatterns.some((pattern) =>
@@ -335,9 +446,8 @@ function handleEmptyTargets(
   ) {
     // Re-order `targets` to appear after the `// target` comment.
     delete projectConfiguration.targets;
-    projectConfiguration[
-      '// targets'
-    ] = `to see all targets run: nx show project ${projectName} --web`;
+    projectConfiguration['// targets'] =
+      `to see all targets run: nx show project ${projectName} --web`;
     projectConfiguration.targets = {};
   } else {
     delete projectConfiguration['// targets'];

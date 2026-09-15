@@ -1,13 +1,156 @@
-import { execSync, spawn, SpawnOptions } from 'child_process';
+import { execSync } from 'child_process';
 import { deduceDefaultBase } from './default-base';
 import { output } from '../output';
+import { execAndWait } from '../child-process-utils';
+import {
+  confirmationPrompt,
+  textPrompt,
+} from '../../internal-utils/prompt-helpers';
 
-export function checkGitVersion(): string | null | undefined {
+export enum VcsPushStatus {
+  PushedToVcs = 'PushedToVcs',
+  OptedOutOfPushingToVcs = 'OptedOutOfPushingToVcs',
+  FailedToPushToVcs = 'FailedToPushToVcs',
+  SkippedGit = 'SkippedGit',
+}
+
+export class GitHubPushError extends Error {
+  constructor(
+    message: string,
+    public readonly reason:
+      | 'gh-not-installed'
+      | 'gh-auth-failed'
+      | 'push-timeout'
+      | 'push-failed'
+      | 'env-skip'
+  ) {
+    super(message);
+    this.name = 'GitHubPushError';
+  }
+}
+
+export async function checkGitVersion(): Promise<string | null | undefined> {
   try {
-    let gitVersionOutput = execSync('git --version').toString().trim();
+    const result = await execAndWait('git --version', process.cwd());
+    const gitVersionOutput = result.stdout.trim();
     return gitVersionOutput.match(/[0-9]+\.[0-9]+\.+[0-9]+/)?.[0];
   } catch {
     return null;
+  }
+}
+
+// 1 second timeout for gh CLI pre-flight checks (version, auth). If gh is
+// wrapped by 1Password, a credential manager, or corporate SSO the call can
+// hang indefinitely. Better to skip the push than freeze the CLI.
+const GH_CLI_TIMEOUT_MS = 1_000;
+// 10 second timeout for repo listing (runs in background while user answers prompts).
+const GH_LIST_TIMEOUT_MS = 10_000;
+// 30 second timeout for the actual repo create + push operation.
+// Longer than other gh commands to account for slow networks.
+const GH_PUSH_TIMEOUT_MS = 30_000;
+
+/**
+ * Synchronously checks if GitHub CLI (gh) is available on the system.
+ * Returns true if gh command can be executed within 2 seconds, false otherwise.
+ */
+export function isGhCliAvailable(): boolean {
+  try {
+    execSync('gh --version', {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: GH_CLI_TIMEOUT_MS,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getGitHubUsername(directory: string): Promise<string | null> {
+  try {
+    const result = await execAndWait(
+      'gh api user --jq .login',
+      directory,
+      true, // silenceErrors — gh failures should never write error.log (#34482)
+      GH_CLI_TIMEOUT_MS
+    );
+    return result.stdout.trim() || null;
+  } catch {
+    // gh is optional — auth failures, timeouts, or missing credentials
+    // are silently ignored. The push flow will be skipped.
+    return null;
+  }
+}
+
+// Module-level promise for background repo fetching
+let existingReposPromise: Promise<Set<string>> | undefined;
+
+function populateExistingRepos(directory: string): void {
+  existingReposPromise ??= getUserRepositories(directory);
+}
+
+async function getUserRepositories(directory: string): Promise<Set<string>> {
+  try {
+    const allRepos = new Set<string>();
+
+    // Get user's personal repos and organizations concurrently
+    // Limit to 100 repos for faster response (covers most use cases)
+    const [userRepos, orgsResult] = await Promise.all([
+      execAndWait(
+        'gh repo list --limit 100 --json nameWithOwner --jq ".[].nameWithOwner"',
+        directory,
+        true, // silenceErrors — gh failures should never write error.log
+        GH_LIST_TIMEOUT_MS
+      ),
+      execAndWait(
+        'gh api user/orgs --jq ".[].login"',
+        directory,
+        true,
+        GH_LIST_TIMEOUT_MS
+      ),
+    ]);
+
+    // Add user's personal repos
+    userRepos.stdout
+      .trim()
+      .split('\n')
+      .filter((repo) => repo.length > 0)
+      .forEach((repo) => allRepos.add(repo));
+
+    // Parse organizations
+    const orgs = orgsResult.stdout
+      .trim()
+      .split('\n')
+      .filter((org) => org.length > 0);
+
+    // Get repos from all organizations concurrently
+    const orgRepoPromises = orgs.map(async (org) => {
+      try {
+        const orgRepos = await execAndWait(
+          `gh repo list ${org} --limit 100 --json nameWithOwner --jq ".[].nameWithOwner"`,
+          directory,
+          true, // silenceErrors
+          GH_LIST_TIMEOUT_MS
+        );
+        return orgRepos.stdout
+          .trim()
+          .split('\n')
+          .filter((repo) => repo.length > 0);
+      } catch {
+        // Return empty array if we can't access org repos
+        return [];
+      }
+    });
+
+    const orgRepoResults = await Promise.all(orgRepoPromises);
+
+    // Add all org repos to the set
+    orgRepoResults.flat().forEach((repo) => allRepos.add(repo));
+
+    return allRepos;
+  } catch {
+    // If we can't fetch repos, return empty set to skip validation
+    return new Set();
   }
 }
 
@@ -16,87 +159,185 @@ export async function initializeGitRepo(
   options: {
     defaultBase: string;
     commit?: { message: string; name: string; email: string };
+    connectUrl?: string | null;
   }
 ) {
-  const execute = (args: ReadonlyArray<string>, ignoreErrorStream = false) => {
-    const outputStream = 'ignore';
-    const errorStream = ignoreErrorStream ? 'ignore' : process.stderr;
-    const spawnOptions: SpawnOptions = {
-      stdio: [process.stdin, outputStream, errorStream],
-      shell: true,
-      cwd: directory,
-      env: {
-        ...process.env,
-        ...(options.commit?.name
-          ? {
-              GIT_AUTHOR_NAME: options.commit.name,
-              GIT_COMMITTER_NAME: options.commit.name,
-            }
-          : {}),
-        ...(options.commit?.email
-          ? {
-              GIT_AUTHOR_EMAIL: options.commit.email,
-              GIT_COMMITTER_EMAIL: options.commit.email,
-            }
-          : {}),
-      },
-    };
-    return new Promise<void>((resolve, reject) => {
-      spawn('git', args, spawnOptions).on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(code);
-        }
-      });
-    });
-  };
-  const gitVersion = checkGitVersion();
+  // Set git commit environment variables if provided
+  if (options.commit?.name) {
+    process.env.GIT_AUTHOR_NAME = options.commit.name;
+    process.env.GIT_COMMITTER_NAME = options.commit.name;
+  }
+  if (options.commit?.email) {
+    process.env.GIT_AUTHOR_EMAIL = options.commit.email;
+    process.env.GIT_COMMITTER_EMAIL = options.commit.email;
+  }
+
+  const gitVersion = await checkGitVersion();
   if (!gitVersion) {
     return;
   }
-  const insideRepo = await execute(
-    ['rev-parse', '--is-inside-work-tree'],
+  const insideRepo = await execAndWait(
+    'git rev-parse --is-inside-work-tree',
+    directory,
     true
   ).then(
     () => true,
     () => false
   );
   if (insideRepo) {
-    output.log({
-      title:
-        'Directory is already under version control. Skipping initialization of git.',
-    });
+    if (process.env.NX_VERBOSE_LOGGING === 'true') {
+      output.log({
+        title:
+          'Directory is already under version control. Skipping initialization of git.',
+      });
+    }
     return;
   }
   const defaultBase = options.defaultBase || deduceDefaultBase();
   const [gitMajor, gitMinor] = gitVersion.split('.');
 
   if (+gitMajor > 2 || (+gitMajor === 2 && +gitMinor >= 28)) {
-    await execute(['init', '-b', defaultBase]);
+    await execAndWait(`git init -b ${defaultBase}`, directory);
   } else {
-    await execute(['init']);
-    await execute(['checkout', '-b', defaultBase]); // Git < 2.28 doesn't support -b on git init.
+    await execAndWait('git init', directory);
+    await execAndWait(`git checkout -b ${defaultBase}`, directory); // Git < 2.28 doesn't support -b on git init.
   }
-  await execute(['add', '.']);
+  await execAndWait('git add .', directory);
   if (options.commit) {
-    const message = options.commit.message || 'initial commit';
-    await execute(['commit', `-m "${message}"`]);
+    let message = `${options.commit.message}` || 'initial commit';
+    if (options.connectUrl) {
+      message = `${message}
+
+To connect your workspace to Nx Cloud, push your repository
+to your git hosting provider and go to the following URL:
+  
+${options.connectUrl}
+`;
+    }
+    await execAndWait(`git commit -m "${message}"`, directory);
   }
 }
 
-export function commitChanges(directory: string, message: string) {
+export async function pushToGitHub(
+  directory: string,
+  options: {
+    skipGitHubPush?: boolean;
+    name: string;
+    defaultBase: string;
+    verbose?: boolean;
+  }
+): Promise<VcsPushStatus> {
   try {
-    execSync('git add -A', { encoding: 'utf8', stdio: 'pipe', cwd: directory });
-    execSync('git commit --no-verify -F -', {
-      encoding: 'utf8',
-      stdio: 'pipe',
-      input: message,
-      cwd: directory,
+    // Pre-flight gates — gh is optional, so any failure here throws
+    // GitHubPushError which the caller handles silently (no user output)
+    // while still recording the reason in telemetry.
+    if (process.env['NX_SKIP_GH_PUSH'] === 'true') {
+      throw new GitHubPushError('NX_SKIP_GH_PUSH is true', 'env-skip');
+    }
+    if (!isGhCliAvailable()) {
+      throw new GitHubPushError('gh CLI is not installed', 'gh-not-installed');
+    }
+
+    // Check gh authentication with a short timeout. If gh is wrapped by
+    // 1Password, a credential manager, or corporate SSO this call can hang
+    // indefinitely. A 2 s timeout catches that and skips the push gracefully
+    // instead of freezing the CLI.
+    const username = await getGitHubUsername(directory);
+    if (!username) {
+      throw new GitHubPushError('gh auth failed', 'gh-auth-failed');
+    }
+
+    // Start fetching existing repositories in the background immediately
+    // This runs while user is answering prompts, so validation is usually instant
+    populateExistingRepos(directory);
+
+    // First prompt: Ask if they want to push to GitHub
+    // Cancelling is a decision not to push, not a failure to push.
+    const push = await confirmationPrompt({
+      message: 'Would you like to push this workspace to GitHub?',
+      onCancel: () => false,
     });
+
+    if (!push) {
+      return VcsPushStatus.OptedOutOfPushingToVcs;
+    }
+
+    // Create default repository name using the username we already have
+    const defaultRepo = `${username}/${options.name}`;
+    const createRepoUrl = `https://github.com/new?name=${encodeURIComponent(
+      options.name
+    )}`;
+
+    // Second prompt: Ask where to create the repository with validation
+    // Validation runs synchronously, so the background fetch is resolved here
+    // rather than awaited inside it. It was started before the prompt above, so
+    // it has normally settled by now.
+    const existingRepos = await existingReposPromise;
+
+    // An empty name cannot come from the prompt - `validate` requires a slash -
+    // so it is unambiguous as the cancelled signal.
+    const repoName = await textPrompt({
+      message: 'Repository name (format: username/repo-name):',
+      initialValue: defaultRepo,
+      validate: (value: string): string | undefined => {
+        if (!value.includes('/')) {
+          return 'Repository name must be in format: username/repo-name';
+        }
+        if (existingRepos?.has(value)) {
+          return `Repository '${value}' already exists. Choose a different name or create manually: ${createRepoUrl}`;
+        }
+        return undefined;
+      },
+      onCancel: () => '',
+    });
+
+    if (!repoName) {
+      return VcsPushStatus.OptedOutOfPushingToVcs;
+    }
+
+    // Create GitHub repository and push using gh CLI.
+    // Uses execAndWait (not spawnAndWait) so output is captured rather than
+    // streamed to the terminal. This prevents git push output from bleeding
+    // into the terminal after CNW exits, and ensures the timeout properly
+    // kills the entire process tree.
+    output.log({
+      title:
+        'Creating GitHub repository and pushing (this may take a moment)...',
+    });
+    const cmd = `gh repo create ${repoName} --private --push --source "${directory}"`;
+    await execAndWait(cmd, directory, true, GH_PUSH_TIMEOUT_MS);
+
+    // Get the actual repository URL from GitHub CLI (it could be different from github.com)
+    let repoUrl = `https://github.com/${repoName}`;
+    try {
+      const repoResult = await execAndWait(
+        'gh repo view --json url -q .url',
+        directory,
+        true, // silenceErrors
+        GH_CLI_TIMEOUT_MS
+      );
+      if (repoResult.stdout.trim()) {
+        repoUrl = repoResult.stdout.trim();
+      }
+    } catch {
+      // Fall back to constructed URL
+    }
+
+    output.success({
+      title: `Successfully pushed to GitHub repository: ${repoUrl}`,
+    });
+    return VcsPushStatus.PushedToVcs;
   } catch (e) {
-    console.error(`There was an error committing your Nx Cloud token.\n 
-      Please commit the changes manually and push to your new repository.\n  
-      \n${e}`);
+    // Re-throw GitHubPushError as-is (gh not installed, auth failed, env skip)
+    if (e instanceof GitHubPushError) throw e;
+
+    // Wrap other failures (push timeout, push command failed) as GitHubPushError
+    const isTimedOut = (e as any)?.timedOut === true;
+    if (isTimedOut) {
+      throw new GitHubPushError('gh push timed out', 'push-timeout');
+    }
+
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new GitHubPushError(msg.split('\n')[0].slice(0, 200), 'push-failed');
   }
 }

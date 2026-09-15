@@ -1,3 +1,4 @@
+import { camelize, dasherize } from '@nx/devkit/internal';
 import {
   formatFiles,
   joinPathFragments,
@@ -5,17 +6,20 @@ import {
   type GeneratorCallback,
   type Tree,
 } from '@nx/devkit';
-import { camelize, dasherize } from '@nx/devkit/src/utils/string-utils';
-import { Linter, lintProjectGenerator } from '@nx/eslint';
+import { addLintingToProject, normalizeLinterOption } from '@nx/js/internal';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
 import {
   javaScriptOverride,
   typeScriptOverride,
-} from '@nx/eslint/src/generators/init/global-eslint-config';
-import {
+  addOverrideToLintConfig,
+  addPredefinedConfigToFlatLintConfig,
   findEslintFile,
+  inspectTypedLinting,
   isEslintConfigSupported,
+  isTypedLintingEnabled,
   replaceOverridesInLintConfig,
-} from '@nx/eslint/src/generators/utils/eslint-file';
+  useFlatConfig,
+} from '@nx/eslint/internal';
 import { addAngularEsLintDependencies } from './lib/add-angular-eslint-dependencies';
 import { isBuildableLibraryProject } from './lib/buildable-project';
 import type { AddLintingGeneratorSchema } from './schema';
@@ -24,46 +28,56 @@ export async function addLintingGenerator(
   tree: Tree,
   options: AddLintingGeneratorSchema
 ): Promise<GeneratorCallback> {
+  assertSupportedAngularVersion(tree);
+
   const tasks: GeneratorCallback[] = [];
   const rootProject = options.projectRoot === '.' || options.projectRoot === '';
-  const lintTask = await lintProjectGenerator(tree, {
-    linter: Linter.EsLint,
-    project: options.projectName,
-    tsConfigPaths: [
-      joinPathFragments(options.projectRoot, 'tsconfig.app.json'),
-    ],
-    unitTestRunner: options.unitTestRunner,
-    setParserOptionsProject: options.setParserOptionsProject,
-    skipFormat: true,
-    rootProject: rootProject,
-    addPlugin: false,
-    addExplicitTargets: true,
-    skipPackageJson: options.skipPackageJson,
-  });
-  tasks.push(lintTask);
+  // Resolved once, up front: `undefined !== 'eslint'` is true, so an unresolved
+  // linter would take the early return below and skip the angular-eslint arm.
+  // Callers that already resolved it pass it in, so this only prompts when the
+  // generator is run directly.
+  const linter = await normalizeLinterOption(tree, options.linter);
+  tasks.push(
+    await addLintingToProject(tree, {
+      linter,
+      project: options.projectName,
+      tsConfigPaths: [
+        joinPathFragments(options.projectRoot, 'tsconfig.app.json'),
+      ],
+      unitTestRunner: options.unitTestRunner,
+      enableTypedLinting: isTypedLintingEnabled(options),
+      rootProject: rootProject,
+      addPlugin: options.addPlugin ?? false,
+      addExplicitTargets: true,
+      skipPackageJson: options.skipPackageJson,
+    })
+  );
+
+  // The angular-eslint presets, selector rules and dependency install below have
+  // no equivalent in other linters. Only the formatting tail is shared.
+  if (linter !== 'eslint') {
+    if (!options.skipFormat) {
+      await formatFiles(tree);
+    }
+    return runTasksInSerial(...tasks);
+  }
 
   if (isEslintConfigSupported(tree)) {
-    const eslintFile = findEslintFile(tree, options.projectRoot);
-    // keep parser options if they exist
-    const hasParserOptions = tree
-      .read(joinPathFragments(options.projectRoot, eslintFile), 'utf8')
-      .includes(`${options.projectRoot}/tsconfig.*?.json`);
-
-    replaceOverridesInLintConfig(tree, options.projectRoot, [
-      ...(rootProject ? [typeScriptOverride, javaScriptOverride] : []),
-      {
+    if (useFlatConfig(tree)) {
+      addPredefinedConfigToFlatLintConfig(
+        tree,
+        options.projectRoot,
+        'flat/angular',
+        { checkBaseConfig: true }
+      );
+      addPredefinedConfigToFlatLintConfig(
+        tree,
+        options.projectRoot,
+        'flat/angular-template',
+        { checkBaseConfig: true }
+      );
+      addOverrideToLintConfig(tree, options.projectRoot, {
         files: ['*.ts'],
-        ...(hasParserOptions
-          ? {
-              parserOptions: {
-                project: [`${options.projectRoot}/tsconfig.*?.json`],
-              },
-            }
-          : {}),
-        extends: [
-          'plugin:@nx/angular',
-          'plugin:@angular-eslint/template/process-inline-templates',
-        ],
         rules: {
           '@angular-eslint/directive-selector': [
             'error',
@@ -82,28 +96,93 @@ export async function addLintingGenerator(
             },
           ],
         },
-      },
-      {
+      });
+      addOverrideToLintConfig(tree, options.projectRoot, {
         files: ['*.html'],
-        extends: ['plugin:@nx/angular-template'],
-        /**
-         * Having an empty rules object present makes it more obvious to the user where they would
-         * extend things from if they needed to
-         */
         rules: {},
-      },
-      ...(isBuildableLibraryProject(tree, options.projectName)
-        ? [
-            {
-              files: ['*.json'],
-              parser: 'jsonc-eslint-parser',
-              rules: {
-                '@nx/dependency-checks': 'error',
+      });
+    } else {
+      // Legacy `.eslintrc` overrides are fully replaced below, which would drop
+      // an existing `parserOptions.project`. Detect it first so we can carry it
+      // over. (Flat configs keep typed linting via `lintProjectGenerator`, so
+      // this is only needed on the legacy stack.)
+      const eslintFile = findEslintFile(tree, options.projectRoot);
+      const eslintFileContent = eslintFile
+        ? tree.read(joinPathFragments(options.projectRoot, eslintFile), 'utf8')
+        : null;
+      const typedLinting = eslintFileContent
+        ? inspectTypedLinting(eslintFileContent)
+        : null;
+      // Only a `project` needs carrying over. A config running the project
+      // service needs no glob and typescript-eslint rejects one next to it.
+      const carryOverProject =
+        !!typedLinting?.project && !typedLinting.projectService;
+      replaceOverridesInLintConfig(tree, options.projectRoot, [
+        ...(rootProject ? [typeScriptOverride, javaScriptOverride] : []),
+        {
+          files: ['*.ts'],
+          // Legacy `.eslintrc` is JSON, which can't express the `__dirname`
+          // that `tsconfigRootDir` needs, so it keeps `parserOptions.project`.
+          ...(carryOverProject
+            ? {
+                parserOptions: {
+                  project: [`${options.projectRoot}/tsconfig.*?.json`],
+                },
+              }
+            : {}),
+          extends: [
+            'plugin:@nx/angular',
+            'plugin:@angular-eslint/template/process-inline-templates',
+          ],
+          rules: {
+            '@angular-eslint/directive-selector': [
+              'error',
+              {
+                type: 'attribute',
+                prefix: camelize(options.prefix),
+                style: 'camelCase',
+              },
+            ],
+            '@angular-eslint/component-selector': [
+              'error',
+              {
+                type: 'element',
+                prefix: dasherize(options.prefix),
+                style: 'kebab-case',
+              },
+            ],
+          },
+        },
+        {
+          files: ['*.html'],
+          extends: ['plugin:@nx/angular-template'],
+          /**
+           * Having an empty rules object present makes it more obvious to the user where they would
+           * extend things from if they needed to
+           */
+          rules: {},
+        },
+        ...(isBuildableLibraryProject(tree, options.projectName)
+          ? [
+              {
+                files: ['*.json'],
+                parser: 'jsonc-eslint-parser',
+                rules: {
+                  '@nx/dependency-checks': [
+                    'error',
+                    {
+                      // With flat configs, we don't want to include imports in the eslint js/cjs/mjs files to be checked
+                      ignoredFiles: [
+                        '{projectRoot}/eslint.config.{js,cjs,mjs}',
+                      ],
+                    },
+                  ],
+                },
               } as any,
-            },
-          ]
-        : []),
-    ]);
+            ]
+          : []),
+      ]);
+    }
   }
 
   if (!options.skipPackageJson) {

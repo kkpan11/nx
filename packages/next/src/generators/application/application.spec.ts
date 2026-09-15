@@ -2,8 +2,11 @@ import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
   getProjects,
   readJson,
+  readNxJson,
   readProjectConfiguration,
   Tree,
+  updateJson,
+  writeJson,
 } from '@nx/devkit';
 
 import { Schema } from './schema';
@@ -12,17 +15,24 @@ import { join } from 'path';
 
 describe('app', () => {
   let tree: Tree;
+  let envBackup: string | undefined;
 
   beforeEach(() => {
+    envBackup = process.env.ESLINT_USE_FLAT_CONFIG;
+    delete process.env.ESLINT_USE_FLAT_CONFIG;
     tree = createTreeWithEmptyWorkspace();
+  });
+
+  afterEach(() => {
+    if (envBackup === undefined) delete process.env.ESLINT_USE_FLAT_CONFIG;
+    else process.env.ESLINT_USE_FLAT_CONFIG = envBackup;
   });
 
   it('should add a .gitkeep file to the public directory', async () => {
     const name = uniq();
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
     });
 
     expect(tree.exists(`${name}/public/.gitkeep`)).toBe(true);
@@ -31,10 +41,9 @@ describe('app', () => {
   it('should update tags and implicit dependencies', async () => {
     const name = uniq();
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
       tags: 'one,two',
-      projectNameAndRootFormat: 'as-provided',
     });
 
     const projects = Object.fromEntries(getProjects(tree));
@@ -55,9 +64,8 @@ describe('app', () => {
 
     const name = uniq();
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
     });
 
     const tsConfig = readJson(tree, `${name}/tsconfig.json`);
@@ -68,9 +76,8 @@ describe('app', () => {
     it('should generate files for app layout', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
-        projectNameAndRootFormat: 'as-provided',
       });
 
       const tsConfig = readJson(tree, `${name}/tsconfig.json`);
@@ -81,6 +88,7 @@ describe('app', () => {
         '**/*.jsx',
         `../${name}/.next/types/**/*.ts`,
         `../dist/${name}/.next/types/**/*.ts`,
+        'index.d.ts',
         'next-env.d.ts',
       ]);
       expect(tree.exists(`${name}/src/pages/styles.css`)).toBeFalsy();
@@ -92,14 +100,26 @@ describe('app', () => {
       expect(tree.exists(`${name}/public/favicon.ico`)).toBeTruthy();
     });
 
+    it('should include the @nx/next style reference in the generated index.d.ts', async () => {
+      const name = uniq();
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+      });
+
+      const content = tree.read(`${name}/index.d.ts`, 'utf-8');
+      expect(content).toContain(
+        '/// <reference types="@nx/next/typings/style.d.ts" />'
+      );
+    });
+
     it('should add layout types correctly for standalone apps', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
         name,
+        directory: '.',
         style: 'css',
         appDir: true,
-        rootProject: true,
-        projectNameAndRootFormat: 'as-provided',
       });
 
       const tsConfig = readJson(tree, 'tsconfig.json');
@@ -110,6 +130,7 @@ describe('app', () => {
         'src/**/*.jsx',
         '.next/types/**/*.ts',
         `dist/${name}/.next/types/**/*.ts`,
+        'index.d.ts',
         'next-env.d.ts',
       ]);
     });
@@ -118,10 +139,9 @@ describe('app', () => {
       const name = uniq();
       await applicationGenerator(tree, {
         name,
+        directory: '.',
         style: 'none',
         appDir: true,
-        rootProject: true,
-        projectNameAndRootFormat: 'as-provided',
       });
 
       const content = tree.read('src/app/page.tsx').toString();
@@ -136,11 +156,10 @@ describe('app', () => {
     it('should generate files for pages layout', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
         appDir: false,
         src: false,
-        projectNameAndRootFormat: 'as-provided',
       });
       expect(tree.exists(`${name}/tsconfig.json`)).toBeTruthy();
       expect(tree.exists(`${name}/pages/index.tsx`)).toBeTruthy();
@@ -151,25 +170,37 @@ describe('app', () => {
     it('should update configurations', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
-        projectNameAndRootFormat: 'as-provided',
       });
 
       expect(readProjectConfiguration(tree, name).root).toEqual(name);
+      expect(readProjectConfiguration(tree, name).sourceRoot).toEqual(
+        `${name}/src`
+      );
       expect(readProjectConfiguration(tree, `${name}-e2e`).root).toEqual(
         `${name}-e2e`
       );
     });
 
+    it('should set sourceRoot to the project root when --src=false', async () => {
+      const name = uniq();
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        src: false,
+      });
+
+      expect(readProjectConfiguration(tree, name).sourceRoot).toEqual(name);
+    });
+
     it('should generate an unstyled component page', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'none',
         appDir: false,
         src: false,
-        projectNameAndRootFormat: 'as-provided',
       });
 
       const content = tree.read(`${name}/pages/index.tsx`).toString();
@@ -182,284 +213,31 @@ describe('app', () => {
 
   describe('--style scss', () => {
     it('should generate scss styles', async () => {
-      const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: 'myapp',
         style: 'scss',
-        projectNameAndRootFormat: 'as-provided',
       });
 
-      expect(tree.exists(`${name}/src/app/page.module.scss`)).toBeTruthy();
-      expect(tree.exists(`${name}/src/app/global.css`)).toBeTruthy();
+      expect(tree.exists(`myapp/src/app/page.module.scss`)).toBeTruthy();
+      expect(tree.exists(`myapp/src/app/global.css`)).toBeTruthy();
 
-      const indexContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
+      const indexContent = tree.read(`myapp/src/app/page.tsx`, 'utf-8');
       expect(indexContent).toContain(`import styles from './page.module.scss'`);
-      expect(tree.read(`${name}/src/app/layout.tsx`, 'utf-8'))
+      expect(tree.read(`myapp/src/app/layout.tsx`, 'utf-8'))
         .toMatchInlineSnapshot(`
         "import './global.css';
 
         export const metadata = {
-          title: 'Welcome to ${name}',
+          title: 'Welcome to myapp',
           description: 'Generated by create-nx-workspace',
         };
 
-        export default function RootLayout({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
+        export default function RootLayout({ children }: { children: React.ReactNode }) {
           return (
             <html lang="en">
               <body>{children}</body>
             </html>
           );
-        }
-        "
-      `);
-    });
-  });
-
-  describe('--style less', () => {
-    it('should generate less styles', async () => {
-      const name = uniq();
-      await applicationGenerator(tree, {
-        name,
-        style: 'less',
-        projectNameAndRootFormat: 'as-provided',
-      });
-
-      expect(tree.exists(`${name}/src/app/page.module.less`)).toBeTruthy();
-      expect(tree.exists(`${name}/src/app/global.less`)).toBeTruthy();
-
-      const indexContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
-      expect(indexContent).toContain(`import styles from './page.module.less'`);
-      expect(tree.read(`${name}/src/app/layout.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "import './global.less';
-
-        export const metadata = {
-          title: 'Welcome to ${name}',
-          description: 'Generated by create-nx-workspace',
-        };
-
-        export default function RootLayout({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
-          return (
-            <html lang="en">
-              <body>{children}</body>
-            </html>
-          );
-        }
-        "
-      `);
-    });
-  });
-
-  describe('--style styled-components', () => {
-    it('should generate styled-components styles', async () => {
-      const name = uniq();
-      await applicationGenerator(tree, {
-        name,
-        style: 'styled-components',
-        projectNameAndRootFormat: 'as-provided',
-      });
-
-      expect(
-        tree.exists(`${name}/src/app/page.module.styled-components`)
-      ).toBeFalsy();
-      expect(tree.exists(`${name}/src/app/global.css`)).toBeTruthy();
-
-      const indexContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
-      expect(indexContent).not.toContain(`import styles from './page.module`);
-      expect(indexContent).toContain(`import styled from 'styled-components'`);
-      expect(tree.read(`${name}/src/app/layout.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "import './global.css';
-        import { StyledComponentsRegistry } from './registry';
-
-        export const metadata = {
-          title: 'Welcome to demo2',
-          description: 'Generated by create-nx-workspace',
-        };
-
-        export default function RootLayout({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
-          return (
-            <html lang="en">
-              <body>
-                <StyledComponentsRegistry>{children}</StyledComponentsRegistry>
-              </body>
-            </html>
-          );
-        }
-        "
-      `);
-      expect(tree.read(`${name}/src/app/registry.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "'use client';
-
-        import React, { useState } from 'react';
-        import { useServerInsertedHTML } from 'next/navigation';
-        import { ServerStyleSheet, StyleSheetManager } from 'styled-components';
-
-        export function StyledComponentsRegistry({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
-          // Only create stylesheet once with lazy initial state
-          // x-ref: https://reactjs.org/docs/hooks-reference.html#lazy-initial-state
-          const [styledComponentsStyleSheet] = useState(() => new ServerStyleSheet());
-
-          useServerInsertedHTML(() => {
-            const styles = styledComponentsStyleSheet.getStyleElement();
-
-            // Types are out of date, clearTag is not defined.
-            // See: https://github.com/DefinitelyTyped/DefinitelyTyped/issues/65021
-            (styledComponentsStyleSheet.instance as any).clearTag();
-
-            return <>{styles}</>;
-          });
-
-          if (typeof window !== 'undefined') return <>{children}</>;
-
-          return (
-            <StyleSheetManager sheet={styledComponentsStyleSheet.instance}>
-              {children}
-            </StyleSheetManager>
-          );
-        }
-        "
-      `);
-    });
-  });
-
-  // Support for emotion is still being worked on disable for now: https://nextjs.org/docs/app/building-your-application/styling/css-in-js
-  xdescribe('--style @emotion/styled', () => {
-    it('should generate  @emotion/styled styles', async () => {
-      const name = uniq();
-
-      await applicationGenerator(tree, {
-        name,
-        style: '@emotion/styled',
-        projectNameAndRootFormat: 'as-provided',
-      });
-
-      expect(
-        tree.exists(`${name}/src/app/page.module.styled-components`)
-      ).toBeFalsy();
-      expect(tree.exists(`${name}/src/app/global.css`)).toBeTruthy();
-
-      const indexContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
-      expect(indexContent).not.toContain(`import styles from './page.module`);
-      expect(indexContent).toContain(`import styled from '@emotion/styled'`);
-      expect(tree.read(`${name}/src/app/layout.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "import './global.css';
-
-        export const metadata = {
-          title: 'Welcome to ${name}',
-          description: 'Generated by create-nx-workspace',
-        };
-
-        export default function RootLayout({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
-          return (
-            <html lang="en">
-              <body>{children}</body>
-            </html>
-          );
-        }
-        "
-      `);
-    });
-
-    it('should add jsxImportSource in tsconfig.json', async () => {
-      const name = uniq();
-
-      await applicationGenerator(tree, {
-        name,
-        style: '@emotion/styled',
-        projectNameAndRootFormat: 'as-provided',
-      });
-
-      const tsconfigJson = readJson(tree, `${name}/tsconfig.json`);
-
-      expect(tsconfigJson.compilerOptions['jsxImportSource']).toEqual(
-        '@emotion/react'
-      );
-    });
-  });
-
-  describe('--style styled-jsx', () => {
-    it('should use <style jsx> in index page', async () => {
-      const name = 'my-app';
-
-      await applicationGenerator(tree, {
-        name,
-        style: 'styled-jsx',
-        projectNameAndRootFormat: 'as-provided',
-      });
-
-      const indexContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
-
-      expect(indexContent).toMatchSnapshot();
-      expect(tree.exists(`${name}/src/app/page.module.styled-jsx`)).toBeFalsy();
-      expect(tree.exists(`${name}/src/app/global.css`)).toBeTruthy();
-
-      expect(indexContent).not.toContain(`import styles from './page.module`);
-      expect(indexContent).not.toContain(
-        `import styled from 'styled-components'`
-      );
-      expect(tree.read(`${name}/src/app/layout.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "import './global.css';
-        import { StyledJsxRegistry } from './registry';
-
-        export default function RootLayout({
-          children,
-        }: {
-          children: React.ReactNode;
-        }) {
-          return (
-            <html>
-              <body>
-                <StyledJsxRegistry>{children}</StyledJsxRegistry>
-              </body>
-            </html>
-          );
-        }
-        "
-      `);
-      expect(tree.read(`${name}/src/app/registry.tsx`, 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "'use client';
-
-        import React, { useState } from 'react';
-        import { useServerInsertedHTML } from 'next/navigation';
-        import { StyleRegistry, createStyleRegistry } from 'styled-jsx';
-
-        export function StyledJsxRegistry({ children }: { children: React.ReactNode }) {
-          // Only create stylesheet once with lazy initial state
-          // x-ref: https://reactjs.org/docs/hooks-reference.html#lazy-initial-state
-          const [jsxStyleRegistry] = useState(() => createStyleRegistry());
-
-          useServerInsertedHTML(() => {
-            const styles = jsxStyleRegistry.styles();
-            jsxStyleRegistry.flush();
-            return <>{styles}</>;
-          });
-
-          return <StyleRegistry registry={jsxStyleRegistry}>{children}</StyleRegistry>;
         }
         "
       `);
@@ -470,26 +248,27 @@ describe('app', () => {
     const name = uniq();
 
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
     });
 
-    expect(tree.read(`${name}/jest.config.ts`, 'utf-8')).toContain(
+    expect(tree.read(`${name}/jest.config.cts`, 'utf-8')).toContain(
       `moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],`
     );
+    expect(
+      readJson(tree, 'package.json').devDependencies['@testing-library/react']
+    ).toBeDefined();
   });
 
   it('should setup jest with SVGR support', async () => {
     const name = uniq();
 
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
     });
 
-    expect(tree.read(`${name}/jest.config.ts`, 'utf-8')).toContain(
+    expect(tree.read(`${name}/jest.config.cts`, 'utf-8')).toContain(
       `'^(?!.*\\\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest'`
     );
   });
@@ -497,10 +276,12 @@ describe('app', () => {
   it('should set up the nx next build builder', async () => {
     const name = uniq();
 
+    // addPlugin: false -> legacy @nx/next:build executor, which relies on
+    // withNx to redirect the build output to --outputPath.
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
+      addPlugin: false,
     });
 
     expect(tree.read(join(name, 'next.config.js'), 'utf-8'))
@@ -514,11 +295,9 @@ describe('app', () => {
        * @type {import('@nx/next/plugins/with-nx').WithNxOptions}
        **/
       const nextConfig = {
-        nx: {
-          // Set this to true if you would like to use SVGR
-          // See: https://github.com/gregberge/svgr
-          svgr: false,
-        },
+        // Use this to set Nx-specific options
+        // See: https://nx.dev/docs/technologies/react/next/Guides/next-config-setup
+        nx: {},
       };
 
       const plugins = [
@@ -531,16 +310,39 @@ describe('app', () => {
     `);
   });
 
+  it('should generate a plain next.config.js for the inferred plugin', async () => {
+    const name = uniq();
+
+    await applicationGenerator(tree, {
+      directory: name,
+      style: 'css',
+      addPlugin: true,
+    });
+
+    expect(tree.read(join(name, 'next.config.js'), 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "//@ts-check
+
+      /** @type {import('next').NextConfig} */
+      const nextConfig = {
+        // Next.js options go here
+        // See: https://nextjs.org/docs/app/api-reference/config/next-config-js
+      };
+
+      module.exports = nextConfig;
+      "
+    `);
+  });
+
   describe('--unit-test-runner none', () => {
     it('should not generate test configuration', async () => {
       const name = uniq();
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
         unitTestRunner: 'none',
-        projectNameAndRootFormat: 'as-provided',
       });
-      expect(tree.exists('jest.config.ts')).toBeFalsy();
+      expect(tree.exists('jest.config.cts')).toBeFalsy();
       expect(tree.exists(`${name}/specs/index.spec.tsx`)).toBeFalsy();
     });
   });
@@ -550,10 +352,9 @@ describe('app', () => {
       const name = uniq();
 
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
         e2eTestRunner: 'none',
-        projectNameAndRootFormat: 'as-provided',
       });
       expect(tree.exists(`${name}-e2e`)).toBeFalsy();
     });
@@ -563,9 +364,8 @@ describe('app', () => {
     const name = uniq();
 
     await applicationGenerator(tree, {
-      name,
+      directory: name,
       style: 'css',
-      projectNameAndRootFormat: 'as-provided',
     });
 
     const appContent = tree.read(`${name}/src/app/page.tsx`, 'utf-8');
@@ -574,14 +374,193 @@ describe('app', () => {
   });
 
   describe('--linter', () => {
-    describe('default (eslint)', () => {
-      it('should add .eslintrc.json and dependencies', async () => {
+    // The ESLint config shaping is guarded per-linter, but the dependency
+    // install below it is a separate block that has to be guarded too.
+    it.each(['none', 'oxlint'] as const)(
+      'should not install ESLint packages for --linter=%s',
+      async (linter) => {
         const name = uniq();
 
         await applicationGenerator(tree, {
-          name,
+          directory: name,
           style: 'css',
-          projectNameAndRootFormat: 'as-provided',
+          linter,
+        });
+
+        const { devDependencies } = readJson(tree, 'package.json');
+        // One assertion per package, not `not.arrayContaining([...])`: that
+        // matcher negates "contains all of", so it passes as soon as any single
+        // one is absent — it would miss two of the three leaking back.
+        for (const pkg of [
+          'eslint-config-next',
+          '@next/eslint-plugin-next',
+          'eslint-plugin-react',
+        ]) {
+          expect(devDependencies ?? {}).not.toHaveProperty(pkg);
+        }
+      }
+    );
+
+    // The Playwright branch forwarded `options.linter` while the Cypress branch
+    // passed a literal `'eslint'`, so a Cypress e2e project ignored the app's
+    // linter entirely.
+    it.each(['cypress', 'playwright'] as const)(
+      'should give the %s e2e project the same linter as the app',
+      async (e2eTestRunner) => {
+        const name = uniq();
+
+        await applicationGenerator(tree, {
+          directory: name,
+          style: 'css',
+          linter: 'oxlint',
+          e2eTestRunner,
+        });
+
+        const { devDependencies } = readJson(tree, 'package.json');
+        expect(devDependencies ?? {}).not.toHaveProperty('@nx/eslint');
+        expect(devDependencies ?? {}).not.toHaveProperty('eslint');
+      }
+    );
+
+    describe('default (eslint)', () => {
+      it('should add flat config as needed MJS', async () => {
+        tree.write('eslint.config.mjs', 'export default {};');
+        const name = uniq();
+
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: name,
+          style: 'css',
+        });
+
+        expect(tree.read(`${name}/eslint.config.mjs`, 'utf-8'))
+          .toMatchInlineSnapshot(`
+          "import nextEslintPluginNext from '@next/eslint-plugin-next';
+          import nx from '@nx/eslint-plugin';
+          import baseConfig from '../eslint.config.mjs';
+
+          export default [
+            { plugins: { '@next/next': nextEslintPluginNext } },
+            ...nx.configs['flat/react-typescript'],
+            ...baseConfig,
+            {
+              ignores: ['.next/**/*'],
+            },
+          ];
+          "
+        `);
+      });
+
+      it('should add flat config as needed CJS', async () => {
+        tree.write('eslint.config.cjs', '');
+        const name = uniq();
+
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: name,
+          style: 'css',
+        });
+
+        expect(tree.read(`${name}/eslint.config.cjs`, 'utf-8'))
+          .toMatchInlineSnapshot(`
+          "const nextEslintPluginNext = require('@next/eslint-plugin-next');
+          const nx = require('@nx/eslint-plugin');
+          const baseConfig = require('../eslint.config.cjs');
+
+          module.exports = [
+            { plugins: { '@next/next': nextEslintPluginNext } },
+
+            ...nx.configs['flat/react-typescript'],
+            ...baseConfig,
+            {
+              ignores: ['.next/**/*'],
+            },
+          ];
+          "
+        `);
+      });
+
+      it('should install eslint-config-next@15 when generating a new Next.js application in an empty Nx workspace', async () => {
+        const name = uniq();
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: name,
+          style: 'css',
+        });
+
+        const packageJson = readJson(tree, '/package.json');
+        expect(packageJson).toMatchObject({
+          devDependencies: {
+            'eslint-config-next': '^16.1.6',
+            '@next/eslint-plugin-next': '^16.1.6',
+          },
+        });
+      });
+
+      it('should install eslint-config-next@15 when an existing Next.js 15 project is detected', async () => {
+        tree.write(
+          '/package.json',
+          JSON.stringify({
+            name: '@proj/source',
+            dependencies: {
+              next: '~15.2.4',
+            },
+            devDependencies: {},
+          })
+        );
+
+        const name = uniq();
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: name,
+          style: 'css',
+        });
+
+        const packageJson = readJson(tree, '/package.json');
+        expect(packageJson).toMatchObject({
+          devDependencies: {
+            'eslint-config-next': '^15.5.18',
+            '@next/eslint-plugin-next': '^15.5.18',
+          },
+        });
+      });
+
+      it('should install eslint-config-next@15 when an existing Next.js 14 project is detected', async () => {
+        tree.write(
+          '/package.json',
+          JSON.stringify({
+            name: '@proj/source',
+            dependencies: {
+              next: '~14.2.16',
+            },
+            devDependencies: {},
+          })
+        );
+
+        const name = uniq();
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: name,
+          style: 'css',
+        });
+
+        const packageJson = readJson(tree, '/package.json');
+        // Next.js 14 projects get eslint-config-next@15; config 14 only
+        // supports ESLint v8, which is no longer supported.
+        expect(packageJson).toMatchObject({
+          devDependencies: {
+            'eslint-config-next': '^15.5.18',
+            '@next/eslint-plugin-next': '^15.5.18',
+          },
+        });
+      });
+
+      it('should add .eslintrc.json and dependencies', async () => {
+        process.env.ESLINT_USE_FLAT_CONFIG = 'false';
+        await applicationGenerator(tree, {
+          linter: 'eslint',
+          directory: 'myapp',
+          style: 'css',
         });
 
         const packageJson = readJson(tree, '/package.json');
@@ -592,7 +571,7 @@ describe('app', () => {
           },
         });
 
-        const eslintJson = readJson(tree, `${name}/.eslintrc.json`);
+        const eslintJson = readJson(tree, `myapp/.eslintrc.json`);
         expect(eslintJson).toMatchInlineSnapshot(`
           {
             "extends": [
@@ -616,7 +595,7 @@ describe('app', () => {
                 "rules": {
                   "@next/next/no-html-link-for-pages": [
                     "error",
-                    "${name}/pages",
+                    "myapp/pages",
                   ],
                 },
               },
@@ -634,17 +613,6 @@ describe('app', () => {
                 ],
                 "rules": {},
               },
-              {
-                "env": {
-                  "jest": true,
-                },
-                "files": [
-                  "*.spec.ts",
-                  "*.spec.tsx",
-                  "*.spec.js",
-                  "*.spec.jsx",
-                ],
-              },
             ],
           }
         `);
@@ -653,14 +621,15 @@ describe('app', () => {
 
     describe('root level', () => {
       it('should adjust eslint config for root level projects', async () => {
+        process.env.ESLINT_USE_FLAT_CONFIG = 'false';
         const name = uniq();
 
         await applicationGenerator(tree, {
+          linter: 'eslint',
           name,
+          directory: '.',
           style: 'css',
           appDir: true,
-          rootProject: true,
-          projectNameAndRootFormat: 'as-provided',
         });
 
         const eslintJSON = readJson(tree, '.eslintrc.json');
@@ -677,15 +646,66 @@ describe('app', () => {
         );
       });
 
+      it('should setup eslint config for standalone projects', async () => {
+        const name = uniq();
+        const prevEslintUseFlatConfigEnvVarValue =
+          process.env['ESLINT_USE_FLAT_CONFIG'];
+        process.env['ESLINT_USE_FLAT_CONFIG'] = 'true';
+        await applicationGenerator(tree, {
+          name,
+          directory: '.',
+          style: 'css',
+          linter: 'eslint',
+          appDir: true,
+          rootProject: true,
+        });
+
+        const eslintContents = tree.read('eslint.config.mjs', 'utf-8');
+
+        expect(eslintContents).toMatchInlineSnapshot(`
+          "import nextEslintPluginNext from '@next/eslint-plugin-next';
+          import nx from '@nx/eslint-plugin';
+
+          export default [
+            { plugins: { '@next/next': nextEslintPluginNext } },
+            ...nx.configs['flat/base'],
+            ...nx.configs['flat/typescript'],
+            ...nx.configs['flat/javascript'],
+            {
+              ignores: ['**/dist', '**/out-tsc', '.next/**/*'],
+            },
+            {
+              files: [
+                '**/*.ts',
+                '**/*.tsx',
+                '**/*.cts',
+                '**/*.mts',
+                '**/*.js',
+                '**/*.jsx',
+                '**/*.cjs',
+                '**/*.mjs',
+              ],
+              // Override or add rules here
+              rules: {
+                '@next/next/no-html-link-for-pages': ['error', './pages'],
+              },
+            },
+            ...nx.configs['flat/react-typescript'],
+          ];
+          "
+        `);
+        process.env['ESLINT_USE_FLAT_CONFIG'] =
+          prevEslintUseFlatConfigEnvVarValue;
+      });
+
       it('should scope tsconfig to the src/ project directory', async () => {
         const name = uniq();
 
         await applicationGenerator(tree, {
           name,
+          directory: '.',
           style: 'css',
           appDir: true,
-          rootProject: true,
-          projectNameAndRootFormat: 'as-provided',
           src: true,
         });
 
@@ -698,6 +718,7 @@ describe('app', () => {
           'src/**/*.jsx',
           '.next/types/**/*.ts',
           `dist/${name}/.next/types/**/*.ts`,
+          'index.d.ts',
           'next-env.d.ts',
         ]);
       });
@@ -707,10 +728,9 @@ describe('app', () => {
 
         await applicationGenerator(tree, {
           name,
+          directory: '.',
           style: 'css',
           appDir: true,
-          rootProject: true,
-          projectNameAndRootFormat: 'as-provided',
           src: false,
         });
 
@@ -723,6 +743,7 @@ describe('app', () => {
           'app/**/*.jsx',
           '.next/types/**/*.ts',
           `dist/${name}/.next/types/**/*.ts`,
+          'index.d.ts',
           'next-env.d.ts',
         ]);
       });
@@ -732,10 +753,9 @@ describe('app', () => {
 
         await applicationGenerator(tree, {
           name,
+          directory: '.',
           style: 'css',
           appDir: false,
-          rootProject: true,
-          projectNameAndRootFormat: 'as-provided',
           src: false,
         });
 
@@ -745,9 +765,37 @@ describe('app', () => {
           'pages/**/*.tsx',
           'pages/**/*.js',
           'pages/**/*.jsx',
+          'index.d.ts',
           'next-env.d.ts',
         ]);
       });
+    });
+
+    it('should not ignore "out-tsc" from eslint', async () => {
+      process.env.ESLINT_USE_FLAT_CONFIG = 'false';
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        style: 'css',
+        skipFormat: true,
+      });
+
+      const eslintConfig = readJson(tree, 'myapp/.eslintrc.json');
+      expect(eslintConfig.ignorePatterns).not.toContain('**/out-tsc');
+    });
+
+    it('should not ignore "out-tsc" from eslint with flat config', async () => {
+      tree.write('eslint.config.mjs', 'export default [];');
+
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        style: 'css',
+        skipFormat: true,
+      });
+
+      const eslintConfig = tree.read('myapp/eslint.config.mjs', 'utf-8');
+      expect(eslintConfig).not.toContain('**/out-tsc');
     });
   });
 
@@ -756,7 +804,7 @@ describe('app', () => {
       const name = uniq();
 
       await applicationGenerator(tree, {
-        name,
+        directory: name,
         style: 'css',
         js: true,
       });
@@ -774,6 +822,609 @@ describe('app', () => {
       expect(tsConfigApp.exclude).not.toContain('**/*.spec.js');
     });
   });
+
+  describe('TS solution setup', () => {
+    let tree: Tree;
+
+    beforeEach(() => {
+      tree = createTreeWithEmptyWorkspace();
+      updateJson(tree, 'package.json', (json) => {
+        json.workspaces = ['packages/*', 'apps/*'];
+        return json;
+      });
+      writeJson(tree, 'tsconfig.base.json', {
+        compilerOptions: {
+          composite: true,
+          declaration: true,
+        },
+      });
+      writeJson(tree, 'tsconfig.json', {
+        extends: './tsconfig.base.json',
+        files: [],
+        references: [],
+      });
+    });
+
+    it('should emit the @/* alias in the vitest config', async () => {
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'apps/myapp',
+        unitTestRunner: 'vitest',
+        style: 'css',
+        useTsSolution: true,
+        skipFormat: true,
+      });
+
+      const vitestConfig = tree.read('apps/myapp/vitest.config.mts', 'utf-8');
+      expect(vitestConfig).toContain(
+        `'@': join(import.meta.dirname, './src'),`
+      );
+      const tsconfigSpec = readJson(tree, 'apps/myapp/tsconfig.spec.json');
+      expect(tsconfigSpec.compilerOptions.paths).toEqual({
+        '@/*': ['./src/*'],
+      });
+    });
+
+    it('should emit the @/* alias for --no-src apps', async () => {
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'apps/myapp',
+        unitTestRunner: 'vitest',
+        style: 'css',
+        src: false,
+        useTsSolution: true,
+        skipFormat: true,
+      });
+
+      const vitestConfig = tree.read('apps/myapp/vitest.config.mts', 'utf-8');
+      expect(vitestConfig).toContain(`'@': join(import.meta.dirname, '.'),`);
+      const tsconfigSpec = readJson(tree, 'apps/myapp/tsconfig.spec.json');
+      expect(tsconfigSpec.compilerOptions.paths).toEqual({ '@/*': ['./*'] });
+    });
+
+    it('should add project references when using TS solution', async () => {
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'cypress',
+        addPlugin: true,
+        useProjectJson: false,
+      });
+
+      expect(readJson(tree, 'tsconfig.json').references).toMatchInlineSnapshot(`
+          [
+            {
+              "path": "./myapp-e2e",
+            },
+            {
+              "path": "./myapp",
+            },
+          ]
+        `);
+      const packageJson = readJson(tree, 'myapp/package.json');
+      expect(packageJson.name).toBe('@proj/myapp');
+      expect(packageJson.nx).toEqual({ sourceRoot: 'myapp/src' });
+      // Make sure keys are in idiomatic order
+      expect(Object.keys(packageJson)).toMatchInlineSnapshot(`
+          [
+            "name",
+            "version",
+            "private",
+            "dependencies",
+            "nx",
+          ]
+        `);
+      expect(readJson(tree, 'myapp/tsconfig.json')).toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "allowJs": true,
+            "allowSyntheticDefaultImports": true,
+            "emitDeclarationOnly": false,
+            "esModuleInterop": true,
+            "forceConsistentCasingInFileNames": true,
+            "incremental": true,
+            "isolatedModules": true,
+            "jsx": "preserve",
+            "lib": [
+              "dom",
+              "dom.iterable",
+              "esnext",
+            ],
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "noEmit": true,
+            "outDir": "dist",
+            "paths": {
+              "@/*": [
+                "./src/*",
+              ],
+            },
+            "plugins": [
+              {
+                "name": "next",
+              },
+            ],
+            "resolveJsonModule": true,
+            "rootDir": "src",
+            "strict": true,
+            "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+            "types": [
+              "jest",
+              "node",
+            ],
+          },
+          "exclude": [
+            "out-tsc",
+            "dist",
+            "node_modules",
+            "jest.config.ts",
+            "jest.config.cts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.ts",
+            ".next",
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+          ],
+          "extends": "../tsconfig.base.json",
+          "include": [
+            "src/**/*.ts",
+            "src/**/*.tsx",
+            "src/**/*.js",
+            "src/**/*.jsx",
+            "../myapp/.next/types/**/*.ts",
+            "../dist/myapp/.next/types/**/*.ts",
+            "index.d.ts",
+            "next-env.d.ts",
+          ],
+        }
+      `);
+      expect(readJson(tree, 'myapp/tsconfig.spec.json')).toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "jsx": "preserve",
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "outDir": "./out-tsc/jest",
+            "types": [
+              "jest",
+              "node",
+            ],
+          },
+          "extends": "../tsconfig.base.json",
+          "include": [
+            "jest.config.ts",
+            "jest.config.cts",
+            "src/**/*.test.ts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.tsx",
+            "src/**/*.spec.tsx",
+            "src/**/*.test.js",
+            "src/**/*.spec.js",
+            "src/**/*.test.jsx",
+            "src/**/*.spec.jsx",
+            "src/**/*.d.ts",
+          ],
+          "references": [
+            {
+              "path": "./tsconfig.json",
+            },
+          ],
+        }
+      `);
+      expect(readJson(tree, 'myapp-e2e/tsconfig.json')).toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "allowJs": true,
+            "outDir": "out-tsc/cypress",
+            "rootDir": ".",
+            "sourceMap": false,
+            "types": [
+              "cypress",
+              "node",
+            ],
+          },
+          "exclude": [
+            "out-tsc",
+            "test-output",
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+          ],
+          "extends": "../tsconfig.base.json",
+          "include": [
+            "**/*.ts",
+            "**/*.js",
+            "cypress.config.ts",
+            "**/*.cy.ts",
+            "**/*.cy.tsx",
+            "**/*.cy.js",
+            "**/*.cy.jsx",
+            "**/*.d.ts",
+          ],
+        }
+      `);
+    });
+
+    it('should respect the provided name', async () => {
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        name: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'cypress',
+        addPlugin: true,
+        useProjectJson: false,
+      });
+
+      const packageJson = readJson(tree, 'myapp/package.json');
+      expect(packageJson.name).toBe('@proj/myapp');
+      expect(packageJson.nx.name).toBe('myapp');
+      expect(packageJson.nx.sourceRoot).toBe('myapp/src');
+      // Make sure keys are in idiomatic order
+      expect(Object.keys(packageJson)).toMatchInlineSnapshot(`
+        [
+          "name",
+          "version",
+          "private",
+          "dependencies",
+          "nx",
+        ]
+      `);
+    });
+
+    it('should generate project.json if useProjectJson is true', async () => {
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'cypress',
+        addPlugin: true,
+        useProjectJson: true,
+        skipFormat: true,
+      });
+
+      expect(tree.exists('myapp/project.json')).toBeTruthy();
+      expect(readProjectConfiguration(tree, '@proj/myapp'))
+        .toMatchInlineSnapshot(`
+        {
+          "$schema": "../node_modules/nx/schemas/project-schema.json",
+          "name": "@proj/myapp",
+          "projectType": "application",
+          "root": "myapp",
+          "sourceRoot": "myapp/src",
+          "tags": [],
+          "targets": {},
+        }
+      `);
+      expect(readJson(tree, 'myapp/package.json').nx).toBeUndefined();
+      expect(tree.exists('myapp-e2e/project.json')).toBeTruthy();
+      expect(readProjectConfiguration(tree, '@proj/myapp-e2e'))
+        .toMatchInlineSnapshot(`
+        {
+          "$schema": "../node_modules/nx/schemas/project-schema.json",
+          "implicitDependencies": [
+            "@proj/myapp",
+          ],
+          "name": "@proj/myapp-e2e",
+          "projectType": "application",
+          "root": "myapp-e2e",
+          "sourceRoot": "myapp-e2e/src",
+          "tags": [],
+          "targets": {},
+        }
+      `);
+      expect(readJson(tree, 'myapp-e2e/package.json').nx).toBeUndefined();
+    });
+
+    it('should set sourceRoot in project.json to the project root when --src=false', async () => {
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'none',
+        addPlugin: true,
+        useProjectJson: true,
+        src: false,
+        skipFormat: true,
+      });
+
+      expect(readProjectConfiguration(tree, '@proj/myapp').sourceRoot).toBe(
+        'myapp'
+      );
+      expect(tree.exists('myapp/app/page.tsx')).toBeTruthy();
+      expect(tree.exists('myapp/src/app/page.tsx')).toBeFalsy();
+    });
+
+    it('should set sourceRoot in package.json to the src directory by default', async () => {
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'none',
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      expect(readJson(tree, 'myapp/package.json').nx).toEqual({
+        sourceRoot: 'myapp/src',
+      });
+      expect(tree.exists('myapp/src/app/page.tsx')).toBeTruthy();
+    });
+
+    it('should set sourceRoot in package.json to the project root when --src=false', async () => {
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        appDir: true,
+        unitTestRunner: 'jest',
+        style: 'css',
+        e2eTestRunner: 'none',
+        addPlugin: true,
+        useProjectJson: false,
+        src: false,
+        skipFormat: true,
+      });
+
+      expect(readJson(tree, 'myapp/package.json').nx).toEqual({
+        sourceRoot: 'myapp',
+      });
+      expect(tree.exists('myapp/app/page.tsx')).toBeTruthy();
+      expect(tree.exists('myapp/src/app/page.tsx')).toBeFalsy();
+    });
+
+    it('should ignore "out-tsc" from eslint', async () => {
+      process.env.ESLINT_USE_FLAT_CONFIG = 'false';
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        style: 'css',
+        skipFormat: true,
+      });
+
+      const eslintConfig = readJson(tree, 'myapp/.eslintrc.json');
+      expect(eslintConfig.ignorePatterns).toContain('**/out-tsc');
+    });
+
+    it('should ignore "out-tsc" from eslint with flat config', async () => {
+      tree.write('eslint.config.mjs', 'export default [];');
+
+      await applicationGenerator(tree, {
+        linter: 'eslint',
+        directory: 'myapp',
+        style: 'css',
+        skipFormat: true,
+      });
+
+      const eslintConfig = tree.read('myapp/eslint.config.mjs', 'utf-8');
+      expect(eslintConfig).toContain('**/out-tsc');
+    });
+  });
+
+  describe('--unit-test-runner vitest', () => {
+    it('should generate a vitest config and no jest config', async () => {
+      const name = 'myapp';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'vitest',
+        skipFormat: true,
+      });
+
+      expect(tree.exists(`${name}/jest.config.cts`)).toBeFalsy();
+      expect(tree.exists(`${name}/specs/index.spec.tsx`)).toBeTruthy();
+      expect(
+        readJson(tree, 'package.json').devDependencies['@nx/vite']
+      ).toBeUndefined();
+      expect(
+        readJson(tree, 'package.json').devDependencies['vitest']
+      ).toBeDefined();
+      expect(tree.read(`${name}/vitest.config.mts`, 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "import { defineConfig } from 'vitest/config';
+        import react from '@vitejs/plugin-react';
+
+        export default defineConfig(() => ({
+          root: import.meta.dirname,
+          cacheDir: '../node_modules/.vite/myapp',
+          plugins: [react()],
+          test: {
+            name: 'myapp',
+            watch: false,
+            globals: true,
+            environment: 'jsdom',
+            include: ['{src,app,pages,specs}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+            reporters: ['default'],
+            coverage: {
+              reportsDirectory: '../coverage/myapp',
+              provider: 'v8' as const,
+            }
+          },
+        }));
+        "
+      `);
+    });
+
+    it('should add test types to tsconfig.json so specs outside src type-check', async () => {
+      const name = 'myapp';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'vitest',
+        skipFormat: true,
+      });
+
+      const tsconfig = readJson(tree, `${name}/tsconfig.json`);
+      expect(tsconfig.compilerOptions.types).toEqual(
+        expect.arrayContaining(['vitest/globals', 'node'])
+      );
+      const tsconfigSpec = readJson(tree, `${name}/tsconfig.spec.json`);
+      expect(tsconfigSpec.compilerOptions.types).toEqual(
+        expect.arrayContaining(['vitest/globals', 'vite/client', 'node'])
+      );
+    });
+  });
+
+  describe('--unit-test-runner vitest workspace aliases', () => {
+    it('should mirror root tsconfig paths as aliases in non-ts-solution workspaces', async () => {
+      updateJson(tree, 'tsconfig.base.json', (json) => {
+        json.compilerOptions ??= {};
+        json.compilerOptions.paths = {
+          '@proj/mylib': ['libs/mylib/src/index.ts'],
+          '@proj/other/*': ['libs/other/src/*'],
+        };
+        return json;
+      });
+
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        style: 'css',
+        unitTestRunner: 'vitest',
+        skipFormat: true,
+      });
+
+      const vitestConfig = tree.read('myapp/vitest.config.mts', 'utf-8');
+      expect(vitestConfig).toContain(
+        `'@proj/mylib': join(import.meta.dirname, '../libs/mylib/src/index.ts'),`
+      );
+      expect(vitestConfig).toContain(
+        `'@proj/other': join(import.meta.dirname, '../libs/other/src'),`
+      );
+    });
+
+    it('should resolve root tsconfig paths against its baseUrl', async () => {
+      updateJson(tree, 'tsconfig.base.json', (json) => {
+        json.compilerOptions ??= {};
+        json.compilerOptions.baseUrl = 'src';
+        json.compilerOptions.paths = {
+          'shared/*': ['shared/*'],
+        };
+        return json;
+      });
+
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        style: 'css',
+        unitTestRunner: 'vitest',
+        skipFormat: true,
+      });
+
+      const vitestConfig = tree.read('myapp/vitest.config.mts', 'utf-8');
+      expect(vitestConfig).toContain(
+        `'shared': join(import.meta.dirname, '../src/shared'),`
+      );
+    });
+
+    it('should enable allowJs in tsconfig.spec.json for --js apps', async () => {
+      await applicationGenerator(tree, {
+        directory: 'myapp',
+        style: 'css',
+        unitTestRunner: 'vitest',
+        js: true,
+        skipFormat: true,
+      });
+
+      const tsconfigSpec = readJson(tree, 'myapp/tsconfig.spec.json');
+      expect(tsconfigSpec.compilerOptions.allowJs).toBe(true);
+    });
+  });
+
+  describe('--unit-test-runner jest', () => {
+    it('should use next/jest.js for Jest configuration', async () => {
+      const name = 'myapp';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'jest',
+      });
+
+      const jestConfig = tree.read(`${name}/jest.config.cts`, 'utf-8');
+      expect(jestConfig).toMatchInlineSnapshot(`
+        "const nextJest = require('next/jest.js');
+
+        const createJestConfig = nextJest({
+          dir: './',
+        });
+
+        const config = {
+          displayName: 'myapp',
+          preset: '../jest.preset.js',
+          transform: {
+            '^(?!.*\\\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
+          },
+          moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+          coverageDirectory: '../coverage/myapp',
+          testEnvironment: 'jsdom',
+        };
+
+        const jestConfig = createJestConfig(config);
+
+        module.exports = async () => {
+          const resolved = await jestConfig();
+          // Disable SWC path alias resolution — handled by Nx jest resolver.
+          for (const value of Object.values(resolved.transform)) {
+            if (Array.isArray(value) && value[1]?.resolvedBaseUrl) {
+              value[1] = { ...value[1], resolvedBaseUrl: undefined };
+            }
+          }
+          return resolved;
+        };
+        "
+      `);
+    });
+
+    it('should generate JS jest config when --js is used', async () => {
+      const name = 'myapp';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'jest',
+        js: true,
+      });
+
+      const jestConfig = tree.read(`${name}/jest.config.js`, 'utf-8');
+      expect(jestConfig).toMatchInlineSnapshot(`
+        "const nextJest = require('next/jest.js');
+
+        const createJestConfig = nextJest({
+          dir: './',
+        });
+
+        const config = {
+          displayName: 'myapp',
+          preset: '../jest.preset.js',
+          transform: {
+            '^(?!.*\\\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
+          },
+          moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+          coverageDirectory: '../coverage/myapp',
+          testEnvironment: 'jsdom',
+        };
+
+        const jestConfig = createJestConfig(config);
+
+        module.exports = async () => {
+          const resolved = await jestConfig();
+          // Disable SWC path alias resolution — handled by Nx jest resolver.
+          for (const value of Object.values(resolved.transform)) {
+            if (Array.isArray(value) && value[1]?.resolvedBaseUrl) {
+              value[1] = { ...value[1], resolvedBaseUrl: undefined };
+            }
+          }
+          return resolved;
+        };
+        "
+      `);
+    });
+  });
 });
 
 describe('app (legacy)', () => {
@@ -781,12 +1432,11 @@ describe('app (legacy)', () => {
   let originalEnv;
 
   const schema: Schema = {
-    name: 'app',
+    directory: 'app',
     appDir: true,
     unitTestRunner: 'jest',
     style: 'css',
     e2eTestRunner: 'cypress',
-    projectNameAndRootFormat: 'as-provided',
   };
 
   beforeAll(() => {
@@ -803,7 +1453,7 @@ describe('app (legacy)', () => {
     }
   });
 
-  it('should generate build serve and export targets', async () => {
+  it('should generate build and serve targets', async () => {
     const name = uniq();
 
     await applicationGenerator(tree, {
@@ -814,7 +1464,113 @@ describe('app (legacy)', () => {
     const projectConfiguration = readProjectConfiguration(tree, name);
     expect(projectConfiguration.targets.build).toBeDefined();
     expect(projectConfiguration.targets.serve).toBeDefined();
-    expect(projectConfiguration.targets.export).toBeDefined();
+  });
+
+  describe('--unit-test-runner jest', () => {
+    it('should use next/jest.js for Jest configuration', async () => {
+      const name = 'myapp';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'jest',
+      });
+
+      const jestConfig = tree.read(`${name}/jest.config.cts`, 'utf-8');
+      expect(jestConfig).toMatchInlineSnapshot(`
+        "const nextJest = require('next/jest.js');
+
+        const createJestConfig = nextJest({
+          dir: './',
+        });
+
+        const config = {
+          displayName: 'myapp',
+          preset: '../jest.preset.js',
+          transform: {
+            '^(?!.*\\\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
+          },
+          moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+          coverageDirectory: '../coverage/myapp',
+          testEnvironment: 'jsdom',
+        };
+
+        const jestConfig = createJestConfig(config);
+
+        module.exports = async () => {
+          const resolved = await jestConfig();
+          // Disable SWC path alias resolution — handled by Nx jest resolver.
+          for (const value of Object.values(resolved.transform)) {
+            if (Array.isArray(value) && value[1]?.resolvedBaseUrl) {
+              value[1] = { ...value[1], resolvedBaseUrl: undefined };
+            }
+          }
+          return resolved;
+        };
+        "
+      `);
+    });
+
+    it('should generate JS jest config when --js is used', async () => {
+      const name = 'myapp2';
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'jest',
+        js: true,
+      });
+
+      const jestConfig = tree.read(`${name}/jest.config.js`, 'utf-8');
+      expect(jestConfig).toMatchInlineSnapshot(`
+        "const nextJest = require('next/jest.js');
+
+        const createJestConfig = nextJest({
+          dir: './',
+        });
+
+        const config = {
+          displayName: 'myapp2',
+          preset: '../jest.preset.js',
+          transform: {
+            '^(?!.*\\\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
+          },
+          moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
+          coverageDirectory: '../coverage/myapp2',
+          testEnvironment: 'jsdom',
+        };
+
+        const jestConfig = createJestConfig(config);
+
+        module.exports = async () => {
+          const resolved = await jestConfig();
+          // Disable SWC path alias resolution — handled by Nx jest resolver.
+          for (const value of Object.values(resolved.transform)) {
+            if (Array.isArray(value) && value[1]?.resolvedBaseUrl) {
+              value[1] = { ...value[1], resolvedBaseUrl: undefined };
+            }
+          }
+          return resolved;
+        };
+        "
+      `);
+    });
+
+    it('should configure tsconfig.spec.json to reference tsconfig.json as runtime config', async () => {
+      const name = uniq();
+      await applicationGenerator(tree, {
+        directory: name,
+        style: 'css',
+        unitTestRunner: 'jest',
+      });
+
+      const tsConfigSpec = readJson(tree, `${name}/tsconfig.spec.json`);
+
+      // Verify that the runtime tsconfig is properly referenced (tsconfig.json for Next.js apps)
+      expect(tree.exists(`${name}/tsconfig.json`)).toBe(true);
+      expect(tree.exists(`${name}/tsconfig.app.json`)).toBe(false);
+
+      // Verify the jest config and spec config are properly set up
+      expect(tsConfigSpec.compilerOptions.jsx).toBe('react');
+    });
   });
 });
 

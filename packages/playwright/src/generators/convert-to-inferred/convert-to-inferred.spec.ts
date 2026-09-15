@@ -1,7 +1,3 @@
-import {
-  getRelativeProjectJsonSchemaPath,
-  updateProjectConfiguration,
-} from 'nx/src/generators/utils/project-configuration';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { convertToInferred } from './convert-to-inferred';
 import {
@@ -15,9 +11,11 @@ import {
   type Tree,
   updateNxJson,
   writeJson,
+  updateProjectConfiguration,
 } from '@nx/devkit';
 import { TempFs } from '@nx/devkit/internal-testing-utils';
 import { join } from 'node:path';
+import { getRelativeProjectJsonSchemaPath } from '@nx/devkit/internal';
 
 let fs: TempFs;
 
@@ -40,9 +38,8 @@ jest.mock('@nx/devkit', () => ({
         ) {
           // Re-order `targets` to appear after the `// target` comment.
           delete projectConfiguration.targets;
-          projectConfiguration[
-            '// targets'
-          ] = `to see all targets run: nx show project ${projectName} --web`;
+          projectConfiguration['// targets'] =
+            `to see all targets run: nx show project ${projectName} --web`;
           projectConfiguration.targets = {};
         } else {
           delete projectConfiguration['// targets'];
@@ -137,7 +134,7 @@ function createTestProject(
     webServer: {
       command: 'npx nx serve myapp',
       url: 'http://localhost:4200',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       cwd: workspaceRoot,
     },
     projects: [

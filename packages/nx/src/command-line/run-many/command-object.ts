@@ -1,22 +1,26 @@
 import { CommandModule } from 'yargs';
+import { handleErrors } from '../../utils/handle-errors';
 import { linkToNxDevAndExamples } from '../yargs-utils/documentation';
 import {
-  withRunManyOptions,
-  withOutputStyleOption,
-  withTargetAndConfigurationOption,
-  withOverrides,
   withBatch,
+  withOutputStyleOption,
+  withOverrides,
+  withRunManyOptions,
+  withTargetAndConfigurationOption,
+  withTuiOptions,
 } from '../yargs-utils/shared-options';
-import { handleErrors } from '../../utils/params';
+import { handleImport } from '../../utils/handle-import';
 
 export const yargsRunManyCommand: CommandModule = {
   command: 'run-many',
-  describe: 'Run target for multiple listed projects',
+  describe: 'Run target for multiple listed projects.',
   builder: (yargs) =>
     linkToNxDevAndExamples(
-      withRunManyOptions(
-        withOutputStyleOption(
-          withTargetAndConfigurationOption(withBatch(yargs))
+      withTuiOptions(
+        withRunManyOptions(
+          withOutputStyleOption(
+            withTargetAndConfigurationOption(withBatch(yargs))
+          )
         )
       ),
       'run-many'
@@ -25,7 +29,9 @@ export const yargsRunManyCommand: CommandModule = {
     const exitCode = await handleErrors(
       (args.verbose as boolean) ?? process.env.NX_VERBOSE_LOGGING === 'true',
       async () => {
-        await import('./run-many').then((m) => m.runMany(withOverrides(args)));
+        await handleImport('./run-many.js', __dirname).then((m) =>
+          m.runMany(withOverrides(args))
+        );
       }
     );
     process.exit(exitCode);

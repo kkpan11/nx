@@ -4,5 +4,10 @@ export interface PublishExecutorSchema {
   tag?: string;
   otp?: number;
   dryRun?: boolean;
+  access?: 'public' | 'restricted';
   firstRelease?: boolean;
+  nxReleaseVersionData?: Record<
+    string,
+    { currentVersion: string; newVersion: string | null; [key: string]: any }
+  >;
 }

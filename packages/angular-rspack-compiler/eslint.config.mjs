@@ -1,0 +1,39 @@
+import { baseConfig } from '../../eslint.config.mjs';
+import * as jsoncEslintParser from 'jsonc-eslint-parser';
+
+export default [
+  ...baseConfig,
+  {
+    files: ['./package.json'],
+    rules: {
+      '@nx/nx-plugin-checks': 'error',
+      '@nx/dependency-checks': [
+        'error',
+        {
+          buildTargets: ['build-base'],
+          ignoredFiles: [
+            '{projectRoot}/eslint.config.mjs',
+            '{projectRoot}/vite.config.{js,ts,mjs,mts}',
+          ],
+          ignoredDependencies: [
+            '@angular/core',
+            // Loaded via a dynamic runtime import in load-compiler-cli.ts (its
+            // nodenext-incompatible types are shimmed locally), so static
+            // analysis can't see the usage.
+            '@angular/compiler-cli',
+            'jsonc-eslint-parser',
+            'semver',
+            'vitest',
+            'memfs',
+          ],
+        },
+      ],
+    },
+    languageOptions: {
+      parser: jsoncEslintParser,
+    },
+  },
+  {
+    ignores: ['dist'],
+  },
+];

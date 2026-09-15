@@ -1,0 +1,460 @@
+---
+title: Nx with TypeScript
+description: Nx scales your TypeScript or JavaScript monorepo with caching, distributed task execution, and affected-only builds.
+keywords: [typescript, javascript, js, ts]
+sidebar:
+  label: Introduction
+  order: 1
+weight: 2
+filter: 'type:References'
+---
+
+A TypeScript/JavaScript (TS/JS) monorepo keeps many packages in one repository, sharing types and code directly instead of through published packages. Nx runs and maintains that monorepo at scale: it detects projects from your package manager workspaces, keeps TypeScript project references in sync automatically, and runs typechecking and builds with caching and affected detection.
+
+The `@nx/js` plugin provides [generators for creating TypeScript and JavaScript projects](#generate-and-manage-typescript-libraries), and its `@nx/js/typescript` plugin infers [`typecheck` and `build` tasks](#how-the-typescript-plugin-infers-tasks) from your tsconfig files. You don't need the plugin to use TypeScript with Nx, any project already benefits from [caching](/docs/features/cache-task-results), [task orchestration](/docs/features/run-tasks), and the [project graph](/docs/features/explore-graph). The plugin can help simplify setups and maintenance of TypeScript projects at scale.
+
+## How Nx maintains a TypeScript monorepo
+
+Keeping all the tools in a large TypeScript monorepo correctly configured and working together is a difficult task, and every added tool is a new chance for conflicts. Nx approaches this from two directions: it configures itself to match the existing configuration of your other tools, and it enhances certain tools to work better in a monorepo.
+
+### Project detection with package manager workspaces
+
+If your repository uses package manager workspaces, Nx uses those settings to find all the [projects](/docs/reference/project-configuration) in your repository. You don't define projects for your package manager and again for Nx: the `workspaces` configuration is enough for Nx to build the project graph.
+
+```json
+// package.json
+{
+  "workspaces": ["apps/*", "packages/*"]
+}
+```
+
+{% graph height="200px" title="Project View" %}
+
+```json
+{
+  "composite": false,
+  "projects": [
+    {
+      "name": "product-state",
+      "type": "lib",
+      "data": {
+        "root": "packages/cart/product-state",
+        "tags": ["scope:cart", "type:state"]
+      }
+    },
+    {
+      "name": "ui-buttons",
+      "type": "lib",
+      "data": {
+        "root": "packages/ui/buttons",
+        "tags": ["scope:shared", "type:ui"]
+      }
+    },
+    {
+      "name": "cart",
+      "type": "app",
+      "data": {
+        "root": "apps/cart",
+        "tags": ["type:app", "scope:cart"]
+      }
+    }
+  ],
+  "dependencies": {
+    "product-state": [],
+    "ui-buttons": [],
+    "cart": [
+      { "source": "cart", "target": "product-state", "type": "static" },
+      { "source": "cart", "target": "ui-buttons", "type": "static" }
+    ]
+  },
+  "workspaceLayout": {
+    "appsDir": "apps",
+    "libsDir": "libs"
+  },
+  "affectedProjectIds": [],
+  "focus": null,
+  "groupByFolder": false,
+  "exclude": [],
+  "enableTooltips": false
+}
+```
+
+{% /graph %}
+
+### Tasks inferred from your tooling configuration
+
+Nx [plugins](/docs/concepts/nx-plugins) for tools like TypeScript, Vite, Playwright, and Jest [infer task configuration](/docs/concepts/mental-model#inferred-tasks) from your existing tooling config files, keeping those files as the single source of truth. Because a config file like `vite.config.ts` exists, Nx knows the project can run a `build` task with Vite, and it reads the config to set the correct [cache](/docs/features/cache-task-results) outputs. The TypeScript-specific inference is covered in [how the TypeScript plugin infers tasks](#how-the-typescript-plugin-infers-tasks).
+
+### TypeScript project references kept in sync
+
+TypeScript [Project References](https://www.typescriptlang.org/docs/handbook/project-references.html) let the compiler build and typecheck each project independently, reusing intermediate `*.tsbuildinfo` files instead of re-typechecking every dependency. This provides [significant performance improvements](/docs/kb/typescript-project-linking#typescript-project-references-performance-benefits), particularly in a large monorepo.
+
+The downside is that each project's references have to be defined by hand in the appropriate `tsconfig.*.json` file, which is tedious to set up and hard to maintain as the repository changes. Nx uses a [sync generator](/docs/concepts/sync-generators) to update the references automatically from the project graph it already knows about:
+
+```jsonc
+// apps/cart/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "files": [], // intentionally empty
+  "references": [
+    // UPDATED BY NX SYNC
+    // All project dependencies
+    {
+      "path": "../../packages/product-state",
+    },
+    {
+      "path": "../../packages/ui/buttons",
+    },
+    // This project's other tsconfig.*.json files
+    {
+      "path": "./tsconfig.lib.json",
+    },
+    {
+      "path": "./tsconfig.spec.json",
+    },
+  ],
+}
+```
+
+If someone adds another dependency to the `cart` app and runs the `build` task, Nx detects that the project references are out of sync and asks whether to update them:
+
+```plaintext {% title="nx build cart" frame="terminal" %}
+ NX   The workspace is out of sync
+
+[@nx/js:typescript-sync]: Some TypeScript configuration files are missing project references to the projects they depend on or contain outdated project references.
+
+This will result in an error in CI.
+
+? Would you like to sync the identified changes to get your workspace up to date? …
+❯ Yes, sync the changes and run the tasks
+  No, run the tasks without syncing the changes
+```
+
+## Requirements
+
+Nx supports the latest version of TypeScript. TypeScript itself only officially supports its latest release under the [Modern Lifecycle Policy](https://learn.microsoft.com/en-us/lifecycle/policies/modern), but Nx maintains a wider range to give you time to upgrade. Support for an older TypeScript version may be dropped in an Nx major release, and support for a newer version may be added in an Nx minor release.
+
+| Nx Version     | TypeScript Version |
+| -------------- | ------------------ |
+| 23.x (current) | >= 5.8.0 < 7.1.0   |
+| 22.x           | >= 5.4.2 < 5.10.0  |
+| 21.x           | >= 5.4.2 < 5.10.0  |
+| 20.x           | ~5.4.2             |
+
+TypeScript 7.0 does not yet provide a programmatic API. To use its CLI while tools that consume the API continue to use TypeScript 6.0, see [Use TypeScript 7.0 alongside TypeScript 6.0](/docs/kb/typescript-7).
+
+## Setting up @nx/js plugin
+
+### Add to an existing Nx workspace
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/js` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+Using `nx add` helps ensure the correct version is installed and configured.
+{% /aside %}
+
+```shell
+nx add @nx/js
+```
+
+Verify the plugin is setup:
+
+{% steps %}
+
+1. Check for the `@nx/js` listed as a plugin:
+
+   ```shell
+   nx report
+   ```
+
+2. Ensure inferred tasks are working:
+
+   ```shell
+   nx show projects --with-target=typecheck
+   ```
+
+3. Inspect a specific project configuration for the `typecheck`/`build` task, depending on your project configuration:
+
+   ```shell
+   nx show project <ts-project-name>
+   ```
+
+{% /steps %}
+
+If your TypeScript projects aren't showing up with the right targets, then [view read how `@nx/js` infers projects](#how-the-typescript-plugin-infers-tasks)
+
+### Create a new TypeScript monorepo
+
+{% tabs syncKey="package-manager" %}
+{% tabitem label="npm" %}
+
+```shell
+npx create-nx-workspace my-org --template nrwl/typescript-template
+```
+
+{% /tabitem %}
+{% tabitem label="yarn" %}
+
+```shell
+yarn create nx-workspace my-org --template nrwl/typescript-template
+```
+
+{% /tabitem %}
+{% tabitem label="pnpm" %}
+
+```shell
+pnpm create nx-workspace my-org --template nrwl/typescript-template
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+This creates a monorepo configured with [TypeScript Project References](https://www.typescriptlang.org/docs/handbook/project-references.html) and your package manager's [workspaces](https://docs.npmjs.com/cli/using-npm/workspaces) feature. [Nx automatically maintains the project references](#typescript-project-references-kept-in-sync) as you add and remove projects.
+
+{% aside type="tip" title="Tutorial" %}
+For a guided walkthrough, follow the [Learn Nx Tutorial](/docs/getting-started/tutorials/crafting-your-workspace).
+{% /aside %}
+
+The `--template nrwl/typescript-template` uses the modern setup with workspaces and project references as of Nx 20.
+You can [migrate an existing workspace from path aliases ](/docs/kb/switch-to-workspaces-project-references) to the modern setup.
+
+If you want to keep using the older style of setups with `compilerOptions.paths`, use `create-nx-workspace --preset=apps`.
+
+### Add build support to an existing project
+
+If you have a TypeScript project that doesn't have a build target, you can use the [`setup-build` generator](/docs/technologies/typescript/generators#setup-build) to add one:
+
+```shell
+nx g @nx/js:setup-build my-lib
+```
+
+You'll be prompted to choose a bundler. This configures the project for compilation without recreating it from scratch.
+
+## Generate and manage TypeScript libraries
+
+### Create a library
+
+Quickly scaffold out a new typescript library. You'll be prompted for common options like test runner and linter.
+See all the [library generator options](/docs/technologies/typescript/generators#library) for more customization.
+
+```shell
+nx g @nx/js:lib libs/my-lib
+```
+
+### Create a buildable or publishable library
+
+To create a library that can be compiled and published to npm, specify a bundler:
+
+```shell
+# Using TSC (default compiler)
+nx g @nx/js:lib libs/my-lib --bundler=tsc
+
+# Using SWC (faster compilation)
+nx g @nx/js:lib libs/my-lib --bundler=swc
+
+# Using Rollup (to output in multiple formats)
+nx g @nx/js:lib libs/my-lib --bundler=rollup
+```
+
+If you plan to publish your library to npm, then you can pass in the `--publishable` flag to automatically setup [Nx Release](/docs/kb/release-npm-packages) to manage the releasing process.
+
+```shell
+nx g @nx/js:lib libs/my-lib --bundler=tsc --publishable
+```
+
+By default, `@nx/js` uses [TSC](https://www.typescriptlang.org/docs/handbook/2/basic-types.html#tsc-the-typescript-compiler) to compile libraries. You can convert to use [SWC](https://swc.rs) for faster compilation at any time with the `convert-to-swc` generator:
+
+```shell
+nx g @nx/js:convert-to-swc my-lib
+```
+
+SWC dependencies are installed automatically the first time the generator is ran.
+
+### Build TypeScript libraries
+
+```shell
+nx build my-lib
+```
+
+The output location is controlled by `outDir` in your build tsconfig (defaults to `tsconfig.lib.json`):
+
+```json
+// packages/my-lib/tsconfig.lib.json
+{
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  }
+}
+```
+
+The plugin reads `outDir` automatically and sets the correct [task outputs](/docs/concepts/how-caching-works) for caching.
+
+If you're manually defining the `build` targets, make sure to keep the [target configuration outputs](/docs/kb/configure-outputs) in sync with where typescript is outputting the built artifacts. This ensures Nx properly restores the cache for your build tasks.
+
+### Run typechecking
+
+```shell
+nx typecheck my-lib
+```
+
+The `typecheck` task is automatically inferred for any project with a `tsconfig.json`.
+
+If you're not using inferred plugins, then you can manually define a `typecheck` target in your [projects configuration](/docs/reference/project-configuration#project-level-configuration-files).
+
+## Configure `@nx/js` TypeScript inference
+
+By default, when you add the `@nx/js` the plugin will be configured to use project and target inference.
+
+Otherwise you can manually add the [plugin to your `nx.json#plugins` to enable it](#plugin-options)
+
+### How the TypeScript plugin infers tasks
+
+The `@nx/js/typescript` plugin adds tasks based on the files it finds in your project:
+
+The `@nx/js/typescript` plugin will add a `typecheck` task to any project that has a `tsconfig.json`.
+
+The plugin also adds a `build` task for projects that meet both of the following conditions:
+
+1. Have a runtime tsconfig file (defaults to `tsconfig.lib.json`)
+2. Have a `package.json` with entry points that reference compiled output (not source files)
+
+For example, this project **will** get a `build` task because its exports point to `dist/`:
+
+```json
+// packages/my-lib/package.json
+{
+  "name": "@my-org/my-lib",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}
+```
+
+This project **will not** get a `build` task because its exports point directly to source:
+
+```json
+// packages/my-lib/package.json
+{
+  "name": "@my-org/my-lib",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": "./src/index.ts"
+  }
+}
+```
+
+This distinction is important in monorepos because not all libraries need to be compiled. Libraries consumed only within the monorepo can point directly to source for faster development, while libraries published to npm need a build step. See [TypeScript Project Linking](/docs/kb/typescript-project-linking) for more on how projects reference each other.
+
+### Plugin options
+
+Configure `@nx/js/typescript` in the `plugins` array in `nx.json`:
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/js/typescript",
+      "options": {
+        "compiler": "tsc",
+        "typecheck": {
+          "targetName": "typecheck",
+          "configName": "tsconfig.json"
+        },
+        "build": {
+          "targetName": "build",
+          "configName": "tsconfig.lib.json",
+          "buildDepsName": "build-deps",
+          "watchDepsName": "watch-deps",
+          "skipBuildCheck": false
+        },
+        "verboseOutput": false
+      }
+    }
+  ]
+}
+```
+
+| Option                 | Description                                                                   | Default             |
+| ---------------------- | ----------------------------------------------------------------------------- | ------------------- |
+| `compiler`             | Compiler used by the typecheck and build tasks: `tsc` or `tsgo`.              | `tsc`               |
+| `typecheck`            | Enables typecheck inference; set to `false` to disable it.                    | enabled             |
+| `typecheck.targetName` | Name of the cached typecheck task.                                            | `typecheck`         |
+| `typecheck.configName` | The tsconfig file used for typechecking.                                      | `tsconfig.json`     |
+| `build`                | Enables build inference; set to `false` or omit it to disable build tasks.    | disabled            |
+| `build.targetName`     | Name of the cached build task.                                                | `build`             |
+| `build.configName`     | The tsconfig file used for builds.                                            | `tsconfig.lib.json` |
+| `build.buildDepsName`  | Name of the task for building all dependencies.                               | `build-deps`        |
+| `build.watchDepsName`  | Name of the task for watching and rebuilding dependencies.                    | `watch-deps`        |
+| `build.skipBuildCheck` | Allows build inference without package exports that point to compiled output. | `false`             |
+| `verboseOutput`        | Adds TypeScript's `--verbose` flag to the underlying commands.                | `false`             |
+
+The `typecheck` and `build` tasks are cached, with inputs and outputs based on your TypeScript configuration, and depend on the corresponding tasks in dependency projects.
+
+### Exclude or include specific projects
+
+You can control which projects the plugin applies to at three levels:
+
+**Plugin-level:** Use `include`/`exclude` glob patterns to scope the plugin to specific projects:
+
+```json {% meta="{5-6}" %}
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/js/typescript",
+      "include": ["packages/**/*"],
+      "exclude": ["packages/legacy-app/**/*"],
+      "options": { ... }
+    }
+  ]
+}
+```
+
+**Project-level:** To opt a specific project out of the `typecheck` task, set `nx.addTypecheckTarget` to `false` in that project's `tsconfig.json`:
+
+```json {% meta="{6-8}" %}
+// packages/my-lib/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "files": [],
+  "include": [],
+  "references": [{ "path": "./tsconfig.lib.json" }],
+  "nx": {
+    "addTypecheckTarget": false
+  }
+}
+```
+
+### View inferred tasks
+
+To see what tasks Nx inferred for a project:
+
+```shell
+nx show project <my-project>
+```
+
+Or open the [project details view in Nx Console](/docs/kb/console-project-details#_top).
+
+A [target defaults](/docs/reference/nx-json#target-defaults) `plugin` filter for these tasks must use the exact identifier `@nx/js/typescript`.
+
+## Set up CI for your TypeScript monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).
+
+## What's next
+
+{% cardgrid %}
+{% linkcard title="Learn Nx Tutorial" description="Build a TypeScript monorepo step-by-step with Nx." href="/docs/getting-started/tutorials/crafting-your-workspace" /%}
+{% linkcard title="Switch to Workspaces & Project References" description="Migrate from path aliases to the modern monorepo setup." href="/docs/kb/switch-to-workspaces-project-references" /%}
+{% linkcard title="Compile to Multiple Formats" description="Build libraries to both ESM and CommonJS with Rollup." href="/docs/kb/compile-multiple-formats" /%}
+{% linkcard title="Generators Reference" description="Full API reference for @nx/js generators." href="/docs/technologies/typescript/generators" /%}
+{% linkcard title="Executors Reference" description="Full API reference for @nx/js executors." href="/docs/technologies/typescript/executors" /%}
+{% linkcard title="Migrations Reference" description="Full reference for @nx/js migrations." href="/docs/technologies/typescript/migrations" /%}
+{% /cardgrid %}

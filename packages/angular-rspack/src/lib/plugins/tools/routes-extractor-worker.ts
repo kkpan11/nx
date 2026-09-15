@@ -1,0 +1,102 @@
+/**
+ * @license
+ * Copyright Google LLC All Rights Reserved.
+ *
+ * Use of this source code is governed by an MIT-style license that can be
+ * found in the LICENSE file at https://angular.dev/license
+ */
+
+import type { ApplicationRef, Type } from '@angular/core';
+import type { ɵgetRoutesFromAngularRouterConfig } from '@angular/ssr';
+import assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { workerData } from 'node:worker_threads';
+
+export interface RoutesExtractorWorkerData {
+  zonePackage: string | false;
+  indexFile: string;
+  outputPath: string;
+  serverBundlePath: string;
+}
+
+interface ServerBundleExports {
+  /** NgModule to render. */
+  AppServerModule?: Type<unknown>;
+
+  /** Standalone application bootstrapping function. */
+  default?: (() => Promise<ApplicationRef>) | Type<unknown>;
+
+  /**
+   * The main.server default export re-exported by the platform-server-exports
+   * loader: a bootstrap function for standalone applications or the
+   * AppServerModule class for NgModule ones. Server entries written for the
+   * `@angular/ssr` application engine APIs export no default of their own.
+   */
+  __ngRspackMainServerBootstrap?:
+    | (() => Promise<ApplicationRef>)
+    | Type<unknown>;
+
+  /** Method to extract routes from the router config. */
+  ɵgetRoutesFromAngularRouterConfig: typeof ɵgetRoutesFromAngularRouterConfig;
+}
+
+const { zonePackage, serverBundlePath, outputPath, indexFile } =
+  workerData as RoutesExtractorWorkerData;
+
+async function extract(): Promise<string[]> {
+  // rspack emits a CommonJS server bundle; load with `require` so its named
+  // exports resolve (a nodenext `import()` would leave them undefined).
+  const {
+    AppServerModule,
+    ɵgetRoutesFromAngularRouterConfig: getRoutesFromAngularRouterConfig,
+    default: bootstrapAppFn,
+    __ngRspackMainServerBootstrap,
+  } = require(serverBundlePath) as ServerBundleExports;
+
+  const browserIndexInputPath = path.join(outputPath, indexFile);
+  const document = await fs.promises.readFile(browserIndexInputPath, 'utf8');
+
+  const bootstrapAppFnOrModule =
+    bootstrapAppFn || __ngRspackMainServerBootstrap || AppServerModule;
+  assert(
+    bootstrapAppFnOrModule,
+    `Neither an AppServerModule nor a bootstrapping function was exported from: ${serverBundlePath}.`
+  );
+
+  const routes: string[] = [];
+  const { routes: extractRoutes } = await getRoutesFromAngularRouterConfig(
+    bootstrapAppFnOrModule,
+    document,
+    new URL('http://localhost')
+  );
+
+  for (const { route, redirectTo } of extractRoutes) {
+    if (redirectTo === undefined && !/[:*]/.test(route)) {
+      routes.push(route);
+    }
+  }
+
+  return routes;
+}
+
+/**
+ * Initializes the worker when it is first created by loading the Zone.js package
+ * into the worker instance.
+ *
+ * @returns A promise resolving to the extract function of the worker.
+ */
+async function initialize() {
+  // Setup Zone.js
+  if (zonePackage) {
+    await import(zonePackage);
+  }
+
+  return extract;
+}
+
+/**
+ * The default export will be the promise returned by the initialize function.
+ * This is awaited by piscina prior to using the Worker.
+ */
+export default initialize();

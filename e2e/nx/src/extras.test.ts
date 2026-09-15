@@ -10,17 +10,21 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { join } from 'path';
 
 describe('Extra Nx Misc Tests', () => {
-  beforeAll(() => newProject({ packages: ['@nx/web', '@nx/js', '@nx/react'] }));
+  beforeAll(() =>
+    newProject({
+      packages: ['@nx/web', '@nx/eslint', '@nx/js', '@nx/react'],
+    })
+  );
   afterAll(() => cleanupProject());
 
   describe('Output Style', () => {
     it('should stream output', async () => {
       const myapp = 'abcdefghijklmon';
-      runCLI(`generate @nx/web:app ${myapp}`);
+      runCLI(`generate @nx/web:app apps/${myapp}`);
 
       updateJson(join('apps', myapp, 'project.json'), (c) => {
         c.targets['inner'] = {
@@ -55,32 +59,43 @@ describe('Extra Nx Misc Tests', () => {
       const nxJson = readJson('nx.json');
       nxJson.plugins = ['./tools/plugin'];
       updateFile('nx.json', JSON.stringify(nxJson));
+      updateFile('test/project.txt', 'plugin-node');
+      updateFile('test2/project.txt', 'plugin-node2');
+      updateFile('test2/dependencies.txt', 'plugin-node');
       updateFile(
         'tools/plugin.js',
         `
+      const { readFileSync } = require('fs');
+      const { dirname } = require('path');
       module.exports = {
-        processProjectGraph: (graph) => {
-          const Builder = require('@nx/devkit').ProjectGraphBuilder;
-          const builder = new Builder(graph);
-          builder.addNode({
-            name: 'plugin-node',
-            type: 'lib',
-            data: {
-              root: 'test'
+        createNodesV2: ['**/project.txt', (configFiles) => {
+          const results = [];
+          for (const configFile of configFiles) {
+            const name = readFileSync(configFile, 'utf8');
+            results.push([configFile, {
+              projects: {
+                [dirname(configFile)]: {
+                  name: name,
+                }
+              }
+            }]);
+          }
+          
+          return results;
+        }],
+        createDependencies: () => {
+          return [
+            {
+              
+              source: 'plugin-node',
+              /**
+               * The name of a {@link ProjectGraphProjectNode} that the source project depends on
+               */
+              target: 'plugin-node2',
+            
+              type: 'implicit'
             }
-          });
-          builder.addNode({
-            name: 'plugin-node2',
-            type: 'lib',
-            data: {
-              root: 'test2'
-            }
-          });
-          builder.addImplicitDependency(
-            'plugin-node',
-            'plugin-node2'
-          );
-          return builder.getUpdatedProjectGraph();
+          ];
         }
       };
     `
@@ -98,12 +113,94 @@ describe('Extra Nx Misc Tests', () => {
         }
       );
     });
+
+    it('should resolve stable project refs in dependsOn when a later plugin renames the referenced project', () => {
+      // Scenario:
+      // - A plugin infers two projects (project-a and project-b-original) from marker files.
+      // - project-a has a dependsOn on "project-b-original" (the name the plugin used).
+      // - A project.json at project-b's root renames it to "project-b-renamed".
+      // - After all plugins run, project-a's dependsOn should reference the renamed project.
+
+      const nxJson = readJson('nx.json');
+      nxJson.plugins = ['./tools/stable-refs-plugin'];
+      updateFile('nx.json', JSON.stringify(nxJson));
+
+      // Marker files for the plugin to discover
+      updateFile('proj-a/plugin-project.txt', 'project-a-original');
+      updateFile('proj-b/plugin-project.txt', 'project-b-original');
+
+      // project.json at proj-b's root renames the project — this simulates a
+      // later plugin (or the project.json plugin) overwriting the name.
+      updateFile(
+        'proj-b/project.json',
+        JSON.stringify({
+          name: 'project-b-renamed',
+          root: 'proj-b',
+        })
+      );
+
+      // Plugin that reads the name from the marker file and creates projects with
+      // a dependsOn cross-reference using the plugin-assigned name.
+      updateFile(
+        'tools/stable-refs-plugin.js',
+        `
+        const { readFileSync } = require('fs');
+        const { dirname } = require('path');
+        module.exports = {
+          createNodesV2: ['**/plugin-project.txt', (configFiles) => {
+            const results = [];
+            // Collect all plugin-assigned names first so we can build cross-references.
+            const byRoot = {};
+            for (const configFile of configFiles) {
+              const root = dirname(configFile);
+              const name = readFileSync(configFile, 'utf8').trim();
+              byRoot[root] = name;
+            }
+            for (const configFile of configFiles) {
+              const root = dirname(configFile);
+              const name = byRoot[root];
+              const project = {
+                root,
+                name,
+                targets: {
+                  build: {
+                    executor: 'nx:run-commands',
+                    options: { command: 'echo built ' + name },
+                  },
+                },
+              };
+              // project-a depends on project-b using the plugin-assigned name.
+              if (name === 'project-a-original') {
+                project.targets.build.dependsOn = [
+                  { projects: 'project-b-original', target: 'build' },
+                ];
+              }
+              results.push([configFile, { projects: { [root]: project } }]);
+            }
+            return results;
+          }],
+        };
+      `
+      );
+
+      runCLI('graph --file project-graph.json');
+      const projectGraphJson = readJson('project-graph.json');
+
+      // The plugin-created project at proj-a should still appear under its plugin name,
+      // but project-b should now be known by the name from project.json.
+      expect(projectGraphJson.graph.nodes['project-b-renamed']).toBeDefined();
+
+      // Run project-a's build; if dependsOn was resolved correctly, project-b-renamed:build
+      // will also be executed.
+      const output = runCLI('build project-a-original');
+      expect(output).toContain('project-b-renamed');
+    });
   });
 
   describe('Run Commands', () => {
     const mylib = uniq('lib');
     beforeAll(() => {
-      runCLI(`generate @nx/js:lib ${mylib}`);
+      runCLI(`generate @nx/js:lib libs/${mylib}`);
     });
 
     it('should not override environment variables already set when setting a custom env file path', async () => {
@@ -249,7 +346,7 @@ describe('Extra Nx Misc Tests', () => {
 
       const folder = `dist/libs/${mylib}/some-folder`;
 
-      runCLI(`generate @nx/js:lib ${mylib}`);
+      runCLI(`generate @nx/js:lib libs/${mylib}`);
 
       runCLI(
         `generate @nx/workspace:run-commands build --command=echo --outputs=${folder}/ --project=${mylib}`
@@ -296,7 +393,7 @@ describe('Extra Nx Misc Tests', () => {
 
     beforeAll(() => {
       runCLI(
-        `generate @nx/js:lib ${libName} --bundler=none --unitTestRunner=none --no-interactive`
+        `generate @nx/js:lib libs/${libName} --bundler=none --unitTestRunner=none --no-interactive`
       );
     });
 
@@ -366,7 +463,7 @@ NX_USERNAME=$FIRSTNAME $LASTNAME`
 
     const baseLib = 'lib-base-123';
     beforeAll(() => {
-      runCLI(`generate @nx/js:lib ${baseLib}`);
+      runCLI(`generate @nx/js:lib libs/${baseLib}`);
     });
 
     it('should correctly expand default task inputs', () => {
@@ -387,7 +484,7 @@ NX_USERNAME=$FIRSTNAME $LASTNAME`
 
     it('should correctly expand dependent task inputs', () => {
       const dependentLib = 'lib-dependent-123';
-      runCLI(`generate @nx/js:lib ${dependentLib}`);
+      runCLI(`generate @nx/js:lib libs/${dependentLib}`);
 
       updateJson(join('libs', baseLib, 'project.json'), (config) => {
         config.targets['build'].inputs = ['default', '^default'];

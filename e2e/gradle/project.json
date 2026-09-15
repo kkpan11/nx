@@ -3,14 +3,40 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "e2e/gradle",
   "projectType": "application",
-  "implicitDependencies": ["eslint"],
+  "implicitDependencies": [
+    "gradle",
+    ":gradle-project-graph",
+    ":gradle-batch-runner"
+  ],
+  "// targets": "to see all targets run: nx show project e2e-gradle --web",
   "targets": {
-    "e2e-ci--src/gradle.test.ts": {
-      "dependsOn": [
-        "nx:build-native",
-        "@nx/nx-source:populate-local-registry-storage"
+    "e2e-local": {
+      "inputs": [
+        "e2eInputs",
+        "^production",
+        "{workspaceRoot}/gradle/wrapper/gradle-wrapper.jar",
+        "{workspaceRoot}/gradle/wrapper/gradle-wrapper.properties",
+        "{workspaceRoot}/gradle.properties"
       ],
-      "inputs": ["e2eInputs", "^production"]
+      "dependsOn": [
+        "@nx/nx-source:populate-local-registry-storage",
+        "@nx/nx-source:local-registry-e2e",
+        ":gradle-project-graph:gradle:publishToMavenLocal"
+      ]
+    },
+    "e2e-ci--**/**": {
+      "inputs": [
+        "e2eInputs",
+        "^production",
+        "{workspaceRoot}/gradle/wrapper/gradle-wrapper.jar",
+        "{workspaceRoot}/gradle/wrapper/gradle-wrapper.properties",
+        "{workspaceRoot}/gradle.properties"
+      ],
+      "dependsOn": [
+        "@nx/nx-source:populate-local-registry-storage",
+        "@nx/nx-source:local-registry-e2e",
+        ":gradle-project-graph:gradle:publishToMavenLocal"
+      ]
     }
   }
 }

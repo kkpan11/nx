@@ -1,0 +1,37 @@
+{
+  "name": "dotnet",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/dotnet/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build": {
+      "command": "node ./scripts/copy-readme.js dotnet packages/dotnet/readme-template.md packages/dotnet/README.md",
+      "outputs": ["{projectRoot}/README.md"],
+      "inputs": ["copyReadme"],
+      "cache": true
+    },
+    "format-native": {
+      "command": "node ./scripts/run-native-target.js _format-native dotnet"
+    },
+    "_format-native": {
+      "command": "dotnet format {projectRoot}/analyzer/MsbuildAnalyzer.csproj",
+      "options": {
+        "args": ["--verify-no-changes"]
+      },
+      "configurations": {
+        "fix": {
+          "args": []
+        }
+      }
+    },
+    "copy-assets": {
+      "dependsOn": [
+        {
+          "projects": ["MsbuildAnalyzer"],
+          "target": "publish"
+        }
+      ]
+    }
+  }
+}

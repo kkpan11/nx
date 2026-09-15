@@ -1,27 +1,27 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface Schema {
-  name: string;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
+  directory: string;
+  name?: string;
   simpleModuleName?: boolean;
   skipTsConfig?: boolean;
   skipFormat?: boolean;
   tags?: string;
-  unitTestRunner?: 'jest' | 'none';
-  linter?: Linter;
+  unitTestRunner?: 'jest' | 'vitest' | 'none';
+  linter?: LinterType;
   buildable?: boolean;
   publishable?: boolean;
   importPath?: string;
-  testEnvironment?: 'jsdom' | 'node';
   rootDir?: string;
   babelJest?: boolean;
   js?: boolean;
-  pascalCaseFiles?: boolean;
   strict?: boolean;
-  standaloneConfig?: boolean;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   compiler: 'tsc' | 'swc';
   addPlugin?: boolean;
+  useProjectJson?: boolean;
 }

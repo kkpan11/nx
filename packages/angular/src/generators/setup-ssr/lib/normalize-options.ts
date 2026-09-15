@@ -1,16 +1,38 @@
-import type { Tree } from '@nx/devkit';
+import {
+  joinPathFragments,
+  readNxJson,
+  readProjectConfiguration,
+  type Tree,
+} from '@nx/devkit';
+import { readTargetDefaultsForTarget } from '@nx/devkit/internal';
 import { isNgStandaloneApp } from '../../../utils/nx-devkit/ast-utils';
-import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
-import type { Schema } from '../schema';
+import type { NormalizedGeneratorOptions, Schema } from '../schema';
 
-export function normalizeOptions(tree: Tree, options: Schema) {
-  const isStandaloneApp = isNgStandaloneApp(tree, options.project);
-
-  let hydration = options.hydration;
-  if (hydration === undefined) {
-    const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-    hydration = angularMajorVersion >= 17;
+export async function normalizeOptions(
+  tree: Tree,
+  options: Schema
+): Promise<NormalizedGeneratorOptions> {
+  const { targets, root } = readProjectConfiguration(tree, options.project);
+  // Resolve the executor via targetDefaults: readProjectConfiguration returns
+  // the raw config, so an inherited executor would otherwise read as undefined.
+  const buildTargetExecutor =
+    targets.build.executor ??
+    readTargetDefaultsForTarget('build', readNxJson(tree)?.targetDefaults)
+      ?.executor;
+  if (!buildTargetExecutor) {
+    throw new Error(
+      `The "build" target of the "${options.project}" project does not specify an executor. Please add an executor to the "build" target.`
+    );
   }
+
+  const isUsingApplicationBuilder =
+    buildTargetExecutor === '@angular-devkit/build-angular:application' ||
+    buildTargetExecutor === '@angular/build:application' ||
+    buildTargetExecutor === '@nx/angular:application';
+  const isUsingWebpackBuilder =
+    buildTargetExecutor === '@nx/angular:webpack-browser';
+
+  const isStandaloneApp = isNgStandaloneApp(tree, options.project);
 
   return {
     project: options.project,
@@ -22,6 +44,13 @@ export function normalizeOptions(tree: Tree, options: Schema) {
     rootModuleClassName: options.rootModuleClassName ?? 'AppServerModule',
     skipFormat: options.skipFormat ?? false,
     standalone: options.standalone ?? isStandaloneApp,
-    hydration,
+    hydration: options.hydration ?? true,
+    isUsingApplicationBuilder,
+    isUsingWebpackBuilder,
+    isRspack: options.isRspack ?? false,
+    buildTargetExecutor,
+    buildTargetTsConfigPath:
+      targets.build.options?.tsConfig ??
+      joinPathFragments(root, 'tsconfig.app.json'),
   };
 }

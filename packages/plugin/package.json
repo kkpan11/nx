@@ -13,8 +13,15 @@
     "Nx",
     "CLI"
   ],
-  "main": "./index",
-  "types": "./index.d.ts",
+  "main": "./dist/index.js",
+  "type": "commonjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/tsconfig.tsbuildinfo",
+    "migrations.json",
+    "generators.json"
+  ],
   "author": "Nrwl",
   "license": "MIT",
   "bugs": {
@@ -24,17 +31,58 @@
   "generators": "./generators.json",
   "ng-update": {
     "requirements": {},
-    "migrations": "./migrations.json"
+    "migrations": "./migrations.json",
+    "supportsOptionalMigrations": true
   },
   "dependencies": {
-    "fs-extra": "^11.1.0",
-    "tslib": "^2.3.0",
-    "@nx/devkit": "file:../devkit",
-    "@nx/jest": "file:../jest",
-    "@nx/js": "file:../js",
-    "@nx/eslint": "file:../eslint"
+    "tslib": "catalog:typescript",
+    "@nx/devkit": "workspace:*",
+    "@nx/jest": "workspace:*",
+    "@nx/js": "workspace:*",
+    "@nx/eslint": "workspace:*"
+  },
+  "devDependencies": {
+    "nx": "workspace:*"
+  },
+  "peerDependencies": {
+    "@nx/vitest": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@nx/vitest": {
+      "optional": true
+    }
   },
   "publishConfig": {
     "access": "public"
+  },
+  "typesVersions": {
+    "*": {
+      "generators": [
+        "dist/generators.d.ts"
+      ],
+      "testing": [
+        "dist/testing.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "@nx/nx-source": "./index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./migrations.json": "./migrations.json",
+    "./generators.json": "./generators.json",
+    "./generators": {
+      "@nx/nx-source": "./generators.ts",
+      "types": "./dist/generators.d.ts",
+      "default": "./dist/generators.js"
+    },
+    "./testing": {
+      "@nx/nx-source": "./testing.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
   }
 }

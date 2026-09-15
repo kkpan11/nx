@@ -1,3 +1,4 @@
+import { addPlugin, upsertTargetDefault } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   createProjectGraphAsync,
@@ -10,14 +11,11 @@ import {
   updateJson,
   updateNxJson,
 } from '@nx/devkit';
-import { addPluginV1 } from '@nx/devkit/src/utils/add-plugin';
 import { gte } from 'semver';
-import { createNodes } from '../../plugins/plugin';
-import {
-  getInstalledStorybookVersion,
-  storybookMajorVersion,
-} from '../../utils/utilities';
-import { nxVersion, storybookVersion } from '../../utils/versions';
+import { createNodesV2 } from '../../plugins/plugin';
+import { getStorybookVersionToInstall } from '../../utils/utilities';
+import { nxVersion } from '../../utils/versions';
+import { assertSupportedStorybookVersion } from '../../utils/assert-supported-storybook-version';
 import { Schema } from './schema';
 import { updateGitignore } from './lib/update-gitignore';
 
@@ -30,43 +28,30 @@ function checkDependenciesInstalled(
     '@nx/web': nxVersion,
   };
 
-  if (schema.addPlugin) {
-    let storybook7VersionToInstall = storybookVersion;
-    if (
-      storybookMajorVersion() >= 7 &&
-      getInstalledStorybookVersion() &&
-      gte(getInstalledStorybookVersion(), '7.0.0')
-    ) {
-      storybook7VersionToInstall = getInstalledStorybookVersion();
-    }
-
-    devDependencies['storybook'] = storybook7VersionToInstall;
-  }
+  const storybookVersionToInstall = getStorybookVersionToInstall(host);
+  devDependencies['storybook'] = storybookVersionToInstall;
 
   return addDependenciesToPackageJson(
     host,
     {},
     devDependencies,
     undefined,
-    schema.keepExistingVersions
+    schema.keepExistingVersions ?? true
   );
 }
 
 function addCacheableOperation(tree: Tree) {
-  const nxJson = readNxJson(tree);
+  const nxJson = readNxJson(tree) ?? {};
   const cacheableOperations: string[] | null =
     nxJson.tasksRunnerOptions?.default?.options?.cacheableOperations;
 
-  if (cacheableOperations && cacheableOperations.includes('build-storybook')) {
+  if (cacheableOperations && !cacheableOperations.includes('build-storybook')) {
     nxJson.tasksRunnerOptions.default.options.cacheableOperations.push(
       'build-storybook'
     );
   }
 
-  nxJson.targetDefaults ??= {};
-  nxJson.targetDefaults['build-storybook'] ??= {};
-  nxJson.targetDefaults['build-storybook'].cache = true;
-
+  upsertTargetDefault(tree, nxJson, { target: 'build-storybook', cache: true });
   updateNxJson(tree, nxJson);
 }
 
@@ -95,6 +80,8 @@ export function initGenerator(tree: Tree, schema: Schema) {
 }
 
 export async function initGeneratorInternal(tree: Tree, schema: Schema) {
+  assertSupportedStorybookVersion(tree);
+
   const nxJson = readNxJson(tree);
   const addPluginDefault =
     process.env.NX_ADD_PLUGINS !== 'false' &&
@@ -102,11 +89,11 @@ export async function initGeneratorInternal(tree: Tree, schema: Schema) {
   schema.addPlugin ??= addPluginDefault;
 
   if (schema.addPlugin) {
-    await addPluginV1(
+    await addPlugin(
       tree,
       await createProjectGraphAsync(),
       '@nx/storybook/plugin',
-      createNodes,
+      createNodesV2,
       {
         serveStorybookTargetName: [
           'storybook',
@@ -129,6 +116,16 @@ export async function initGeneratorInternal(tree: Tree, schema: Schema) {
           'static-storybook',
           'static:storybook',
           'storybook:static',
+        ],
+        buildDepsTargetName: [
+          'build-deps',
+          'storybook:build-deps',
+          'storybook-build-deps',
+        ],
+        watchDepsTargetName: [
+          'watch-deps',
+          'storybook:watch-deps',
+          'storybook-watch-deps',
         ],
       },
       schema.updatePackageScripts

@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
@@ -11,46 +11,57 @@ import {
 } from '@nx/devkit';
 
 import type { Linter as ESLint } from 'eslint';
-import { Linter } from '@nx/eslint';
 
 import generator from './generator';
 import pluginGenerator from '../plugin/plugin';
 import generatorGenerator from '../generator/generator';
 import executorGenerator from '../executor/executor';
-
-import { PackageJson } from 'nx/src/utils/package-json';
+import { PackageJson } from '@nx/devkit/internal';
 
 describe('lint-checks generator', () => {
   let tree: Tree;
+  let envBackup: string | undefined;
 
   beforeEach(async () => {
+    envBackup = process.env.ESLINT_USE_FLAT_CONFIG;
+    delete process.env.ESLINT_USE_FLAT_CONFIG;
+  });
+
+  afterEach(() => {
+    if (envBackup === undefined) delete process.env.ESLINT_USE_FLAT_CONFIG;
+    else process.env.ESLINT_USE_FLAT_CONFIG = envBackup;
+  });
+
+  async function setupTree(useFlat: boolean) {
+    process.env.ESLINT_USE_FLAT_CONFIG = useFlat ? 'true' : 'false';
     tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
     await pluginGenerator(tree, {
-      name: 'plugin',
+      directory: 'plugin',
       importPath: '@acme/plugin',
       compiler: 'tsc',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       skipFormat: false,
       skipTsConfig: false,
-      skipLintChecks: true, // we manually call it s.t. we can update config files first
+      skipLintChecks: true, // manually call so we can update config files first
       unitTestRunner: 'jest',
     });
     await generatorGenerator(tree, {
       name: 'my-generator',
-      project: 'plugin',
+      path: 'plugin/src/generators/my-generator',
       unitTestRunner: 'jest',
       skipLintChecks: true,
     });
     await executorGenerator(tree, {
       name: 'my-executor',
-      project: 'plugin',
+      path: 'plugin/src/executors/my-executor',
       unitTestRunner: 'jest',
       includeHasher: false,
       skipLintChecks: true,
     });
-  });
+  }
 
-  it('should update configuration files for default plugin', async () => {
+  it('should update configuration files for default plugin (eslintrc)', async () => {
+    await setupTree(false);
     await generator(tree, { projectName: 'plugin' });
 
     const projectConfig = readProjectConfiguration(tree, 'plugin');
@@ -73,7 +84,8 @@ describe('lint-checks generator', () => {
     );
   });
 
-  it('should not duplicate configuration', async () => {
+  it('should not duplicate configuration (eslintrc)', async () => {
+    await setupTree(false);
     await generator(tree, { projectName: 'plugin' });
     await generator(tree, { projectName: 'plugin' });
     const projectConfig = readProjectConfiguration(tree, 'plugin');
@@ -99,7 +111,8 @@ describe('lint-checks generator', () => {
     `);
   });
 
-  it('should update configuration files for angular-style plugin', async () => {
+  it('should update configuration files for angular-style plugin (eslintrc)', async () => {
+    await setupTree(false);
     const startingProjectConfig = readProjectConfiguration(tree, 'plugin');
     updateJson(
       tree,
@@ -156,7 +169,14 @@ describe('lint-checks generator', () => {
           ],
           "parser": "jsonc-eslint-parser",
           "rules": {
-            "@nx/dependency-checks": "error",
+            "@nx/dependency-checks": [
+              "error",
+              {
+                "ignoredFiles": [
+                  "{projectRoot}/eslint.config.{js,cjs,mjs,ts,cts,mts}",
+                ],
+              },
+            ],
           },
         },
         {
@@ -173,5 +193,18 @@ describe('lint-checks generator', () => {
         },
       ]
     `);
+  });
+
+  it('should update configuration files for default plugin (flat config)', async () => {
+    await setupTree(true);
+    await generator(tree, { projectName: 'plugin' });
+
+    const projectConfig = readProjectConfiguration(tree, 'plugin');
+    expect(tree.exists(`${projectConfig.root}/eslint.config.mjs`)).toBeTruthy();
+    const eslintConfigContent = tree.read(
+      `${projectConfig.root}/eslint.config.mjs`,
+      'utf-8'
+    );
+    expect(eslintConfigContent).toContain('@nx/nx-plugin-checks');
   });
 });

@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
@@ -138,7 +138,7 @@ describe('setup-build generator', () => {
       bundler: 'rollup',
     });
 
-    expect(tree.exists('packages/mypkg/rollup.config.js')).toBe(true);
+    expect(tree.exists('packages/mypkg/rollup.config.cjs')).toBe(true);
   });
 
   it('should support --bundler=esbuild', async () => {

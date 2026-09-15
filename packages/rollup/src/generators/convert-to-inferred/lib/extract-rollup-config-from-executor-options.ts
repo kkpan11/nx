@@ -22,13 +22,20 @@ export function extractRollupConfigFromExecutorOptions(
   const oldRollupConfig = Array.isArray(options.rollupConfig)
     ? options.rollupConfig
     : options.rollupConfig
-    ? [options.rollupConfig]
-    : [];
+      ? [options.rollupConfig]
+      : [];
   delete options.rollupConfig;
 
-  // Resolve conflict with rollup.config.js if it exists.
+  // Resolve conflict with rollup.config.cjs or rollup.config.js if they exist.
   for (let i = 0; i < oldRollupConfig.length; i++) {
     const file = oldRollupConfig[i];
+    if (file === './rollup.config.cjs') {
+      tree.rename(
+        joinPathFragments(projectRoot, 'rollup.config.cjs'),
+        joinPathFragments(projectRoot, `rollup.migrated.config.cjs`)
+      );
+      oldRollupConfig.splice(i, 1, './rollup.migrated.config.cjs');
+    }
     if (file === './rollup.config.js') {
       tree.rename(
         joinPathFragments(projectRoot, 'rollup.config.js'),
@@ -66,8 +73,8 @@ export function extractRollupConfigFromExecutorOptions(
           oldRollupConfigForConfiguration = Array.isArray(optionValue)
             ? optionValue
             : optionValue
-            ? [optionValue]
-            : [];
+              ? [optionValue]
+              : [];
           newConfigFileName = `rollup.${key}.config.js`;
           for (let i = 0; i < oldRollupConfigForConfiguration.length; i++) {
             const file = oldRollupConfigForConfiguration[i];
@@ -116,7 +123,7 @@ export function extractRollupConfigFromExecutorOptions(
   }
 
   tree.write(
-    joinPathFragments(projectRoot, `rollup.config.js`),
+    joinPathFragments(projectRoot, `rollup.config.cjs`),
     createNewRollupConfig(oldRollupConfig, defaultOptions, configurationOptions)
   );
 

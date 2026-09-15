@@ -1,6 +1,8 @@
+import { acknowledgeBuildScripts, addPlugin } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   createProjectGraphAsync,
+  detectPackageManager,
   formatFiles,
   GeneratorCallback,
   readNxJson,
@@ -8,12 +10,12 @@ import {
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
+import { createNodesV2 } from '../../plugins/plugin';
 import {
-  addPluginV1,
-  generateCombinations,
-} from '@nx/devkit/src/utils/add-plugin';
-import { createNodes, DetoxPluginOptions } from '../../plugins/plugin';
-import { detoxVersion, nxVersion } from '../../utils/versions';
+  assertSupportedDetoxVersion,
+  detoxVersion,
+  nxVersion,
+} from '../../utils/versions';
 import { Schema } from './schema';
 
 export function detoxInitGenerator(host: Tree, schema: Schema) {
@@ -21,6 +23,8 @@ export function detoxInitGenerator(host: Tree, schema: Schema) {
 }
 
 export async function detoxInitGeneratorInternal(host: Tree, schema: Schema) {
+  assertSupportedDetoxVersion(host);
+
   const tasks: GeneratorCallback[] = [];
 
   const nxJson = readNxJson(host);
@@ -36,15 +40,25 @@ export async function detoxInitGeneratorInternal(host: Tree, schema: Schema) {
   }
 
   if (schema.addPlugin) {
-    await addPluginV1(
+    await addPlugin(
       host,
       await createProjectGraphAsync(),
       '@nx/detox/plugin',
-      createNodes,
+      createNodesV2,
       {
         buildTargetName: ['build', 'detox:build', 'detox-build'],
         startTargetName: ['start', 'detox:start', 'detox-start'],
         testTargetName: ['test', 'detox:test', 'detox-test'],
+        buildDepsTargetName: [
+          'build-deps',
+          'detox:build-deps',
+          'detox-build-deps',
+        ],
+        watchDepsTargetName: [
+          'watch-deps',
+          'detox:watch-deps',
+          'detox-watch-deps',
+        ],
       },
       schema.updatePackageScripts
     );
@@ -58,6 +72,12 @@ export async function detoxInitGeneratorInternal(host: Tree, schema: Schema) {
 }
 
 export function updateDependencies(host: Tree, schema: Schema) {
+  // The user explicitly asked for detox, and its postinstall builds the
+  // framework cache it needs to run at all, so enable it — npm and yarn run
+  // it unconditionally. Transitive deps stay denied.
+  acknowledgeBuildScripts(host, detectPackageManager(host.root), {
+    detox: true,
+  });
   return addDependenciesToPackageJson(
     host,
     {},
@@ -66,7 +86,7 @@ export function updateDependencies(host: Tree, schema: Schema) {
       detox: detoxVersion,
     },
     undefined,
-    schema.keepExistingVersions
+    schema.keepExistingVersions ?? true
   );
 }
 

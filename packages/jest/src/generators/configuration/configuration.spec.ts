@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import {
   addProjectConfiguration,
@@ -8,6 +8,7 @@ import {
   updateProjectConfiguration,
   writeJson,
   updateJson,
+  readNxJson,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { jestConfigObject } from '../../utils/config/functions';
@@ -15,11 +16,17 @@ import { jestConfigObject } from '../../utils/config/functions';
 import configurationGenerator from './configuration';
 import { JestProjectSchema } from './schema.d';
 
+// Mock Jest version detection to return Jest 29 by default
+// This ensures existing tests continue to work with .ts config files
+jest.mock('../../utils/versions', () => ({
+  ...jest.requireActual('../../utils/versions'),
+  getInstalledJestMajorVersion: jest.fn(() => 29),
+}));
+
 describe('jestProject', () => {
   let tree: Tree;
   let defaultOptions: Omit<JestProjectSchema, 'project'> = {
     supportTsx: false,
-    skipSetupFile: false,
     skipSerializers: false,
     testEnvironment: 'jsdom',
     setupFile: 'none',
@@ -55,7 +62,9 @@ describe('jestProject', () => {
     } as JestProjectSchema);
     expect(tree.read('libs/lib1/src/test-setup.ts', 'utf-8'))
       .toMatchInlineSnapshot(`
-      "import 'jest-preset-angular/setup-jest';
+      "import { setupZoneTestEnv } from 'jest-preset-angular/setup-env/zone';
+
+      setupZoneTestEnv();
       "
     `);
     expect(tree.exists('libs/lib1/jest.config.ts')).toBeTruthy();
@@ -120,6 +129,36 @@ describe('jestProject', () => {
     });
   });
 
+  it('should set moduleResolution to node10 in tsconfig.spec.json when typescript is below 6', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { ...json.devDependencies, typescript: '~5.9.2' };
+      return json;
+    });
+
+    await configurationGenerator(tree, {
+      ...defaultOptions,
+      project: 'lib1',
+    } as JestProjectSchema);
+
+    const tsConfig = readJson(tree, 'libs/lib1/tsconfig.spec.json');
+    expect(tsConfig.compilerOptions.moduleResolution).toBe('node10');
+  });
+
+  it('should set moduleResolution to bundler in tsconfig.spec.json when typescript is 6 or above', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { ...json.devDependencies, typescript: '~6.0.3' };
+      return json;
+    });
+
+    await configurationGenerator(tree, {
+      ...defaultOptions,
+      project: 'lib1',
+    } as JestProjectSchema);
+
+    const tsConfig = readJson(tree, 'libs/lib1/tsconfig.spec.json');
+    expect(tsConfig.compilerOptions.moduleResolution).toBe('bundler');
+  });
+
   describe('--setup-file', () => {
     it('should generate src/test-setup.ts', async () => {
       await configurationGenerator(tree, {
@@ -162,27 +201,6 @@ describe('jestProject', () => {
         ...defaultOptions,
         project: 'lib1',
         setupFile: 'none',
-      } as JestProjectSchema);
-      const tsConfig = readJson(tree, 'libs/lib1/tsconfig.spec.json');
-      expect(tsConfig.files).toBeUndefined();
-    });
-  });
-
-  describe('--skip-setup-file', () => {
-    it('should generate src/test-setup.ts', async () => {
-      await configurationGenerator(tree, {
-        ...defaultOptions,
-        project: 'lib1',
-        skipSetupFile: true,
-      } as JestProjectSchema);
-      expect(tree.exists('src/test-setup.ts')).toBeFalsy();
-    });
-
-    it('should not list the setup file in tsconfig.spec.json', async () => {
-      await configurationGenerator(tree, {
-        ...defaultOptions,
-        project: 'lib1',
-        skipSetupFile: true,
       } as JestProjectSchema);
       const tsConfig = readJson(tree, 'libs/lib1/tsconfig.spec.json');
       expect(tsConfig.files).toBeUndefined();
@@ -335,7 +353,10 @@ describe('jestProject', () => {
         compiler: 'swc',
         supportTsx: true,
       } as JestProjectSchema);
+
       expect(tree.read('libs/lib1/jest.config.ts', 'utf-8')).toMatchSnapshot();
+      // assert the TS solution setup doesn't leak into the old/integrated setup
+      expect(tree.exists('libs/lib1/.spec.swcrc')).toBeFalsy();
     });
   });
 
@@ -357,8 +378,7 @@ describe('jestProject', () => {
         project: 'my-project',
       });
       expect(tree.read('jest.config.ts', 'utf-8')).toMatchInlineSnapshot(`
-        "/* eslint-disable */
-        export default {
+        "export default {
           displayName: 'my-project',
           preset: './jest.preset.js',
           coverageDirectory: './coverage/my-project',
@@ -389,8 +409,7 @@ describe('jestProject', () => {
         js: true,
       });
       expect(tree.read('jest.config.js', 'utf-8')).toMatchInlineSnapshot(`
-        "/* eslint-disable */
-        module.exports = {
+        "module.exports = {
           displayName: 'my-project',
           preset: './jest.preset.js',
           coverageDirectory: './coverage/my-project',
@@ -424,8 +443,7 @@ describe('jestProject', () => {
       // ASSERT
       expect(tree.read('libs/lib1/jest.config.ts', 'utf-8'))
         .toMatchInlineSnapshot(`
-        "/* eslint-disable */
-        export default {
+        "export default {
           displayName: 'lib1',
           preset: '../../jest.preset.cjs',
           coverageDirectory: '../../coverage/libs/lib1',
@@ -451,11 +469,391 @@ describe('jestProject', () => {
       expect(tree.exists('jest.preset.cjs')).toBeTruthy();
       expect(tree.read('libs/lib1/jest.config.ts', 'utf-8'))
         .toMatchInlineSnapshot(`
-        "/* eslint-disable */
-        export default {
+        "export default {
           displayName: 'lib1',
           preset: '../../jest.preset.cjs',
           coverageDirectory: '../../coverage/libs/lib1',
+        };
+        "
+      `);
+    });
+  });
+
+  describe('vscode recommended extensions', () => {
+    it('should add the "firsttris.vscode-jest-runner" extension to the vscode recommended extensions', async () => {
+      tree.write('.vscode/extensions.json', '{}');
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      });
+
+      expect(tree.read('.vscode/extensions.json', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "{
+          "recommendations": ["oxc.oxc-vscode", "firsttris.vscode-jest-runner"]
+        }
+        "
+      `);
+    });
+
+    it('should not duplicate the "firsttris.vscode-jest-runner" extension in the vscode recommended extensions', async () => {
+      writeJson(tree, '.vscode/extensions.json', {
+        recommendations: ['firsttris.vscode-jest-runner'],
+      });
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      });
+
+      expect(
+        readJson(tree, '.vscode/extensions.json').recommendations.filter(
+          (ext: string) => ext === 'firsttris.vscode-jest-runner'
+        ).length
+      ).toBe(1);
+    });
+
+    it('should not add the "firsttris.vscode-jest-runner" if the jest preset already exists', async () => {
+      tree.write('.vscode/extensions.json', '{}');
+      tree.write('jest.preset.js', 'export default {}');
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      });
+
+      expect(tree.read('.vscode/extensions.json', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "{
+          "recommendations": ["oxc.oxc-vscode"]
+        }
+        "
+      `);
+    });
+
+    it('should not create the .vscode/extensions.json file if it does not exist', async () => {
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      });
+
+      expect(tree.exists('.vscode/extensions.json')).toBeFalsy();
+    });
+  });
+
+  describe('TS solution setup', () => {
+    beforeEach(() => {
+      tree = createTreeWithEmptyWorkspace();
+      updateJson(tree, 'package.json', (json) => {
+        json.workspaces = ['packages/*'];
+        return json;
+      });
+      writeJson(tree, 'tsconfig.base.json', {
+        compilerOptions: { composite: true },
+      });
+      writeJson(tree, 'tsconfig.json', {
+        extends: './tsconfig.base.json',
+        files: [],
+        references: [],
+      });
+
+      addProjectConfiguration(tree, 'pkg1', {
+        root: 'packages/pkg1',
+        sourceRoot: 'packages/pkg1/src',
+        targets: {
+          lint: {
+            executor: '@nx/eslint:lint',
+            options: {},
+          },
+        },
+      });
+      writeJson(tree, 'packages/pkg1/tsconfig.json', {
+        files: [],
+        include: [],
+        references: [],
+      });
+    });
+
+    it('should generate files', async () => {
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+      });
+
+      expect(tree.exists('packages/pkg1/tsconfig.spec.json')).toBeTruthy();
+      expect(tree.exists('packages/pkg1/jest.config.ts')).toBeTruthy();
+      expect(tree.read('packages/pkg1/jest.config.ts', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "export default {
+          displayName: 'pkg1',
+          preset: '../../jest.preset.js',
+          coverageDirectory: 'test-output/jest/coverage',
+        };
+        "
+      `);
+      expect(tree.exists('packages/pkg1/.spec.swcrc')).toBeFalsy();
+    });
+
+    it('should set isolatedModules in tsconfig.spec.json for ts-jest below TypeScript 6', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = {
+          ...json.devDependencies,
+          typescript: '~5.9.2',
+        };
+        return json;
+      });
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+      });
+
+      const tsConfig = readJson(tree, 'packages/pkg1/tsconfig.spec.json');
+      expect(tsConfig.compilerOptions.moduleResolution).toBe('node10');
+      expect(tsConfig.compilerOptions.isolatedModules).toBe(true);
+    });
+
+    it('should not set isolatedModules in tsconfig.spec.json on TypeScript 6 or above', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = {
+          ...json.devDependencies,
+          typescript: '~6.0.3',
+        };
+        return json;
+      });
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+      });
+
+      const tsConfig = readJson(tree, 'packages/pkg1/tsconfig.spec.json');
+      expect(tsConfig.compilerOptions.moduleResolution).toBe('bundler');
+      expect(tsConfig.compilerOptions.isolatedModules).toBeUndefined();
+    });
+
+    it('should not set isolatedModules for the swc compiler below TypeScript 6', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = {
+          ...json.devDependencies,
+          typescript: '~5.9.2',
+        };
+        return json;
+      });
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+        compiler: 'swc',
+      });
+
+      const tsConfig = readJson(tree, 'packages/pkg1/tsconfig.spec.json');
+      expect(tsConfig.compilerOptions.isolatedModules).toBeUndefined();
+    });
+
+    it(`should setup a task pipeline for the test target to depend on the deps' build target`, async () => {
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+      });
+
+      const nxJson = readNxJson(tree);
+      expect(nxJson.targetDefaults['test']).toEqual({
+        dependsOn: ['^build'],
+      });
+    });
+
+    it('should generate files with swc compiler', async () => {
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+        compiler: 'swc',
+      });
+
+      expect(tree.exists('packages/pkg1/tsconfig.spec.json')).toBeTruthy();
+      expect(tree.exists('packages/pkg1/jest.config.ts')).toBeTruthy();
+      expect(tree.read('packages/pkg1/jest.config.ts', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "/* eslint-disable */
+        import { readFileSync } from 'fs';
+
+        // Reading the SWC compilation config for the spec files
+        const swcJestConfig = JSON.parse(readFileSync(\`\${__dirname}/.spec.swcrc\`, 'utf-8'));
+
+        // Disable .swcrc look-up by SWC core because we're passing in swcJestConfig ourselves
+        swcJestConfig.swcrc = false;
+
+        export default {
+          displayName: 'pkg1',
+          preset: '../../jest.preset.js',
+          transform: {
+            '^.+\\\\.[tj]s$': ['@swc/jest', swcJestConfig],
+          },
+          moduleFileExtensions: ['ts', 'js', 'html'],
+          coverageDirectory: 'test-output/jest/coverage',
+        };
+        "
+      `);
+      expect(tree.exists('packages/pkg1/.spec.swcrc')).toBeTruthy();
+      expect(tree.read('packages/pkg1/.spec.swcrc', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "{
+          "jsc": {
+            "target": "es2017",
+            "parser": {
+              "syntax": "typescript",
+              "decorators": true,
+              "dynamicImport": true
+            },
+            "transform": {
+              "decoratorMetadata": true,
+              "legacyDecorator": true
+            },
+            "keepClassNames": true,
+            "externalHelpers": true,
+            "loose": true
+          },
+          "module": {
+            "type": "es6"
+          },
+          "sourceMaps": true,
+          "exclude": []
+        }
+        "
+      `);
+    });
+
+    it('should generate the correct options for swc when "supportTsx: true"', async () => {
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'pkg1',
+        compiler: 'swc',
+        supportTsx: true,
+      });
+
+      expect(tree.read('packages/pkg1/.spec.swcrc', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "{
+          "jsc": {
+            "target": "es2017",
+            "parser": {
+              "syntax": "typescript",
+              "decorators": true,
+              "dynamicImport": true,
+              "tsx": true
+            },
+            "transform": {
+              "decoratorMetadata": true,
+              "legacyDecorator": true,
+              "react": {
+                "runtime": "automatic"
+              }
+            },
+            "keepClassNames": true,
+            "externalHelpers": true,
+            "loose": true
+          },
+          "module": {
+            "type": "es6"
+          },
+          "sourceMaps": true,
+          "exclude": []
+        }
+        "
+      `);
+    });
+  });
+
+  describe('Jest 30+', () => {
+    const { getInstalledJestMajorVersion } = require('../../utils/versions');
+
+    it('should create jest.config.cts', async () => {
+      getInstalledJestMajorVersion.mockReturnValue(30);
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      } as JestProjectSchema);
+
+      expect(tree.exists('libs/lib1/jest.config.cts')).toBeTruthy();
+      expect(tree.exists('libs/lib1/jest.config.ts')).toBeFalsy();
+      expect(tree.read('libs/lib1/jest.config.cts', 'utf-8')).toContain(
+        'module.exports ='
+      );
+      expect(tree.read('libs/lib1/jest.config.cts', 'utf-8')).not.toContain(
+        'export default'
+      );
+    });
+
+    it('should create jest.config.cts when Jest version cannot be determined (null)', async () => {
+      getInstalledJestMajorVersion.mockReturnValue(null);
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      } as JestProjectSchema);
+
+      expect(tree.exists('libs/lib1/jest.config.cts')).toBeTruthy();
+      expect(tree.exists('libs/lib1/jest.config.ts')).toBeFalsy();
+      expect(tree.read('libs/lib1/jest.config.cts', 'utf-8')).toContain(
+        'module.exports ='
+      );
+    });
+
+    it('should exclude jest.config.ts and jest.config.cts from tsconfig', async () => {
+      getInstalledJestMajorVersion.mockReturnValue(30);
+
+      // Create tsconfig.lib.json first
+      writeJson(tree, 'libs/lib1/tsconfig.lib.json', {
+        extends: './tsconfig.json',
+        compilerOptions: {
+          outDir: '../../dist/out-tsc',
+        },
+        include: ['src/**/*.ts'],
+        exclude: [],
+      });
+
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'lib1',
+      } as JestProjectSchema);
+
+      const tsConfig = readJson(tree, 'libs/lib1/tsconfig.lib.json');
+      expect(tsConfig.exclude).toContain('jest.config.ts');
+      expect(tsConfig.exclude).toContain('jest.config.cts');
+    });
+
+    it('root jest.config.cts should be project config', async () => {
+      getInstalledJestMajorVersion.mockReturnValue(30);
+
+      writeJson(tree, 'tsconfig.json', {
+        files: [],
+        include: [],
+        references: [],
+      });
+      addProjectConfiguration(tree, 'my-project', {
+        root: '',
+        sourceRoot: 'src',
+        name: 'my-project',
+        targets: {},
+      });
+      await configurationGenerator(tree, {
+        ...defaultOptions,
+        project: 'my-project',
+      });
+
+      expect(tree.exists('jest.config.cts')).toBeTruthy();
+      expect(tree.exists('jest.config.ts')).toBeFalsy();
+      expect(tree.read('jest.config.cts', 'utf-8')).toMatchInlineSnapshot(`
+        "module.exports = {
+          displayName: 'my-project',
+          preset: './jest.preset.js',
+          coverageDirectory: './coverage/my-project',
+          testMatch: [
+            '<rootDir>/src/**/__tests__/**/*.[jt]s?(x)',
+            '<rootDir>/src/**/*(*.)@(spec|test).[jt]s?(x)',
+          ],
         };
         "
       `);

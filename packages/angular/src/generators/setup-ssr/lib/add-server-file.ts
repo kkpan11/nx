@@ -1,44 +1,52 @@
 import type { Tree } from '@nx/devkit';
+import { generateFiles, readProjectConfiguration } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { join } from 'path';
+import { isZonelessApp } from '../../../utils/zoneless';
 import {
-  generateFiles,
-  joinPathFragments,
-  readProjectConfiguration,
-} from '@nx/devkit';
-import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
-import type { Schema } from '../schema';
+  getInstalledAngularVersionInfo,
+  supportsSsrAllowedHosts,
+} from '../../utils/version-utils';
+import type { NormalizedGeneratorOptions } from '../schema';
 import { DEFAULT_BROWSER_DIR } from './constants';
 
-export function addServerFile(
-  tree: Tree,
-  schema: Schema,
-  isUsingApplicationBuilder: boolean
-) {
-  const { root: projectRoot, targets } = readProjectConfiguration(
-    tree,
-    schema.project
-  );
-  const { outputPath } = targets.build.options;
-  const browserBundleOutputPath = isUsingApplicationBuilder
-    ? getApplicationBuilderBrowserOutputPath(outputPath)
-    : outputPath;
+export function addServerFile(tree: Tree, options: NormalizedGeneratorOptions) {
+  const project = readProjectConfiguration(tree, options.project);
+  const { outputPath } = project.targets.build.options;
+  const usesApplicationEngine =
+    options.isUsingApplicationBuilder || options.isRspack;
+  let browserDistDirectory: string;
+  if (options.isRspack) {
+    // rspack always emits the browser bundle under the default directory name
+    browserDistDirectory = DEFAULT_BROWSER_DIR;
+  } else if (options.isUsingApplicationBuilder) {
+    browserDistDirectory = getApplicationBuilderBrowserOutputPath(outputPath);
+  } else {
+    browserDistDirectory = outputPath;
+  }
 
-  const pathToFiles = joinPathFragments(__dirname, '..', 'files');
   const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-
-  generateFiles(
-    tree,
-    joinPathFragments(
-      pathToFiles,
-      'server',
-      ...(isUsingApplicationBuilder
-        ? ['application-builder']
-        : angularMajorVersion >= 17
-        ? ['server-builder', 'v17+']
-        : ['server-builder', 'pre-v17'])
-    ),
-    projectRoot,
-    { ...schema, browserBundleOutputPath, tpl: '' }
+  const pathToFiles = join(
+    __dirname,
+    '..',
+    'files',
+    'v20+',
+    usesApplicationEngine ? 'application-builder' : 'server-builder',
+    'server'
   );
+
+  const sourceRoot = getProjectSourceRoot(project, tree);
+  const zoneless = isZonelessApp(project);
+
+  generateFiles(tree, pathToFiles, sourceRoot, {
+    ...options,
+    browserDistDirectory,
+    zoneless,
+    useDefaultImport: angularMajorVersion >= 21,
+    angularMajorVersion,
+    supportsAllowedHosts: supportsSsrAllowedHosts(tree),
+    tpl: '',
+  });
 }
 
 function getApplicationBuilderBrowserOutputPath(

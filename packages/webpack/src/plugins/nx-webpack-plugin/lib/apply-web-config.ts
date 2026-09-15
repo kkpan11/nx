@@ -1,9 +1,6 @@
 import * as path from 'path';
-import { SubresourceIntegrityPlugin } from 'webpack-subresource-integrity';
-import {
+import type {
   Configuration,
-  DefinePlugin,
-  ids,
   RuleSetRule,
   WebpackOptionsNormalized,
   WebpackPluginInstance,
@@ -20,10 +17,6 @@ import {
   getCommonLoadersForGlobalStyle,
 } from './stylesheet-loaders';
 import { instantiateScriptPlugins } from './instantiate-script-plugins';
-import CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
-import MiniCssExtractPlugin = require('mini-css-extract-plugin');
-import { getDevServerOptions } from '../../../executors/dev-server/lib/get-dev-server-config';
-import { NormalizedWebpackExecutorOptions } from '../../../executors/webpack/schema';
 
 export function applyWebConfig(
   options: NormalizedNxAppWebpackPluginOptions,
@@ -37,7 +30,15 @@ export function applyWebConfig(
     useNormalizedEntry?: boolean;
   } = {}
 ): void {
-  if (!process.env['NX_TASK_TARGET_PROJECT']) return;
+  if (global.NX_GRAPH_CREATION) return;
+
+  const { DefinePlugin, ids } = require('webpack') as typeof import('webpack');
+  const { SubresourceIntegrityPlugin } =
+    require('webpack-subresource-integrity') as typeof import('webpack-subresource-integrity');
+  const CssMinimizerPlugin =
+    require('css-minimizer-webpack-plugin') as typeof import('css-minimizer-webpack-plugin');
+  const MiniCssExtractPlugin =
+    require('mini-css-extract-plugin') as typeof import('mini-css-extract-plugin');
 
   // Defaults that was applied from executor schema previously.
   options.runtimeChunk ??= true; // need this for HMR and other things to work
@@ -63,7 +64,7 @@ export function applyWebConfig(
         sri: options.subresourceIntegrity,
         outputPath: path.basename(options.index),
         indexPath: path.join(options.root, options.index),
-        baseHref: options.baseHref,
+        baseHref: options.baseHref !== false ? options.baseHref : undefined,
         deployUrl: options.deployUrl,
         scripts: options.scripts,
         styles: options.styles,
@@ -79,7 +80,7 @@ export function applyWebConfig(
   if (stylesOptimization) {
     minimizer.push(
       new CssMinimizerPlugin({
-        test: /\.(?:css|scss|sass|less|styl)$/,
+        test: /\.(?:css|scss|sass|less)$/,
       })
     );
   }
@@ -95,6 +96,8 @@ export function applyWebConfig(
   // Determine hashing format.
   const hashFormat = getOutputHashFormat(options.outputHashing as string);
 
+  const sassOptions = options.stylePreprocessorOptions?.sassOptions;
+  const lessOptions = options.stylePreprocessorOptions?.lessOptions;
   const includePaths: string[] = [];
   if (options?.stylePreprocessorOptions?.includePaths?.length > 0) {
     options.stylePreprocessorOptions.includePaths.forEach(
@@ -114,7 +117,9 @@ export function applyWebConfig(
   // Process global styles.
   if (options.styles.length > 0) {
     normalizeExtraEntryPoints(options.styles, 'styles').forEach((style) => {
-      const resolvedPath = path.resolve(options.root, style.input);
+      const resolvedPath = style.input.startsWith('.')
+        ? style.input
+        : path.resolve(options.root, style.input);
       // Add style entry points.
       if (entries[style.bundleName]) {
         entries[style.bundleName].import.push(resolvedPath);
@@ -141,11 +146,13 @@ export function applyWebConfig(
         {
           loader: require.resolve('sass-loader'),
           options: {
-            implementation: require('sass'),
+            api: 'modern-compiler',
+            implementation: require.resolve('sass-embedded'),
             sassOptions: {
               fiber: false,
               precision: 8,
-              includePaths,
+              loadPaths: includePaths,
+              ...(sassOptions ?? {}),
             },
           },
         },
@@ -157,28 +164,14 @@ export function applyWebConfig(
       use: [
         ...getCommonLoadersForCssModules(options, includePaths),
         {
-          loader: require.resolve('less-loader'),
+          loader: path.join(
+            __dirname,
+            '../../../utils/webpack/deprecated-less-loader.js'
+          ),
           options: {
             lessOptions: {
               paths: includePaths,
-            },
-          },
-        },
-      ],
-    },
-    {
-      test: /\.module\.styl$/,
-      exclude: globalStylePaths,
-      use: [
-        ...getCommonLoadersForCssModules(options, includePaths),
-        {
-          loader: path.join(
-            __dirname,
-            '../../../utils/webpack/deprecated-stylus-loader.js'
-          ),
-          options: {
-            stylusOptions: {
-              include: includePaths,
+              ...(lessOptions ?? {}),
             },
           },
         },
@@ -200,13 +193,15 @@ export function applyWebConfig(
         {
           loader: require.resolve('sass-loader'),
           options: {
-            implementation: require('sass'),
+            api: 'modern-compiler',
+            implementation: require.resolve('sass-embedded'),
             sourceMap: !!options.sourceMap,
             sassOptions: {
               fiber: false,
               // bootstrap-sass requires a minimum precision of 8
               precision: 8,
-              includePaths,
+              loadPaths: includePaths,
+              ...(sassOptions ?? {}),
             },
           },
         },
@@ -218,31 +213,16 @@ export function applyWebConfig(
       use: [
         ...getCommonLoadersForGlobalCss(options, includePaths),
         {
-          loader: require.resolve('less-loader'),
+          loader: path.join(
+            __dirname,
+            '../../../utils/webpack/deprecated-less-loader.js'
+          ),
           options: {
             sourceMap: !!options.sourceMap,
             lessOptions: {
               javascriptEnabled: true,
               ...lessPathOptions,
-            },
-          },
-        },
-      ],
-    },
-    {
-      test: /\.styl$/,
-      exclude: globalStylePaths,
-      use: [
-        ...getCommonLoadersForGlobalCss(options, includePaths),
-        {
-          loader: path.join(
-            __dirname,
-            '../../../utils/webpack/deprecated-stylus-loader.js'
-          ),
-          options: {
-            sourceMap: !!options.sourceMap,
-            stylusOptions: {
-              include: includePaths,
+              ...(lessOptions ?? {}),
             },
           },
         },
@@ -264,13 +244,15 @@ export function applyWebConfig(
         {
           loader: require.resolve('sass-loader'),
           options: {
-            implementation: require('sass'),
+            api: 'modern-compiler',
+            implementation: require.resolve('sass-embedded'),
             sourceMap: !!options.sourceMap,
             sassOptions: {
               fiber: false,
               // bootstrap-sass requires a minimum precision of 8
               precision: 8,
-              includePaths,
+              loadPaths: includePaths,
+              ...(sassOptions ?? {}),
             },
           },
         },
@@ -282,31 +264,16 @@ export function applyWebConfig(
       use: [
         ...getCommonLoadersForGlobalStyle(options, includePaths),
         {
-          loader: require.resolve('less-loader'),
+          loader: path.join(
+            __dirname,
+            '../../../utils/webpack/deprecated-less-loader.js'
+          ),
           options: {
             sourceMap: !!options.sourceMap,
             lessOptions: {
               javascriptEnabled: true,
               ...lessPathOptions,
-            },
-          },
-        },
-      ],
-    },
-    {
-      test: /\.styl$/,
-      include: globalStylePaths,
-      use: [
-        ...getCommonLoadersForGlobalStyle(options, includePaths),
-        {
-          loader: path.join(
-            __dirname,
-            '../../../utils/webpack/deprecated-stylus-loader.js'
-          ),
-          options: {
-            sourceMap: !!options.sourceMap,
-            stylusOptions: {
-              include: includePaths,
+              ...(lessOptions ?? {}),
             },
           },
         },
@@ -316,7 +283,7 @@ export function applyWebConfig(
 
   const rules: RuleSetRule[] = [
     {
-      test: /\.css$|\.scss$|\.sass$|\.less$|\.styl$/,
+      test: /\.css$|\.scss$|\.sass$|\.less$/,
       oneOf: [...cssModuleRules, ...globalCssRules, ...globalStyleRules],
     },
   ];
@@ -332,6 +299,7 @@ export function applyWebConfig(
 
   config.output = {
     ...config.output,
+    assetModuleFilename: '[name].[contenthash:20][ext]',
     crossOriginLoading: options.subresourceIntegrity
       ? ('anonymous' as const)
       : (false as const),
@@ -395,39 +363,20 @@ export function applyWebConfig(
     ...config.module,
     rules: [
       ...(config.module.rules ?? []),
-      // Images: Inline small images, and emit a separate file otherwise.
+      // Images: Inline small images, and emit a separate file otherwise (including SVGs).
       {
-        test: /\.(avif|bmp|gif|ico|jpe?g|png|webp)$/,
+        test: /\.(avif|bmp|gif|ico|jpe?g|png|svg|webp)$/,
         type: 'asset',
         parser: {
           dataUrlCondition: {
             maxSize: 10_000, // 10 kB
           },
-        },
-        generator: {
-          filename: `[name]${hashFormat.file}[ext]`,
-        },
-      },
-      // SVG: same as image but we need to separate it so it can be swapped for SVGR in the React plugin.
-      {
-        test: /\.svg$/,
-        type: 'asset',
-        parser: {
-          dataUrlCondition: {
-            maxSize: 10_000, // 10 kB
-          },
-        },
-        generator: {
-          filename: `[name]${hashFormat.file}[ext]`,
         },
       },
       // Fonts: Emit separate file and export the URL.
       {
         test: /\.(eot|otf|ttf|woff|woff2)$/,
         type: 'asset/resource',
-        generator: {
-          filename: `[name]${hashFormat.file}[ext]`,
-        },
       },
       ...rules,
     ],

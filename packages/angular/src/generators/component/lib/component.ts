@@ -1,6 +1,6 @@
 import type { Tree } from '@nx/devkit';
 import { logger, readProjectConfiguration, stripIndents } from '@nx/devkit';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import type { StringLiteral } from 'typescript';
 import { locateLibraryEntryPointFromDirectory } from '../../utils/entry-point';
 import { getRelativeImportToFile } from '../../utils/path';
@@ -40,7 +40,20 @@ export function exportComponentInEntryPoint(
   }
 
   if (!schema.standalone) {
-    const modulePath = findModuleFromOptions(tree, schema, root);
+    let modulePath: string;
+    try {
+      modulePath = findModuleFromOptions(tree, schema, root);
+    } catch (e) {
+      modulePath = findModuleFromOptions(
+        tree,
+        {
+          ...schema,
+          moduleExt: '-module.ts',
+          routingModuleExt: '-routing-module.ts',
+        },
+        root
+      );
+    }
     if (!shouldExportInEntryPoint(tree, entryPointPath, modulePath)) {
       return;
     }
@@ -69,14 +82,13 @@ function shouldExportInEntryPoint(
   }
 
   ensureTypescript();
-  const { tsquery } = require('@phenomnomnominal/tsquery');
+  const { ast, query } = require('@phenomnomnominal/tsquery');
   const moduleImportPath = getRelativeImportToFile(entryPoint, modulePath);
   const entryPointContent = tree.read(entryPoint, 'utf-8');
-  const entryPointAst = tsquery.ast(entryPointContent);
-  const moduleExport = tsquery(
+  const entryPointAst = ast(entryPointContent);
+  const moduleExport = query(
     entryPointAst,
-    `ExportDeclaration StringLiteral[value='${moduleImportPath}']`,
-    { visitAllChildren: true }
+    `ExportDeclaration StringLiteral[value='${moduleImportPath}']`
   )[0] as StringLiteral;
 
   return Boolean(moduleExport);

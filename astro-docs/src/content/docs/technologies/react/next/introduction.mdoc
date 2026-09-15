@@ -1,0 +1,235 @@
+---
+title: Nx with Next.js
+description: Nx scales your Next.js monorepo with caching, distributed task execution, and affected-only builds.
+keywords: [nextjs, next, react]
+sidebar:
+  label: 'Introduction'
+  order: 1
+weight: 2
+filter: 'type:References'
+---
+
+Nx helps you organize a Next.js monorepo where apps and shared libraries live side by side. The Next.js plugin for Nx, `@nx/next`, automatically [infers `build`, `dev`, and `start` tasks](#how-nxnext-infers-tasks) from your Next.js configuration and provides [generators for creating applications and libraries](#develop-nextjs-applications).
+
+You don't need the plugin to use Next.js with Nx. Any project already benefits from [caching](/docs/features/cache-task-results), [task orchestration](/docs/features/run-tasks), and the [project graph](/docs/features/explore-graph). The plugin adds automatic task inference, code generators, and simplified configuration.
+
+## Requirements
+
+The `@nx/next` plugin supports the following package versions.
+
+| Package | Supported Versions |
+| ------- | ------------------ |
+| `next`  | >=15.0.0 <17.0.0   |
+
+[Nx generators](/docs/features/generate-code) install the latest supported versions automatically when scaffolding new projects.
+
+## Setting up @nx/next
+
+### Add to an existing Nx workspace
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/next` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+Using `nx add` helps ensure the correct version is installed and configured.
+{% /aside %}
+
+```shell
+nx add @nx/next
+```
+
+Verify the plugin is setup:
+
+{% steps %}
+
+1. Check for `@nx/next` listed as a plugin:
+
+   ```shell
+   nx report
+   ```
+
+2. Ensure inferred tasks are working:
+
+   ```shell
+   nx show projects --with-target=build
+   ```
+
+3. Inspect a specific project configuration:
+
+   ```shell
+   nx show project my-next-app
+   ```
+
+{% /steps %}
+
+### Create a new workspace
+
+Start from the [Next.js template](/docs/templates/nextjs) to scaffold a Next.js app with a shared UI library:
+
+```shell
+npx create-nx-workspace@latest my-workspace --template nrwl/nextjs-template
+```
+
+### Generate a new application
+
+```shell
+nx g @nx/next:app apps/my-app
+```
+
+To start the application in development mode, run `nx dev my-app`. Read more about the options available for the [application generator](/docs/technologies/react/next/generators#application).
+
+### Generate a library
+
+```shell
+nx g @nx/next:lib libs/my-lib
+
+# For a publishable library
+nx g @nx/next:lib libs/my-lib --publishable --importPath=@myorg/my-lib
+```
+
+Read more about the options available for the [library generator](/docs/technologies/react/next/generators#library).
+
+## Develop Next.js applications
+
+### Serve for development
+
+```shell
+nx dev my-app
+```
+
+Starts the Next.js development server at http://localhost:3000 by default.
+
+### Build for production
+
+```shell
+nx build my-app
+```
+
+The output goes to the `.next` folder inside your app's project directory by default. Customize the output directory with `distDir` in your `next.config.js`:
+
+```javascript
+// apps/my-app/next.config.js
+const nextConfig = {
+  distDir: 'dist',
+};
+
+module.exports = nextConfig;
+```
+
+### Start production server
+
+```shell
+nx start my-app
+```
+
+Serves the production build. Depends on `build` completing first.
+
+### Use libraries in your application
+
+```typescript
+// apps/my-app/pages/index.tsx
+import { MyComponent } from '@myorg/my-lib';
+
+export default function Index() {
+  return <MyComponent />;
+}
+```
+
+There is no need to build the library prior to using it. When you update your library, the Next.js application automatically picks up the changes.
+
+## Configure @nx/next
+
+### How @nx/next infers tasks
+
+The `@nx/next` plugin creates tasks for any project that has a Next.js configuration file. Any of the following files are recognized:
+
+- `next.config.js`
+- `next.config.cjs`
+- `next.config.mjs`
+- `next.config.ts`
+
+The configuration directory must also contain a `package.json` or `project.json`.
+
+### Plugin options
+
+Configure `@nx/next/plugin` in the `plugins` array in `nx.json`:
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/next/plugin",
+      "options": {
+        "buildTargetName": "build",
+        "devTargetName": "dev",
+        "startTargetName": "start",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    }
+  ]
+}
+```
+
+| Option                  | Description                                | Default        |
+| ----------------------- | ------------------------------------------ | -------------- |
+| `buildTargetName`       | Name of the cached `next build` task.      | `build`        |
+| `devTargetName`         | Name of the continuous `next dev` task.    | `dev`          |
+| `startTargetName`       | Name of the continuous `next start` task.  | `start`        |
+| `serveStaticTargetName` | Deprecated alias for `startTargetName`.    | `serve-static` |
+| `buildDepsTargetName`   | Name of an optional dependency build task. | none           |
+| `watchDepsTargetName`   | Name of an optional dependency watch task. | none           |
+
+The build task is cached, with outputs based on your Next.js configuration, and depends on builds of project dependencies. The start task depends on the build task.
+
+### Exclude or include specific projects
+
+Use `include`/`exclude` glob patterns in the plugin configuration to scope which projects the plugin applies to:
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/next/plugin",
+      "include": ["apps/**/*"],
+      "exclude": ["apps/legacy-app/**/*"],
+      "options": {
+        "buildTargetName": "build",
+        "devTargetName": "dev",
+        "startTargetName": "start",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    }
+  ]
+}
+```
+
+### View inferred tasks
+
+To see what tasks Nx inferred for a project:
+
+```shell
+nx show project my-app
+```
+
+Or open the [project details view in Nx Console](/docs/kb/console-project-details#_top).
+
+A [target defaults](/docs/reference/nx-json#target-defaults) `plugin` filter for these tasks must use the exact identifier `@nx/next/plugin`.
+
+## Set up CI for your Next.js monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).
+
+## What's next
+
+{% cardgrid %}
+{% linkcard title="Deploy Next.js to Vercel" description="Deploy your Next.js application to Vercel with Nx." href="/docs/kb/deploy-nextjs-to-vercel" /%}
+{% linkcard title="Next.js Config Setup" description="Configure Next.js settings for your Nx workspace." href="/docs/kb/next-config-setup" /%}
+{% linkcard title="Learn Nx Tutorial" description="Build a monorepo step-by-step with Nx." href="/docs/getting-started/tutorials/crafting-your-workspace" /%}
+{% linkcard title="Generators Reference" description="Full API reference for @nx/next generators." href="/docs/technologies/react/next/generators" /%}
+{% linkcard title="Executors Reference" description="Full API reference for @nx/next executors." href="/docs/technologies/react/next/executors" /%}
+{% linkcard title="Migrations Reference" description="Full reference for @nx/next migrations." href="/docs/technologies/react/next/migrations" /%}
+{% /cardgrid %}

@@ -1,11 +1,55 @@
 /*! purgecss start ignore */
-@import '../../feature-search/src/lib/algolia-search.global.css';
 @import './syntax-highlight.css';
 /*! purgecss end ignore */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@plugin '@tailwindcss/typography';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@source '../pages';
+@source '../app';
+@source '../../ui-animations/src';
+@source '../../ui-blog/src';
+@source '../../ui-common/src';
+@source '../../ui-courses/src';
+@source '../../ui-fence/src';
+@source '../../ui-icons/src';
+@source '../../ui-markdoc/src';
+@source '../../ui-primitives/src';
+@source '../../ui-references/src';
+@source '../../ui-theme/src';
+@source '../../ui-video-courses/src';
+@source '../../feature-ai/src';
+@source '../../feature-analytics/src';
+@source '../../feature-search/src';
+
+@source not '../../**/*.{spec,test,stories}.*';
+@source not '../../**/eslint.config.*';
+
+/* v3 compat: default border color was gray-200, v4 is currentColor. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
+/* Strip default quote characters around inline code and blockquote. */
+.prose :where(code):not(:where([class~='not-prose'] *))::before,
+.prose :where(code):not(:where([class~='not-prose'] *))::after,
+.prose
+  :where(blockquote p:first-of-type):not(
+    :where([class~='not-prose'] *)
+  )::before,
+.prose
+  :where(blockquote p:last-of-type):not(:where([class~='not-prose'] *))::after {
+  content: '';
+}
 
 svg {
   shape-rendering: auto;
@@ -13,7 +57,8 @@ svg {
 }
 
 @font-face {
-  src: url('../public/fonts/InputMono-Regular.woff2') format('woff2'),
+  src:
+    url('../public/fonts/InputMono-Regular.woff2') format('woff2'),
     url('../public/fonts/InputMono-Regular.woff') format('woff');
   font-family: 'InputMono';
   font-style: normal;
@@ -52,22 +97,24 @@ pre,
 iframe[src*='youtube'] {
   aspect-ratio: 16 / 9;
 }
-.prose iframe,
-.prose img {
+
+.prose iframe:not(.not-prose):not(.not-prose *),
+.prose img:not(.not-prose):not(.not-prose *) {
   display: block;
   margin: 2rem auto;
 }
-.prose iframe {
+
+.prose iframe:not(.not-prose):not(.not-prose *) {
   width: 100%;
   max-width: 560px;
 }
-.prose img {
+
+.prose img:not(.not-prose):not(.not-prose *) {
   width: max-content;
 }
 
-.prose iframe[src^="https://staging.nx.app"],
-.prose iframe[src^="https://nx.app"]
-{
+.prose iframe:not(.not-prose):not(.not-prose *)[src^='https://staging.nx.app'],
+.prose iframe:not(.not-prose):not(.not-prose *)[src^='https://nx.app'] {
   height: 80vh;
   max-width: 100%;
   overflow: hidden;
@@ -254,4 +301,11 @@ html.dark .adaptive-icon {
   to {
     transform: translateY(0);
   }
+}
+
+.accordion {
+  border: none;
+}
+.accordion summary h3 {
+  display: inline-block;
 }

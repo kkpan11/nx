@@ -1,11 +1,13 @@
+import { eachValueFrom } from '@nx/devkit/internal';
 import {
   ExecutorContext,
   logger,
   stripIndents,
   targetToTargetString,
 } from '@nx/devkit';
-import { eachValueFrom } from '@nx/devkit/src/utils/rxjs-for-await';
-import type { Configuration, Stats } from 'webpack';
+import { getRootTsConfigPath } from '@nx/js';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { resolve } from 'path';
 import { from, of } from 'rxjs';
 import {
   bufferCount,
@@ -14,37 +16,21 @@ import {
   switchMap,
   tap,
 } from 'rxjs/operators';
-import { resolve } from 'path';
-import {
-  calculateProjectBuildableDependencies,
-  createTmpTsConfig,
-} from '@nx/js/src/utils/buildable-libs-utils';
-import { runWebpack } from './lib/run-webpack';
-import { deleteOutputDir } from '../../utils/fs';
+import type { Configuration, Stats } from 'webpack';
+import { isNxWebpackComposablePlugin } from '../../utils/config';
 import { resolveUserDefinedWebpackConfig } from '../../utils/webpack/resolve-user-defined-webpack-config';
+import { warnWebpackExecutorDeprecation } from '../../utils/deprecation';
+import { normalizeOptions } from './lib/normalize-options';
+import { runWebpack } from './lib/run-webpack';
 import type {
   NormalizedWebpackExecutorOptions,
   WebpackExecutorOptions,
 } from './schema';
-import { normalizeOptions } from './lib/normalize-options';
-import {
-  composePluginsSync,
-  isNxWebpackComposablePlugin,
-} from '../../utils/config';
-import { withNx } from '../../utils/with-nx';
-import { getRootTsConfigPath } from '@nx/js';
-import { withWeb } from '../../utils/with-web';
 
 async function getWebpackConfigs(
   options: NormalizedWebpackExecutorOptions,
   context: ExecutorContext
 ): Promise<Configuration | Configuration[]> {
-  if (options.isolatedConfig && !options.webpackConfig) {
-    throw new Error(
-      `Using "isolatedConfig" without a "webpackConfig" is not supported.`
-    );
-  }
-
   let userDefinedWebpackConfig = null;
   if (options.webpackConfig) {
     userDefinedWebpackConfig = resolveUserDefinedWebpackConfig(
@@ -57,11 +43,7 @@ async function getWebpackConfigs(
     }
   }
 
-  const config = options.isolatedConfig
-    ? {}
-    : (options.target === 'web'
-        ? composePluginsSync(withNx(options), withWeb(options))
-        : withNx(options))({}, { options, context });
+  const config = {};
 
   if (
     typeof userDefinedWebpackConfig === 'function' &&
@@ -104,11 +86,13 @@ export async function* webpackExecutor(
   _options: WebpackExecutorOptions,
   context: ExecutorContext
 ): AsyncGenerator<WebpackExecutorEvent, WebpackExecutorEvent, undefined> {
+  warnWebpackExecutorDeprecation();
+
   // Default to production build.
   process.env['NODE_ENV'] ||= 'production';
 
   const metadata = context.projectsConfigurations.projects[context.projectName];
-  const sourceRoot = metadata.sourceRoot;
+  const sourceRoot = getProjectSourceRoot(metadata);
   const options = normalizeOptions(
     _options,
     context.root,
@@ -119,8 +103,8 @@ export async function* webpackExecutor(
     typeof options.optimization === 'boolean'
       ? options.optimization
       : options.optimization && options.optimization.scripts
-      ? options.optimization.scripts
-      : false;
+        ? options.optimization.scripts
+        : false;
 
   (process.env as any).NODE_ENV ||= isScriptOptimizeOn
     ? 'production'
@@ -148,11 +132,6 @@ export async function* webpackExecutor(
     }
   }
 
-  // Delete output path before bundling
-  if (options.deleteOutputPath && options.outputPath) {
-    deleteOutputDir(context.root, options.outputPath);
-  }
-
   if (options.generatePackageJson && metadata.projectType !== 'application') {
     logger.warn(
       stripIndents`The project ${context.projectName} is using the 'generatePackageJson' option which is deprecated for library projects. It should only be used for applications.
@@ -169,6 +148,11 @@ export async function* webpackExecutor(
       mergeScan(
         (acc, config) => {
           if (!acc.hasErrors()) {
+            // Propagate watch mode from executor options to webpack config.
+            // Without this, NxAppWebpackPlugin-based configs run in single-run
+            // mode even when the executor is invoked with watch: true, causing
+            // @nx/js:node to restart the process after every build.
+            config.watch = options.watch ?? config.watch;
             return runWebpack(config).pipe(
               tap((stats) => {
                 console.info(stats.toString(config.stats));

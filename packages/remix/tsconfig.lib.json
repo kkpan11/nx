@@ -1,12 +1,55 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "commonjs",
-    "outDir": "../../dist/out-tsc",
-    "declaration": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "declarationDir": "dist",
+    "declarationMap": false,
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
     "types": ["node"],
-    "resolveJsonModule": true
+    "composite": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
   },
-  "exclude": ["**/*.spec.ts", "**/*.test.ts", "jest.config.ts"],
-  "include": ["**/*.ts"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "**/*_spec.ts",
+    "**/*_test.ts",
+    "jest.config.ts",
+    "jest.config.cts",
+    "eslint.config.mjs"
+  ],
+  "include": ["*.ts", "src/**/*.ts", "plugins/**/*.ts"],
+  "references": [
+    {
+      "path": "../web/tsconfig.lib.json"
+    },
+    {
+      "path": "../react/tsconfig.lib.json"
+    },
+    {
+      "path": "../js/tsconfig.lib.json"
+    },
+    {
+      "path": "../devkit/tsconfig.lib.json"
+    },
+    {
+      "path": "../vitest/tsconfig.lib.json"
+    },
+    {
+      "path": "../nx/tsconfig.lib.json"
+    },
+    {
+      "path": "../eslint/tsconfig.lib.json"
+    },
+    {
+      "path": "../playwright/tsconfig.lib.json"
+    },
+    {
+      "path": "../cypress/tsconfig.lib.json"
+    }
+  ]
 }

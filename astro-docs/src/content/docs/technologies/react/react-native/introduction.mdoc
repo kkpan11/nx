@@ -1,0 +1,225 @@
+---
+title: Nx with React Native
+description: Nx scales your React Native monorepo with caching, distributed task execution, and affected-only builds.
+sidebar:
+  label: 'Introduction'
+weight: 2
+filter: 'type:References'
+---
+
+In a React Native monorepo, Nx lets you share libraries across apps and run only the tasks a change affects. React Native brings the React declarative UI framework to iOS and Android. With React Native, you use native UI controls and have full access to the native platform.
+
+The Nx Plugin for React Native contains generators for managing React Native applications and libraries within an Nx workspace. It provides:
+
+- Integration with libraries such as Jest, Detox, and Storybook.
+- Scaffolding for creating buildable libraries that can be published to npm.
+- Utilities for automatic workspace refactoring.
+
+## Requirements
+
+The `@nx/react-native` plugin supports the following package versions.
+
+| Package        | Supported Versions   |
+| -------------- | -------------------- |
+| `metro-config` | >= 0.82.0            |
+| `react-native` | ^0.83.0 \|\| ^0.84.0 |
+
+[Nx generators](/docs/features/generate-code) install the latest supported versions automatically when scaffolding new projects.
+
+## Setting up React native
+
+### Create a new workspace
+
+To create a new workspace with React Native, run the following command:
+
+```shell
+npx create-nx-workspace@latest your-workspace-name --preset=react-native --appName=your-app-name
+```
+
+{% aside type="note" title="Don't know what you need?" %}
+You can also run the command without arguments to go through the interactive prompts.
+{% /aside %}
+
+```shell
+npx create-nx-workspace your-workspace-name
+```
+
+### Installation
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/react-native` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+{% /aside %}
+
+In any Nx workspace, you can install `@nx/react-native` by running the following command:
+
+```shell
+nx add @nx/react-native
+```
+
+This will install the correct version of `@nx/react-native`.
+
+### How @nx/react-native infers tasks
+
+{% aside type="note" title="Inferred Tasks" %}
+Nx plugins can infer tasks for your projects based on the configuration of different tools. You can read more about it at the [Inferred Tasks concept page](/docs/concepts/mental-model#inferred-tasks).
+{% /aside %}
+
+The `@nx/react-native` plugin will create a task for any project that has an app configuration file present. Any of the following files will be recognized as an app configuration file:
+
+- `app.config.js`
+- `app.config.ts`
+- `app.json`
+
+The directory must contain both `package.json` and `metro.config.js`.
+React Native inference excludes projects whose app configuration has an `expo` key or whose
+`package.json` lists `expo` as a dependency or development dependency.
+The `@nx/expo/plugin` handles those projects.
+
+### View inferred tasks
+
+To view inferred tasks for a project, open the [project details view](/docs/concepts/mental-model#inferred-tasks) in Nx Console or run `nx show project my-project --web` in the command line.
+
+### @nx/react-native configuration
+
+The `@nx/react-native/plugin` is configured in the `plugins` array in `nx.json`.
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/react-native/plugin",
+      "options": {
+        "startTargetName": "start",
+        "podInstallTargetName": "pod-install",
+        "bundleTargetName": "bundle",
+        "runIosTargetName": "run-ios",
+        "runAndroidTargetName": "run-android",
+        "buildIosTargetName": "build-ios",
+        "buildAndroidTargetName": "build-android",
+        "syncDepsTargetName": "sync-deps",
+        "upgradeTargetName": "upgrade"
+      }
+    }
+  ]
+}
+```
+
+| Option                   | Default         | Inferred behavior                                                    |
+| ------------------------ | --------------- | -------------------------------------------------------------------- |
+| `startTargetName`        | `start`         | Runs `react-native start` continuously.                              |
+| `podInstallTargetName`   | `pod-install`   | Runs `pod install` after the dependency synchronization task.        |
+| `bundleTargetName`       | `bundle`        | Runs `react-native bundle` after bundling project dependencies.      |
+| `runIosTargetName`       | `run-ios`       | Runs `react-native run-ios` continuously.                            |
+| `runAndroidTargetName`   | `run-android`   | Runs `react-native run-android` continuously.                        |
+| `buildIosTargetName`     | `build-ios`     | Runs and caches `react-native build-ios` with the iOS build outputs. |
+| `buildAndroidTargetName` | `build-android` | Runs and caches `react-native build-android` with Android outputs.   |
+| `syncDepsTargetName`     | `sync-deps`     | Runs the `@nx/react-native:sync-deps` executor.                      |
+| `upgradeTargetName`      | `upgrade`       | Runs `react-native upgrade`.                                         |
+
+Use `include` and `exclude` glob patterns on the plugin entry to scope inference. A [target defaults](/docs/reference/nx-json#target-defaults) `plugin` filter must use the exact identifier `@nx/react-native/plugin`.
+
+### Generating applications
+
+To create additional React Native apps run:
+
+```shell
+nx g @nx/react-native:app apps/<your-app-name>
+```
+
+### Generating libraries
+
+To generate a new library run:
+
+```shell
+nx g @nx/react-native:lib libs/<your-lib-name>
+```
+
+### Generating components
+
+To generate a new component inside library run:
+
+```shell
+nx g @nx/react-native:component <component-path> --export
+```
+
+Replace `<component-directory>` with the directory where you want to place the component. It must be a path to a directory relative to the workspace root and located inside the library project root.
+
+### Upgrade React Native
+
+The Nx CLI provides the [`migrate` command](/docs/features/automate-updating-dependencies) to help you stay up to date with the latest version of Nx.
+
+#### Use upgrade-native generator
+
+To upgrade native iOS and Android code to latest, you can use the [upgrade-native](/docs/technologies/react/react-native/generators#upgrade-native) generator:
+
+```shell
+nx generate @nx/react-native:upgrade-native apps/<your-app-name>
+```
+
+This is a command that will replace the iOS and Android native code folder entirely.
+
+#### Upgrade manually
+
+You can also upgrade React Native iOS and Android code using the [rn-diff-purge](https://react-native-community.github.io/upgrade-helper/) project.
+
+### Start metro server
+
+To start the server that communicates with connected devices:
+
+```shell
+nx start <your-app-name>
+```
+
+### Run iOS
+
+To build your app and start it on iOS simulator or device:
+
+```shell
+nx run-ios <your-app-name>
+```
+
+### Run android
+
+To build your app and start it on a connected Android emulator or device:
+
+```shell
+nx run-android <your-app-name>
+```
+
+### Build iOS
+
+To build an iOS app:
+
+```shell
+nx build-ios <your-app-name>
+```
+
+The build artifacts will be located under `<your app folder>/ios/build`.
+
+You can specify the build folder by setting the `buildFolder` option:
+
+```shell
+nx build-ios <your-app-name> --buildFolder="./build"
+```
+
+### Build android
+
+To build an Android app, run:
+
+```shell
+nx build-android <your app name>
+```
+
+The build artifacts will be located under `<your app folder>/android/app/build`.
+
+## More documentation
+
+- [Using Detox](/docs/technologies/test-tools/detox/introduction)
+- [Using Jest](/docs/technologies/test-tools/jest/introduction)
+
+## Set up CI for your React Native monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).

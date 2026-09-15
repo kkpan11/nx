@@ -1,18 +1,45 @@
-import type { NxJsonConfiguration, Tree } from '@nx/devkit';
-import { readJson } from '@nx/devkit';
-import Ajv from 'ajv';
-import { generateWorkspaceFiles } from './generate-workspace-files';
+import * as devkit from '@nx/devkit';
+import {
+  formatFiles,
+  readJson,
+  readJsonFile,
+  type NxJsonConfiguration,
+  type Tree,
+} from '@nx/devkit';
 import { createTree } from '@nx/devkit/testing';
+import Ajv from 'ajv';
 import { Preset } from '../utils/presets';
-import * as nxSchema from 'nx/schemas/nx-schema.json';
+import { generateWorkspaceFiles } from './generate-workspace-files';
+
+const nxSchema = readJsonFile(require.resolve('nx/schemas/nx-schema.json'));
+
+jest.mock(
+  'nx/src/nx-cloud/generators/connect-to-nx-cloud/connect-to-nx-cloud',
+  () => ({
+    ...jest.requireActual(
+      'nx/src/nx-cloud/generators/connect-to-nx-cloud/connect-to-nx-cloud'
+    ),
+    connectToNxCloud: async () => {
+      return 'TEST_NX_CLOUD_TOKEN';
+    },
+  })
+);
+jest.mock('nx/src/nx-cloud/utilities/url-shorten', () => ({
+  ...jest.requireActual('nx/src/nx-cloud/utilities/url-shorten'),
+  createNxCloudOnboardingURL: async (source, token, meta, forceManual) => {
+    return `https://test.nx.app/connect?source=${source}&token=${token}`;
+  },
+}));
 
 describe('@nx/workspace:generateWorkspaceFiles', () => {
   let tree: Tree;
 
   beforeEach(() => {
     tree = createTree();
-    // we need an actual path for the package manager version check
-    tree.root = process.cwd();
+    jest.clearAllMocks();
+    // Mock getPackageManagerVersion to avoid needing tree.root = process.cwd()
+    // which would cause prettier to load plugins from the real .prettierrc
+    jest.spyOn(devkit, 'getPackageManagerVersion').mockReturnValue('10.0.0');
   });
 
   it('should create files', async () => {
@@ -28,41 +55,49 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
   });
 
   describe('README.md', () => {
-    it.each(Object.keys(Preset))(
-      'should be created for %s preset',
-      async (preset) => {
-        let appName;
-        if (
-          [
-            Preset.ReactMonorepo,
-            Preset.ReactStandalone,
-            Preset.VueMonorepo,
-            Preset.VueStandalone,
-            Preset.Nuxt,
-            Preset.NuxtStandalone,
-            Preset.AngularMonorepo,
-            Preset.AngularStandalone,
-            Preset.Nest,
-            Preset.NextJs,
-            Preset.WebComponents,
-            Preset.Express,
-            Preset.NodeStandalone,
-            Preset.NextJsStandalone,
-            Preset.TsStandalone,
-          ].includes(Preset[preset])
-        ) {
-          appName = 'app1';
-        }
+    describe.each(['github', 'yes', 'skip'] as const)(
+      'Nx Cloud (%s)',
+      (nxCloud) => {
+        it.each(Object.keys(Preset))(
+          'should be created for %s preset',
+          async (preset) => {
+            let appName;
+            if (
+              [
+                Preset.ReactMonorepo,
+                Preset.ReactStandalone,
+                Preset.VueMonorepo,
+                Preset.VueStandalone,
+                Preset.Nuxt,
+                Preset.NuxtStandalone,
+                Preset.AngularMonorepo,
+                Preset.AngularStandalone,
+                Preset.Nest,
+                Preset.NextJs,
+                Preset.WebComponents,
+                Preset.Express,
+                Preset.NodeStandalone,
+                Preset.NextJsStandalone,
+                Preset.TsStandalone,
+              ].includes(Preset[preset])
+            ) {
+              appName = 'app1';
+            }
 
-        await generateWorkspaceFiles(tree, {
-          name: 'proj',
-          directory: 'proj',
-          preset: Preset[preset],
-          defaultBase: 'main',
-          appName,
-          isCustomPreset: false,
-        });
-        expect(tree.read('proj/README.md', 'utf-8')).toMatchSnapshot();
+            await generateWorkspaceFiles(tree, {
+              name: 'proj',
+              directory: 'proj',
+              preset: Preset[preset],
+              defaultBase: 'main',
+              appName,
+              isCustomPreset: false,
+              nxCloud: nxCloud,
+              workspaces: true,
+            });
+            await formatFiles(tree);
+            expect(tree.read('proj/README.md', 'utf-8')).toMatchSnapshot();
+          }
+        );
       }
     );
     it('should be created for custom plugins', async () => {
@@ -80,6 +115,7 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
 
   it('should create nx.json', async () => {
     const ajv = new Ajv();
+    ajv.addKeyword('deprecationMessage');
 
     await generateWorkspaceFiles(tree, {
       name: 'proj',
@@ -134,37 +170,36 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
     `);
   });
 
-  it('should recommend vscode extensions', async () => {
-    await generateWorkspaceFiles(tree, {
-      name: 'proj',
-      directory: 'proj',
-      preset: Preset.Apps,
-      defaultBase: 'main',
-      isCustomPreset: false,
-    });
-    const recommendations = readJson<{ recommendations: string[] }>(
-      tree,
-      'proj/.vscode/extensions.json'
-    ).recommendations;
+  // Asserted rather than snapshotted: which extension is recommended now
+  // depends on `--formatter`, and a snapshot would not say why it changed.
+  it.each([
+    ['prettier', true, false],
+    ['oxfmt', false, true],
+    ['none', false, false],
+  ])(
+    'should recommend the extension matching --formatter (%s)',
+    async (formatter, expectPrettier, expectOxc) => {
+      await generateWorkspaceFiles(tree, {
+        name: 'proj',
+        directory: 'proj',
+        preset: Preset.Apps,
+        defaultBase: 'main',
+        isCustomPreset: false,
+        formatter,
+      } as any);
+      const recommendations = readJson<{ recommendations: string[] }>(
+        tree,
+        'proj/.vscode/extensions.json'
+      ).recommendations;
 
-    expect(recommendations).toMatchSnapshot();
-  });
-
-  it('should recommend vscode extensions (angular)', async () => {
-    await generateWorkspaceFiles(tree, {
-      name: 'proj',
-      directory: 'proj',
-      preset: Preset.Apps,
-      defaultBase: 'main',
-      isCustomPreset: false,
-    });
-    const recommendations = readJson<{ recommendations: string[] }>(
-      tree,
-      'proj/.vscode/extensions.json'
-    ).recommendations;
-
-    expect(recommendations).toMatchSnapshot();
-  });
+      expect(recommendations).toContain('nrwl.angular-console');
+      expect(recommendations.includes('esbenp.prettier-vscode')).toBe(
+        expectPrettier
+      );
+      // `oxc.oxc-vscode` is what runs oxfmt in the editor.
+      expect(recommendations.includes('oxc.oxc-vscode')).toBe(expectOxc);
+    }
+  );
 
   it('should create a workspace using NPM preset (npm package manager)', async () => {
     tree.write('/proj/package.json', JSON.stringify({}));
@@ -192,7 +227,7 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
           "nx": "0.0.1",
         },
         "license": "MIT",
-        "name": "proj",
+        "name": "@proj/source",
         "private": true,
         "scripts": {},
         "version": "0.0.0",
@@ -221,7 +256,7 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
           "nx": "0.0.1",
         },
         "license": "MIT",
-        "name": "proj",
+        "name": "@proj/source",
         "private": true,
         "scripts": {},
         "version": "0.0.0",
@@ -250,5 +285,146 @@ describe('@nx/workspace:generateWorkspaceFiles', () => {
     });
 
     expect(readJson(tree, 'proj/package.json').scripts).toMatchSnapshot();
+  });
+
+  it('should create workspaces from workspaceGlobs (npm)', async () => {
+    tree.write('/proj/package.json', JSON.stringify({}));
+    await generateWorkspaceFiles(tree, {
+      name: 'proj',
+      directory: 'proj',
+      preset: Preset.NPM,
+      defaultBase: 'main',
+      packageManager: 'npm',
+      isCustomPreset: false,
+      workspaceGlobs: ['apps/*', 'packages/*'],
+    });
+
+    const packageJson = readJson(tree, '/proj/package.json');
+    expect(packageJson).toMatchInlineSnapshot(`
+      {
+        "dependencies": {},
+        "devDependencies": {
+          "nx": "0.0.1",
+        },
+        "license": "MIT",
+        "name": "@proj/source",
+        "private": true,
+        "scripts": {},
+        "version": "0.0.0",
+        "workspaces": [
+          "apps/*",
+          "packages/*",
+        ],
+      }
+    `);
+  });
+
+  it('should configure the pnpm settings in pnpm-workspace.yaml and not create an .npmrc file for pnpm <7', async () => {
+    tree.write('proj/package.json', JSON.stringify({}));
+    jest.spyOn(devkit, 'getPackageManagerVersion').mockReturnValue('6.1.0');
+
+    await generateWorkspaceFiles(tree, {
+      name: 'proj',
+      directory: 'proj',
+      preset: Preset.NPM,
+      defaultBase: 'main',
+      packageManager: 'pnpm',
+      isCustomPreset: false,
+      workspaceGlobs: ['apps/*', 'packages/*'],
+    });
+
+    const packageJson = tree.read('proj/pnpm-workspace.yaml', 'utf-8');
+    expect(packageJson).toMatchInlineSnapshot(`
+      "packages:
+        - "apps/*"
+        - "packages/*"
+      "
+    `);
+    expect(tree.exists('proj/.npmrc')).toBeFalsy();
+  });
+
+  it('should configure the pnpm settings in pnpm-workspace.yaml and .npmrc for pnpm >7 <10.6.0', async () => {
+    tree.write('proj/package.json', JSON.stringify({}));
+    jest.spyOn(devkit, 'getPackageManagerVersion').mockReturnValue('9.1.0');
+
+    await generateWorkspaceFiles(tree, {
+      name: 'proj',
+      directory: 'proj',
+      preset: Preset.NPM,
+      defaultBase: 'main',
+      packageManager: 'pnpm',
+      isCustomPreset: false,
+      workspaceGlobs: ['apps/*', 'packages/*'],
+    });
+
+    const packageJson = tree.read('proj/pnpm-workspace.yaml', 'utf-8');
+    expect(packageJson).toMatchInlineSnapshot(`
+      "packages:
+        - "apps/*"
+        - "packages/*"
+      "
+    `);
+    const npmrc = tree.read('proj/.npmrc', 'utf-8');
+    expect(npmrc).toMatchInlineSnapshot(`
+      "strict-peer-dependencies=false
+      auto-install-peers=true
+      "
+    `);
+  });
+
+  it('should configure the pnpm settings in pnpm-workspace.yaml and not create an .npmrc file for pnpm 10.6.0+', async () => {
+    tree.write('proj/package.json', JSON.stringify({}));
+    jest.spyOn(devkit, 'getPackageManagerVersion').mockReturnValue('10.6.0');
+
+    await generateWorkspaceFiles(tree, {
+      name: 'proj',
+      directory: 'proj',
+      preset: Preset.NPM,
+      defaultBase: 'main',
+      packageManager: 'pnpm',
+      isCustomPreset: false,
+      workspaceGlobs: ['apps/*', 'packages/*'],
+    });
+
+    const pnpmWorkspace = tree.read('/proj/pnpm-workspace.yaml', 'utf-8');
+    expect(pnpmWorkspace).toMatchInlineSnapshot(`
+      "packages:
+        - "apps/*"
+        - "packages/*"
+
+      autoInstallPeers: true
+      onlyBuiltDependencies:
+        - nx
+      "
+    `);
+    expect(tree.exists('proj/.npmrc')).toBeFalsy();
+  });
+
+  it('should configure the pnpm settings in pnpm-workspace.yaml with allowBuilds for pnpm 11+', async () => {
+    tree.write('proj/package.json', JSON.stringify({}));
+    jest.spyOn(devkit, 'getPackageManagerVersion').mockReturnValue('11.0.0');
+
+    await generateWorkspaceFiles(tree, {
+      name: 'proj',
+      directory: 'proj',
+      preset: Preset.NPM,
+      defaultBase: 'main',
+      packageManager: 'pnpm',
+      isCustomPreset: false,
+      workspaceGlobs: ['apps/*', 'packages/*'],
+    });
+
+    const pnpmWorkspace = tree.read('/proj/pnpm-workspace.yaml', 'utf-8');
+    expect(pnpmWorkspace).toMatchInlineSnapshot(`
+      "packages:
+        - "apps/*"
+        - "packages/*"
+
+      autoInstallPeers: true
+      allowBuilds:
+        nx: true
+      "
+    `);
+    expect(tree.exists('proj/.npmrc')).toBeFalsy();
   });
 });

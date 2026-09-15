@@ -4,7 +4,7 @@ import {
   installPackagesTask,
   readProjectConfiguration,
 } from '@nx/devkit';
-import { getInstalledAngularVersionInfo } from '../utils/version-utils';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
 import {
   addDependencies,
   addHydration,
@@ -13,7 +13,7 @@ import {
   generateTsConfigServerJsonForBrowserBuilder,
   normalizeOptions,
   setRouterInitialNavigation,
-  setServerTsConfigOptionsForApplicationBuilder,
+  setServerTsConfigOptionsForSingleProgramBuild,
   updateProjectConfigForApplicationBuilder,
   updateProjectConfigForBrowserBuilder,
   validateOptions,
@@ -21,37 +21,38 @@ import {
 import type { Schema } from './schema';
 
 export async function setupSsr(tree: Tree, schema: Schema) {
+  assertSupportedAngularVersion(tree);
   validateOptions(tree, schema);
-  const options = normalizeOptions(tree, schema);
-
-  const { targets } = readProjectConfiguration(tree, options.project);
-  const isUsingApplicationBuilder =
-    targets.build.executor === '@angular-devkit/build-angular:application' ||
-    targets.build.executor === '@nx/angular:application';
+  const options = await normalizeOptions(tree, schema);
 
   if (!schema.skipPackageJson) {
-    addDependencies(tree, isUsingApplicationBuilder);
+    addDependencies(tree, options);
   }
-  generateSSRFiles(tree, options, isUsingApplicationBuilder);
+  generateSSRFiles(tree, options);
 
   if (options.hydration) {
     addHydration(tree, options);
   }
 
-  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-  if (angularMajorVersion < 17 || !options.hydration) {
+  if (!options.hydration) {
     setRouterInitialNavigation(tree, options);
   }
 
-  if (isUsingApplicationBuilder) {
+  if (options.isUsingApplicationBuilder) {
     updateProjectConfigForApplicationBuilder(tree, options);
-    setServerTsConfigOptionsForApplicationBuilder(tree, options);
   } else {
     updateProjectConfigForBrowserBuilder(tree, options);
+  }
+
+  // rspack compiles the browser and the server bundles from the build tsconfig,
+  // so the separate tsconfig.server.json the server builder needs is dead weight
+  if (options.isUsingApplicationBuilder || options.isRspack) {
+    setServerTsConfigOptionsForSingleProgramBuild(tree, options);
+  } else {
     generateTsConfigServerJsonForBrowserBuilder(tree, options);
   }
 
-  addServerFile(tree, options, isUsingApplicationBuilder);
+  addServerFile(tree, options);
 
   if (!options.skipFormat) {
     await formatFiles(tree);

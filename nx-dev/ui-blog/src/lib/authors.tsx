@@ -1,6 +1,6 @@
 import Image from 'next/image';
 import AuthorDetail from './author-detail';
-import type { BlogAuthor } from '@nx/nx-dev/data-access-documents/node-only';
+import type { BlogAuthor } from '@nx/nx-dev-data-access-documents/node-only';
 
 export function BlogAuthors({
   authors,
@@ -20,8 +20,8 @@ export function BlogAuthors({
             width="48"
             height="48"
             decoding="async"
-            src={`/documentation/blog/images/authors/${author.name}.jpeg`}
-            className="relative inline-block h-6 w-6 rounded-full ring-1 ring-white grayscale dark:ring-slate-900"
+            src={`/images/authors/${author.name}.jpeg`}
+            className="relative inline-block h-6 w-6 rounded-full ring-1 ring-white grayscale dark:ring-zinc-900"
           />
           {showAuthorDetails && <AuthorDetail author={author} />}
         </div>

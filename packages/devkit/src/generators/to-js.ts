@@ -1,12 +1,13 @@
 import type { Tree } from 'nx/src/devkit-exports';
-import type { ScriptTarget, ModuleKind } from 'typescript';
+import type { ModuleKind, ScriptTarget } from 'typescript';
 import { typescriptVersion } from '../utils/versions';
 import { ensurePackage } from '../utils/package-json';
 
 export type ToJSOptions = {
-  target?: ScriptTarget;
+  extension?: '.js' | '.mjs' | '.cjs';
   module?: ModuleKind;
-  extension: '.js' | '.mjs' | '.cjs';
+  target?: ScriptTarget;
+  useJsx?: boolean;
 };
 
 /**
@@ -18,11 +19,13 @@ export function toJS(tree: Tree, options?: ToJSOptions): void {
     typescriptVersion
   ) as typeof import('typescript');
 
+  // Match `.ts`, `.mts`, `.cts`, `.tsx`. The optional `[cm]` keeps native
+  // ESM (`.mts`) and CommonJS (`.cts`) TypeScript extensions in the rename
+  // path so `--js` generators that emit `.mts`/`.cts` templates get
+  // converted instead of silently left as TypeScript on disk.
+  const tsExtRegex = /\.([cm]?ts|tsx)$/;
   for (const c of tree.listChanges()) {
-    if (
-      (c.path.endsWith('.ts') || c.path.endsWith('tsx')) &&
-      c.type === 'CREATE'
-    ) {
+    if (tsExtRegex.test(c.path) && c.type === 'CREATE') {
       tree.write(
         c.path,
         transpile(c.content.toString('utf-8'), {
@@ -32,10 +35,13 @@ export function toJS(tree: Tree, options?: ToJSOptions): void {
           module: options?.module ?? ModuleKind.ESNext,
         })
       );
-      tree.rename(
-        c.path,
-        c.path.replace(/\.tsx?$/, options?.extension ?? '.js')
-      );
+      const targetExt = options?.extension ?? '.js';
+      tree.rename(c.path, c.path.replace(/\.([cm]?ts)$/, targetExt));
+      if (options?.useJsx) {
+        tree.rename(c.path, c.path.replace(/\.tsx$/, '.jsx'));
+      } else {
+        tree.rename(c.path, c.path.replace(/\.tsx$/, targetExt));
+      }
     }
   }
 }

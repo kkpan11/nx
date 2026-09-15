@@ -1,11 +1,11 @@
-import {
+import markdoc, {
   Config,
   Node,
   RenderableTreeNodes,
   Schema,
-  Tag,
 } from '@markdoc/markdoc';
 import { transformImagePath } from './helpers/transform-image-path';
+const { Tag } = markdoc;
 
 export const getImageSchema = (documentFilePath: string): Schema => ({
   render: 'img',

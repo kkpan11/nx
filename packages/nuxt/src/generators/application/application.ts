@@ -1,14 +1,25 @@
 import {
+  logShowProjectCommand,
+  getNxCloudAppOnBoardingUrl,
+  createNxCloudOnboardingURLForWelcomeApp,
+  type PackageJson,
+} from '@nx/devkit/internal';
+import { isTypedLintingEnabled } from '@nx/eslint/internal';
+import {
   addDependenciesToPackageJson,
   addProjectConfiguration,
+  detectPackageManager,
   formatFiles,
   generateFiles,
   GeneratorCallback,
+  getPackageManagerCommand,
   joinPathFragments,
   offsetFromRoot,
   runTasksInSerial,
   toJS,
   Tree,
+  workspaceRoot,
+  writeJson,
 } from '@nx/devkit';
 import { Schema } from './schema';
 import nuxtInitGenerator from '../init/init';
@@ -19,43 +30,127 @@ import {
   initGenerator as jsInitGenerator,
 } from '@nx/js';
 import { updateGitIgnore } from '../../utils/update-gitignore';
-import { Linter } from '@nx/eslint';
 import { addE2e } from './lib/add-e2e';
 import { addLinting } from '../../utils/add-linting';
 import { addVitest } from './lib/add-vitest';
 import { vueTestUtilsVersion, vitePluginVueVersion } from '@nx/vue';
 import { ensureDependencies } from './lib/ensure-dependencies';
-import { logShowProjectCommand } from '@nx/devkit/src/utils/log-show-project-command';
+import { assertSupportedNuxtVersion } from '../../utils/assert-supported-nuxt-version';
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  addProjectToTsSolutionWorkspace,
+  shouldConfigureTsSolutionSetup,
+  updateTsconfigFiles,
+  sortPackageJsonFields,
+} from '@nx/js/internal';
 
 export async function applicationGenerator(tree: Tree, schema: Schema) {
+  return await applicationGeneratorInternal(tree, {
+    useProjectJson: true,
+    ...schema,
+  });
+}
+
+export async function applicationGeneratorInternal(tree: Tree, schema: Schema) {
+  assertSupportedNuxtVersion(tree);
+
   const tasks: GeneratorCallback[] = [];
+
+  const addTsPlugin = shouldConfigureTsSolutionSetup(
+    tree,
+    true, // nuxt always adds plugins
+    schema.useTsSolution
+  );
+  const jsInitTask = await jsInitGenerator(tree, {
+    ...schema,
+    tsConfigName: schema.rootProject ? 'tsconfig.json' : 'tsconfig.base.json',
+    skipFormat: true,
+    addTsPlugin,
+    platform: 'web',
+  });
+  tasks.push(jsInitTask);
 
   const options = await normalizeOptions(tree, schema);
 
   const projectOffsetFromRoot = offsetFromRoot(options.appProjectRoot);
 
-  const jsInitTask = await jsInitGenerator(tree, {
-    ...schema,
-    tsConfigName: schema.rootProject ? 'tsconfig.json' : 'tsconfig.base.json',
-    skipFormat: true,
-  });
-  tasks.push(jsInitTask);
-  tasks.push(ensureDependencies(tree, options));
+  const onBoardingStatus = await createNxCloudOnboardingURLForWelcomeApp(
+    tree,
+    options.nxCloudToken
+  );
 
-  addProjectConfiguration(tree, options.projectName, {
-    root: options.appProjectRoot,
-    projectType: 'application',
-    sourceRoot: `${options.appProjectRoot}/src`,
-    targets: {},
-  });
+  const connectCloudUrl =
+    onBoardingStatus === 'unclaimed' &&
+    (await getNxCloudAppOnBoardingUrl(options.nxCloudToken));
+
+  tasks.push(await ensureDependencies(tree, options));
+
+  const packageJson: PackageJson = {
+    name: options.importPath,
+    version: '0.0.1',
+    private: true,
+  };
+
+  if (!options.useProjectJson) {
+    if (options.projectName !== options.importPath) {
+      packageJson.nx = { name: options.projectName };
+    }
+    if (options.parsedTags?.length) {
+      packageJson.nx ??= {};
+      packageJson.nx.tags = options.parsedTags;
+    }
+  } else {
+    const sourceDir = options.useAppDir ? 'app' : 'src';
+    addProjectConfiguration(tree, options.projectName, {
+      root: options.appProjectRoot,
+      projectType: 'application',
+      sourceRoot: `${options.appProjectRoot}/${sourceDir}`,
+      tags: options.parsedTags?.length ? options.parsedTags : undefined,
+      targets: {},
+    });
+  }
+
+  if (!options.useProjectJson || options.isUsingTsSolutionConfig) {
+    writeJson(
+      tree,
+      joinPathFragments(options.appProjectRoot, 'package.json'),
+      packageJson
+    );
+  }
+
+  // Select template directory based on useAppDir
+  const templateDir = options.useAppDir ? 'app-dir' : 'base';
+  const nxWelcomeDir = options.useAppDir ? 'nx-welcome-app-dir' : 'nx-welcome';
 
   generateFiles(
     tree,
-    joinPathFragments(__dirname, './files'),
+    join(__dirname, './files', templateDir),
     options.appProjectRoot,
     {
       ...options,
+      offsetFromRoot: projectOffsetFromRoot,
+      relativePathToRootTsConfig: getRelativePathToRootTsConfig(
+        tree,
+        options.appProjectRoot
+      ),
+      title: options.projectName,
+      dot: '.',
+      tmpl: '',
+      style: options.style,
+      projectRoot: options.appProjectRoot,
+      hasVitest: options.unitTestRunner === 'vitest',
+    }
+  );
+
+  generateFiles(
+    tree,
+    join(__dirname, './files', nxWelcomeDir, onBoardingStatus),
+    options.appProjectRoot,
+    {
+      ...options,
+      connectCloudUrl,
       offsetFromRoot: projectOffsetFromRoot,
       title: options.projectName,
       dot: '.',
@@ -67,9 +162,10 @@ export async function applicationGenerator(tree: Tree, schema: Schema) {
   );
 
   if (options.style === 'none') {
-    tree.delete(
-      joinPathFragments(options.appProjectRoot, `src/assets/css/styles.none`)
-    );
+    const stylesPath = options.useAppDir
+      ? `app/assets/css/styles.none`
+      : `src/assets/css/styles.none`;
+    tree.delete(joinPathFragments(options.appProjectRoot, stylesPath));
   }
 
   createTsConfig(
@@ -78,19 +174,28 @@ export async function applicationGenerator(tree: Tree, schema: Schema) {
       projectRoot: options.appProjectRoot,
       rootProject: options.rootProject,
       unitTestRunner: options.unitTestRunner,
+      isUsingTsSolutionConfig: options.isUsingTsSolutionConfig,
+      useAppDir: options.useAppDir,
     },
     getRelativePathToRootTsConfig(tree, options.appProjectRoot)
   );
 
   updateGitIgnore(tree);
 
+  // If we are using the new TS solution
+  // We need to update the workspace file (package.json or pnpm-workspaces.yaml) to include the new project
+  if (options.isUsingTsSolutionConfig) {
+    await addProjectToTsSolutionWorkspace(tree, options.appProjectRoot);
+  }
+
   tasks.push(
     await addLinting(tree, {
       projectName: options.projectName,
       projectRoot: options.appProjectRoot,
-      linter: options.linter ?? Linter.EsLint,
+      linter: options.linter,
       unitTestRunner: options.unitTestRunner,
       rootProject: options.rootProject,
+      enableTypedLinting: isTypedLintingEnabled(options),
     })
   );
 
@@ -102,7 +207,9 @@ export async function applicationGenerator(tree: Tree, schema: Schema) {
         {
           '@vue/test-utils': vueTestUtilsVersion,
           '@vitejs/plugin-vue': vitePluginVueVersion,
-        }
+        },
+        undefined,
+        true
       )
     );
 
@@ -119,11 +226,51 @@ export async function applicationGenerator(tree: Tree, schema: Schema) {
 
   if (options.js) toJS(tree);
 
+  if (options.isUsingTsSolutionConfig) {
+    updateTsconfigFiles(
+      tree,
+      options.appProjectRoot,
+      'tsconfig.app.json',
+      {
+        jsx: 'preserve',
+        jsxImportSource: 'vue',
+        module: 'esnext',
+        moduleResolution: 'bundler',
+        resolveJsonModule: true,
+      },
+      options.linter === 'eslint'
+        ? ['eslint.config.js', 'eslint.config.cjs', 'eslint.config.mjs']
+        : undefined
+    );
+  }
+
+  sortPackageJsonFields(tree, options.appProjectRoot);
+
   if (!options.skipFormat) await formatFiles(tree);
 
   tasks.push(() => {
+    const packageManager = detectPackageManager(workspaceRoot);
+    const pmc = getPackageManagerCommand(packageManager, workspaceRoot);
+    const appRoot = join(workspaceRoot, options.appProjectRoot);
+    // npm, yarn, and bun resolve binaries from `node_modules/.bin` searching
+    // upward from the cwd, so running in the app dir picks an app-level `nuxi`
+    // first and falls back to the workspace-root install. pnpm's `pnpm exec`
+    // doesn't search upward: in an integrated workspace the app dir only sees
+    // its own `node_modules/.bin` and can't reach the root-installed `nuxi`. So
+    // for pnpm only run in the app dir when it has its own `nuxi` (package-based
+    // setups, where the app copy should win); otherwise run at the workspace
+    // root, where the generator installs it.
+    const runInAppDir =
+      packageManager !== 'pnpm' ||
+      existsSync(join(appRoot, 'node_modules', '.bin', 'nuxi')) ||
+      existsSync(join(appRoot, 'node_modules', '.bin', 'nuxi.cmd'));
     try {
-      execSync(`npx -y nuxi prepare`, { cwd: options.appProjectRoot });
+      execSync(
+        `${pmc.exec} nuxi prepare${
+          runInAppDir ? '' : ` "${options.appProjectRoot}"`
+        }`,
+        { cwd: runInAppDir ? appRoot : workspaceRoot, windowsHide: true }
+      );
     } catch (e) {
       console.error(
         `Failed to run \`nuxi prepare\` in "${options.appProjectRoot}". Please run the command manually.`

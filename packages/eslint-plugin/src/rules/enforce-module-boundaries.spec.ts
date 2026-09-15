@@ -1,14 +1,16 @@
-import 'nx/src/internal-testing-utils/mock-fs';
+import '@nx/devkit/internal-testing-utils/mock-fs';
 
 import type { FileData, ProjectFileMap, ProjectGraph } from '@nx/devkit';
 import { DependencyType } from '@nx/devkit';
-import { TargetProjectLocator } from '@nx/js/src/internal';
+import { TargetProjectLocator } from '@nx/js/internal';
 import * as parser from '@typescript-eslint/parser';
 import { TSESLint } from '@typescript-eslint/utils';
 import { vol } from 'memfs';
 import { join } from 'node:path';
-import { FileDataDependency } from 'nx/src/config/project-graph';
-import { createProjectRootMappings } from 'nx/src/project-graph/utils/find-project-for-path';
+import {
+  FileDataDependency,
+  createProjectRootMappings,
+} from '@nx/devkit/internal';
 import enforceModuleBoundaries, {
   RULE_NAME as enforceModuleBoundariesRuleName,
 } from '../../src/rules/enforce-module-boundaries';
@@ -47,6 +49,7 @@ const tsconfig = {
       '@mycompany/other': ['libs/other/src/index.ts'],
       '@mycompany/other/a/b': ['libs/other/src/a/b.ts'],
       '@mycompany/other/a': ['libs/other/src/a/index.ts'],
+      '@mycompany/other/secondary': ['libs/other/src/secondary.ts'],
       '@mycompany/another/a/b': ['libs/another/a/b.ts'],
       '@mycompany/myapp': ['apps/myapp/src/index.ts'],
       '@mycompany/myapp-e2e': ['apps/myapp-e2e/src/index.ts'],
@@ -62,6 +65,7 @@ const tsconfig = {
       '@mycompany/domain2': ['libs/domain2/src/index.ts'],
       '@mycompany/buildableLib': ['libs/buildableLib/src/main.ts'],
       '@mycompany/buildableLib2': ['libs/buildableLib2/src/main.ts'],
+      '@mycompany/wildcard/*': ['libs/wildcard/*'],
       '@nonBuildableScope/nonBuildableLib': [
         'libs/nonBuildableLib/src/main.ts',
       ],
@@ -92,6 +96,13 @@ const fileSys = {
   './libs/other/src/index.ts': '',
   './libs/other/src/a/b.ts': '',
   './libs/other/src/a/index.ts': '',
+  './libs/other/src/secondary.ts': '',
+  './libs/other/package.json': JSON.stringify({
+    exports: {
+      './secondary': './src/secondary.ts',
+      '.': './src/index.ts',
+    },
+  }),
   './libs/another/a/b.ts': '',
   './apps/myapp/src/index.ts': '',
   './libs/mylib/src/index.ts': '',
@@ -107,6 +118,8 @@ const fileSys = {
   './libs/dependsOnPrivate/src/index.ts': '',
   './libs/dependsOnPrivate2/src/index.ts': '',
   './libs/private/src/index.ts': '',
+  './libs/wildcard/user.ts': 'export class User {}',
+  './libs/wildcard/nested/user.ts': 'export class User {}',
   './tsconfig.base.json': JSON.stringify(tsconfig),
   './package.json': JSON.stringify(packageJson),
   './nx.json': JSON.stringify({ npmScope: 'happyorg' }),
@@ -439,10 +452,6 @@ describe('Enforce Module Boundaries (eslint)', () => {
       ],
     };
 
-    beforeEach(() => {
-      vol.fromJSON(fileSys, '/root');
-    });
-
     it('should error when the target library does not have the right tag', () => {
       const failures = runRule(
         depConstraints,
@@ -653,6 +662,289 @@ describe('Enforce Module Boundaries (eslint)', () => {
       expect(failures.length).toEqual(2);
       expect(failures[0].message).toEqual(message);
       expect(failures[1].message).toEqual(message);
+    });
+
+    it('should error when importing a project that transitively depends on a banned external package', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', bannedExternalImports: ['npm-package'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+          import('@mycompany/impl');
+        `,
+        {
+          ...graph,
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'npm:npm-package',
+                type: DependencyType.static,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      const message =
+        'A project tagged with "api" is not allowed to import "@mycompany/impl". Nested import of "npm-package" found at implName';
+      expect(failures.length).toEqual(2);
+      expect(failures[0].message).toEqual(message);
+      expect(failures[1].message).toEqual(message);
+    });
+
+    it('should not error when importing a project whose transitive external dependencies are not banned', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', bannedExternalImports: ['npm-package'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+          import('@mycompany/impl');
+        `,
+        {
+          ...graph,
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'npm:npm-awesome-package',
+                type: DependencyType.static,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      expect(failures.length).toEqual(0);
+    });
+
+    describe.each([
+      {
+        name: 'a mixed banned and allowed constraint',
+        constraint: {
+          sourceTag: 'api',
+          bannedExternalImports: ['npm-package'],
+          allowedExternalImports: ['npm-package2'],
+        },
+      },
+      {
+        name: 'an allowed-only constraint',
+        constraint: {
+          sourceTag: 'api',
+          allowedExternalImports: ['npm-package2'],
+        },
+      },
+      {
+        name: 'an empty allowed constraint',
+        constraint: { sourceTag: 'api', allowedExternalImports: [] },
+      },
+    ])('nested external imports with $name', ({ constraint }) => {
+      it('should error when importing a project that transitively depends on an external package outside the allowed list', () => {
+        const failures = runRule(
+          { depConstraints: [constraint], checkNestedExternalImports: true },
+          `${process.cwd()}/proj/libs/api/src/index.ts`,
+          `
+              import '@mycompany/impl';
+              import('@mycompany/impl');
+            `,
+          {
+            ...graph,
+            dependencies: {
+              ...graph.dependencies,
+              implName: [
+                {
+                  source: 'implName',
+                  target: 'npm:npm-awesome-package',
+                  type: DependencyType.static,
+                },
+              ],
+            },
+          },
+          fileMap
+        );
+
+        const message =
+          'A project tagged with "api" is not allowed to import "@mycompany/impl". Nested import of "npm-awesome-package" found at implName';
+        expect(failures.length).toEqual(2);
+        expect(failures[0].message).toEqual(message);
+        expect(failures[1].message).toEqual(message);
+      });
+    });
+
+    it('should not error when importing a project whose transitive external dependencies are in the allowed list', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', allowedExternalImports: ['npm-awesome-*'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+          import('@mycompany/impl');
+        `,
+        {
+          ...graph,
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'npm:npm-awesome-package',
+                type: DependencyType.static,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      expect(failures.length).toEqual(0);
+    });
+
+    it('should report the project owning the nested import when the banned package is more than one hop away', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', bannedExternalImports: ['npm-package'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+        `,
+        {
+          ...graph,
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'impl2Name',
+                type: DependencyType.static,
+              },
+            ],
+            impl2Name: [
+              {
+                source: 'impl2Name',
+                target: 'npm:npm-package',
+                type: DependencyType.static,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      expect(failures.length).toEqual(1);
+      expect(failures[0].message).toEqual(
+        'A project tagged with "api" is not allowed to import "@mycompany/impl". Nested import of "npm-package" found at impl2Name'
+      );
+    });
+
+    it('should report a single violation when multiple dependency edges reach the same banned package', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', bannedExternalImports: ['npm-package'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+        `,
+        {
+          ...graph,
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'npm:npm-package',
+                type: DependencyType.static,
+              },
+              {
+                source: 'implName',
+                target: 'npm:npm-package',
+                type: DependencyType.dynamic,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      expect(failures.length).toEqual(1);
+      expect(failures[0].message).toEqual(
+        'A project tagged with "api" is not allowed to import "@mycompany/impl". Nested import of "npm-package" found at implName'
+      );
+    });
+
+    it('should report a single violation when multiple versions of the same banned package are reached', () => {
+      const failures = runRule(
+        {
+          depConstraints: [
+            { sourceTag: 'api', bannedExternalImports: ['npm-package'] },
+          ],
+          checkNestedExternalImports: true,
+        },
+        `${process.cwd()}/proj/libs/api/src/index.ts`,
+        `
+          import '@mycompany/impl';
+        `,
+        {
+          ...graph,
+          externalNodes: {
+            ...graph.externalNodes,
+            'npm:npm-package@2.0.0': {
+              name: 'npm:npm-package@2.0.0',
+              type: 'npm',
+              data: {
+                packageName: 'npm-package',
+                version: '2.0.0',
+              },
+            },
+          },
+          dependencies: {
+            ...graph.dependencies,
+            implName: [
+              {
+                source: 'implName',
+                target: 'npm:npm-package',
+                type: DependencyType.static,
+              },
+              {
+                source: 'implName',
+                target: 'npm:npm-package@2.0.0',
+                type: DependencyType.static,
+              },
+            ],
+          },
+        },
+        fileMap
+      );
+
+      expect(failures.length).toEqual(1);
+      expect(failures[0].message).toEqual(
+        'A project tagged with "api" is not allowed to import "@mycompany/impl". Nested import of "npm-package" found at implName'
+      );
     });
 
     it('should error when importing transitive npm packages', () => {
@@ -1154,6 +1446,95 @@ Violation detected in:
       expect(failures[1].message).toEqual(message);
     });
 
+    it('should error when using require() to import another library', () => {
+      const failures = runRule(
+        {},
+        `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+        `
+          require('../../other');
+          require.resolve('../../other');
+        `,
+        {
+          nodes: {
+            mylibName: {
+              name: 'mylibName',
+              type: 'lib',
+              data: {
+                root: 'libs/mylib',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+            otherName: {
+              name: 'otherName',
+              type: 'lib',
+              data: {
+                root: 'libs/other',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+          },
+          dependencies: {},
+        },
+        {
+          mylibName: [createFile(`libs/mylib/src/main.ts`)],
+          otherName: [createFile('libs/other/src/index.ts')],
+        }
+      );
+
+      const message =
+        'Projects cannot be imported by a relative or absolute path, and must begin with a npm scope';
+      expect(failures.length).toEqual(2);
+      expect(failures[0].message).toEqual(message);
+      expect(failures[1].message).toEqual(message);
+    });
+
+    it('should not error for require() with non-string arguments', () => {
+      const failures = runRule(
+        {},
+        `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+        `
+          const name = '../../other';
+          require(name);
+          require(\`\${name}\`);
+        `,
+        {
+          nodes: {
+            mylibName: {
+              name: 'mylibName',
+              type: 'lib',
+              data: {
+                root: 'libs/mylib',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+            otherName: {
+              name: 'otherName',
+              type: 'lib',
+              data: {
+                root: 'libs/other',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+          },
+          dependencies: {},
+        },
+        {
+          mylibName: [createFile(`libs/mylib/src/main.ts`)],
+          otherName: [createFile('libs/other/src/index.ts')],
+        }
+      );
+
+      expect(failures.length).toEqual(0);
+    });
+
     it('should error when relatively importing the src directory of another library', () => {
       const failures = runRule(
         {},
@@ -1234,6 +1615,53 @@ Violation detected in:
       expect(failures[1].message).toEqual(
         'External resources cannot be imported using a relative or absolute path'
       );
+    });
+
+    it('should handle relative imports containing a wildcard', () => {
+      const failures = runRule(
+        {},
+        `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+        `
+          import { User } from '../../wildcard/user';
+        `,
+        {
+          nodes: {
+            mylibName: {
+              name: 'mylibName',
+              type: 'lib',
+              data: {
+                root: 'libs/mylib',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+            wildcardName: {
+              name: 'wildcardName',
+              type: 'lib',
+              data: {
+                root: 'libs/wildcard',
+                tags: [],
+                implicitDependencies: [],
+                targets: {},
+              },
+            },
+          },
+          dependencies: {},
+        },
+        {
+          mylibName: [createFile(`libs/mylib/src/main.ts`)],
+          wildcardName: [createFile('libs/wildcard/user.ts')],
+        }
+      );
+
+      expect(failures.length).toEqual(1);
+      expect(failures[0].message).toEqual(
+        'Projects cannot be imported by a relative or absolute path, and must begin with a npm scope'
+      );
+
+      // Verify the fix is available
+      expect(failures[0].fix).toBeDefined();
     });
   });
 
@@ -1390,6 +1818,126 @@ Violation detected in:
       }
     }
   );
+
+  it('should not error when statically importing dynamic dependencies if it belongs to different entry point', () => {
+    const failures = runRule(
+      {},
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      'import { someValue } from "@mycompany/other/secondary";',
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          otherName: {
+            name: 'otherName',
+            type: 'lib',
+            data: {
+              root: 'libs/other',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'otherName',
+              type: DependencyType.dynamic,
+            },
+            {
+              source: 'mylibName',
+              target: 'otherName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [
+          createFile(`libs/mylib/src/main.ts`, [
+            ['otherName', DependencyType.static],
+            ['otherName', DependencyType.dynamic],
+          ]),
+        ],
+        otherName: [
+          createFile(`libs/other/src/index.ts`),
+          createFile(`libs/other/src/secondary.ts`),
+          createFile(`libs/other/package.json`),
+        ],
+      }
+    );
+    expect(failures.length).toEqual(0);
+  });
+
+  it('should error when statically importing dynamic dependencies if it belongs to root entry point', () => {
+    const failures = runRule(
+      {},
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      'import { someValue } from "@mycompany/other";',
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          otherName: {
+            name: 'otherName',
+            type: 'lib',
+            data: {
+              root: 'libs/other',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'otherName',
+              type: DependencyType.dynamic,
+            },
+            {
+              source: 'mylibName',
+              target: 'otherName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [
+          createFile(`libs/mylib/src/main.ts`, [
+            ['otherName', DependencyType.static],
+            ['otherName', DependencyType.dynamic],
+          ]),
+        ],
+        otherName: [
+          createFile(`libs/other/src/index.ts`),
+          createFile(`libs/other/src/secondary.ts`),
+          createFile(`libs/other/package.json`),
+        ],
+      }
+    );
+    expect(failures.length).toEqual(1);
+  });
 
   it('should error on importing an app', () => {
     const failures = runRule(
@@ -1609,6 +2157,68 @@ Violation detected in:
     expect(failures.length).toBe(0);
   });
 
+  it('should ignore detected absolute path within project if ignoredCircularDependencies matches the project', () => {
+    const failures = runRule(
+      {
+        ignoredCircularDependencies: [['mylibName', 'mylibName']],
+      },
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      `
+        import '@mycompany/mylib';
+        import('@mycompany/mylib');
+      `,
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          anotherlibName: {
+            name: 'anotherlibName',
+            type: 'lib',
+            data: {
+              root: 'libs/anotherlib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          myappName: {
+            name: 'myappName',
+            type: 'app',
+            data: {
+              root: 'apps/myapp',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'anotherlibName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [createFile(`libs/mylib/src/main.ts`)],
+        anotherlibName: [createFile(`libs/anotherlib/src/main.ts`)],
+        myappName: [createFile(`apps/myapp/src/index.ts`)],
+      }
+    );
+    expect(failures.length).toBe(0);
+  });
+
   it('should error when circular dependency detected', () => {
     const failures = runRule(
       {},
@@ -1779,6 +2389,282 @@ Circular file chain:
     expect(failures.length).toEqual(2);
     expect(failures[0].message).toEqual(message);
     expect(failures[1].message).toEqual(message);
+  });
+
+  it('should not error when circular dependency detected (indirect) if ignoredCircularDependencies matches link in chain', () => {
+    const failures = runRule(
+      {
+        ignoredCircularDependencies: [['anotherlibName', 'mylibName']],
+      },
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      `
+        import '@mycompany/badcirclelib';
+        import('@mycompany/badcirclelib');
+      `,
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          anotherlibName: {
+            name: 'anotherlibName',
+            type: 'lib',
+            data: {
+              root: 'libs/anotherlib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          badcirclelibName: {
+            name: 'badcirclelibName',
+            type: 'lib',
+            data: {
+              root: 'libs/badcirclelib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          myappName: {
+            name: 'myappName',
+            type: 'app',
+            data: {
+              root: 'apps/myapp',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'badcirclelibName',
+              type: DependencyType.static,
+            },
+          ],
+          badcirclelibName: [
+            {
+              source: 'badcirclelibName',
+              target: 'anotherlibName',
+              type: DependencyType.static,
+            },
+          ],
+          anotherlibName: [
+            {
+              source: 'anotherlibName',
+              target: 'mylibName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [createFile(`libs/mylib/src/main.ts`, ['mylibName'])],
+        anotherlibName: [
+          createFile(`libs/anotherlib/src/main.ts`, ['mylibName']),
+          createFile(`libs/anotherlib/src/index.ts`, ['mylibName']),
+        ],
+        badcirclelibName: [
+          createFile(`libs/badcirclelib/src/main.ts`, ['anotherlibName']),
+        ],
+        myappName: [createFile(`apps/myapp/index.ts`)],
+      }
+    );
+    expect(failures.length).toEqual(0);
+  });
+
+  it('should not error when circular dependency detected (indirect) if ignoredCircularDependencies matches link in chain (second member catch all)', () => {
+    const failures = runRule(
+      {
+        ignoredCircularDependencies: [['anotherlibName', '*']],
+      },
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      `
+        import '@mycompany/badcirclelib';
+        import('@mycompany/badcirclelib');
+      `,
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          anotherlibName: {
+            name: 'anotherlibName',
+            type: 'lib',
+            data: {
+              root: 'libs/anotherlib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          badcirclelibName: {
+            name: 'badcirclelibName',
+            type: 'lib',
+            data: {
+              root: 'libs/badcirclelib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          myappName: {
+            name: 'myappName',
+            type: 'app',
+            data: {
+              root: 'apps/myapp',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'badcirclelibName',
+              type: DependencyType.static,
+            },
+          ],
+          badcirclelibName: [
+            {
+              source: 'badcirclelibName',
+              target: 'anotherlibName',
+              type: DependencyType.static,
+            },
+          ],
+          anotherlibName: [
+            {
+              source: 'anotherlibName',
+              target: 'mylibName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [createFile(`libs/mylib/src/main.ts`, ['mylibName'])],
+        anotherlibName: [
+          createFile(`libs/anotherlib/src/main.ts`, ['mylibName']),
+          createFile(`libs/anotherlib/src/index.ts`, ['mylibName']),
+        ],
+        badcirclelibName: [
+          createFile(`libs/badcirclelib/src/main.ts`, ['anotherlibName']),
+        ],
+        myappName: [createFile(`apps/myapp/index.ts`)],
+      }
+    );
+    expect(failures.length).toEqual(0);
+  });
+
+  it('should not error when circular dependency detected (indirect) if ignoredCircularDependencies matches link in chain (first member catch all)', () => {
+    const failures = runRule(
+      {
+        ignoredCircularDependencies: [['*', 'mylibName']],
+      },
+      `${process.cwd()}/proj/libs/mylib/src/main.ts`,
+      `
+        import '@mycompany/badcirclelib';
+        import('@mycompany/badcirclelib');
+      `,
+      {
+        nodes: {
+          mylibName: {
+            name: 'mylibName',
+            type: 'lib',
+            data: {
+              root: 'libs/mylib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          anotherlibName: {
+            name: 'anotherlibName',
+            type: 'lib',
+            data: {
+              root: 'libs/anotherlib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          badcirclelibName: {
+            name: 'badcirclelibName',
+            type: 'lib',
+            data: {
+              root: 'libs/badcirclelib',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+          myappName: {
+            name: 'myappName',
+            type: 'app',
+            data: {
+              root: 'apps/myapp',
+              tags: [],
+              implicitDependencies: [],
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          mylibName: [
+            {
+              source: 'mylibName',
+              target: 'badcirclelibName',
+              type: DependencyType.static,
+            },
+          ],
+          badcirclelibName: [
+            {
+              source: 'badcirclelibName',
+              target: 'anotherlibName',
+              type: DependencyType.static,
+            },
+          ],
+          anotherlibName: [
+            {
+              source: 'anotherlibName',
+              target: 'mylibName',
+              type: DependencyType.static,
+            },
+          ],
+        },
+      },
+      {
+        mylibName: [createFile(`libs/mylib/src/main.ts`, ['mylibName'])],
+        anotherlibName: [
+          createFile(`libs/anotherlib/src/main.ts`, ['mylibName']),
+          createFile(`libs/anotherlib/src/index.ts`, ['mylibName']),
+        ],
+        badcirclelibName: [
+          createFile(`libs/badcirclelib/src/main.ts`, ['anotherlibName']),
+        ],
+        myappName: [createFile(`apps/myapp/index.ts`)],
+      }
+    );
+    expect(failures.length).toEqual(0);
   });
 
   describe('buildable library imports', () => {
@@ -2305,18 +3191,22 @@ Circular file chain:
 });
 
 const linter = new TSESLint.Linter();
+const prefixedRuleName = `@nx/${enforceModuleBoundariesRuleName}`;
 const baseConfig = {
-  parser: '@typescript-eslint/parser',
-  parserOptions: {
-    ecmaVersion: 2018 as const,
-    sourceType: 'module' as const,
+  files: ['**/*.{ts,tsx,js,jsx}'],
+  languageOptions: {
+    parser,
+    parserOptions: {
+      ecmaVersion: 2018 as const,
+      sourceType: 'module' as const,
+    },
   },
-  rules: {
-    [enforceModuleBoundariesRuleName]: 'error',
+  plugins: {
+    '@nx': {
+      rules: { [enforceModuleBoundariesRuleName]: enforceModuleBoundaries },
+    },
   },
 };
-linter.defineParser('@typescript-eslint/parser', parser);
-linter.defineRule(enforceModuleBoundariesRuleName, enforceModuleBoundaries);
 
 function createFile(f: string, deps?: FileDataDependency[]): FileData {
   return { file: f, hash: '', deps };
@@ -2343,9 +3233,9 @@ function runRule(
   const config = {
     ...baseConfig,
     rules: {
-      [enforceModuleBoundariesRuleName]: ['error', ruleArguments],
+      [prefixedRuleName]: ['error', ruleArguments],
     },
   };
 
-  return linter.verify(content, config as any, contentPath);
+  return linter.verify(content, [config] as any, contentPath);
 }

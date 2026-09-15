@@ -2,7 +2,7 @@ import type { Tree } from '@nx/devkit';
 import { findNodes, getSourceNodes } from '@nx/js';
 import type { PropertyDeclaration } from 'typescript';
 import { getTsSourceFile } from '../../../utils/nx-devkit/ast-utils';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 
 let tsModule: typeof import('typescript');
 
@@ -110,6 +110,6 @@ export function getArgsDefaultValue(property: PropertyDeclaration): string {
   return property.initializer
     ? property.initializer.getText()
     : property.type
-    ? typeNameToDefault[property.type.getText()]
-    : "''";
+      ? typeNameToDefault[property.type.getText()]
+      : "''";
 }

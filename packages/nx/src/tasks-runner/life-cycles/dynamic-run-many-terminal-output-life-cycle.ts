@@ -9,6 +9,8 @@ import { Task } from '../../config/task-graph';
 import { prettyTime } from './pretty-time';
 import { formatFlags, formatTargetsAndProjects } from './formatting-utils';
 import { viewLogsFooterRows } from './view-logs-utils';
+import { handleImport } from '../../utils/handle-import';
+import * as pc from 'picocolors';
 
 const LEFT_PAD = `   `;
 const SPACER = `  `;
@@ -63,7 +65,7 @@ export async function createRunManyDynamicOutputRenderer({
   const isVerbose = overrides.verbose === true;
 
   const start = process.hrtime();
-  const figures = await import('figures');
+  const figures = await handleImport('figures');
 
   const targets = args.targets;
   const totalTasks = tasks.length;
@@ -92,6 +94,7 @@ export async function createRunManyDynamicOutputRenderer({
   let renderIntervalId: NodeJS.Timeout | undefined;
 
   const moveCursorToStartOfPinnedFooter = () => {
+    readline.cursorTo(process.stdout, 0);
     readline.moveCursor(process.stdout, 0, -pinnedFooterNumLines);
   };
 
@@ -215,8 +218,8 @@ export async function createRunManyDynamicOutputRenderer({
       additionalFooterRows.push('');
       for (const runningTask of runningTasks) {
         additionalFooterRows.push(
-          `${LEFT_PAD}${output.dim.cyan(
-            dots.frames[currentFrame]
+          `${LEFT_PAD}${pc.dim(
+            pc.cyan(dots.frames[currentFrame])
           )}${SPACER}${output.formatCommand(runningTask.task.id)}`
         );
       }
@@ -272,14 +275,18 @@ export async function createRunManyDynamicOutputRenderer({
         tasks
       )}`;
       const taskOverridesRows = [];
-      if (Object.keys(overrides).length > 0) {
+      const filteredOverrides = Object.entries(overrides).filter(
+        // Don't print the data passed through from the version subcommand to the publish executor options, it could be quite large and it's an implementation detail.
+        ([flag]) => flag !== 'nxReleaseVersionData'
+      );
+      if (filteredOverrides.length > 0) {
         taskOverridesRows.push('');
         taskOverridesRows.push(
-          `${EXTENDED_LEFT_PAD}${output.dim.cyan('With additional flags:')}`
+          `${EXTENDED_LEFT_PAD}${pc.dim(pc.cyan('With additional flags:'))}`
         );
-        Object.entries(overrides)
+        filteredOverrides
           .map(([flag, value]) =>
-            output.dim.cyan(formatFlags(EXTENDED_LEFT_PAD, flag, value))
+            pc.dim(pc.cyan(formatFlags(EXTENDED_LEFT_PAD, flag, value)))
           )
           .forEach((arg) => taskOverridesRows.push(arg));
       }
@@ -325,6 +332,11 @@ export async function createRunManyDynamicOutputRenderer({
     const timeTakenText = prettyTime(process.hrtime(start));
 
     moveCursorToStartOfPinnedFooter();
+    if (totalTasks === 0) {
+      renderPinnedFooter([output.applyNxPrefix('gray', 'No tasks were run')]);
+      resolveRenderIsDonePromise();
+      return;
+    }
     if (totalSuccessfulTasks === totalTasks) {
       const text = `Successfully ran ${formatTargetsAndProjects(
         projectNames,
@@ -332,14 +344,18 @@ export async function createRunManyDynamicOutputRenderer({
         tasks
       )}`;
       const taskOverridesRows = [];
-      if (Object.keys(overrides).length > 0) {
+      const filteredOverrides = Object.entries(overrides).filter(
+        // Don't print the data passed through from the version subcommand to the publish executor options, it could be quite large and it's an implementation detail.
+        ([flag]) => flag !== 'nxReleaseVersionData'
+      );
+      if (filteredOverrides.length > 0) {
         taskOverridesRows.push('');
         taskOverridesRows.push(
-          `${EXTENDED_LEFT_PAD}${output.dim.green('With additional flags:')}`
+          `${EXTENDED_LEFT_PAD}${pc.dim(pc.green('With additional flags:'))}`
         );
-        Object.entries(overrides)
+        filteredOverrides
           .map(([flag, value]) =>
-            output.dim.green(formatFlags(EXTENDED_LEFT_PAD, flag, value))
+            pc.dim(pc.green(formatFlags(EXTENDED_LEFT_PAD, flag, value)))
           )
           .forEach((arg) => taskOverridesRows.push(arg));
       }
@@ -347,7 +363,7 @@ export async function createRunManyDynamicOutputRenderer({
       const pinnedFooterLines = [
         output.applyNxPrefix(
           'green',
-          output.colors.green(text) + output.dim.white(` (${timeTakenText})`)
+          output.colors.green(text) + pc.dim(pc.white(` (${timeTakenText})`))
         ),
         ...taskOverridesRows,
       ];
@@ -366,14 +382,18 @@ export async function createRunManyDynamicOutputRenderer({
         tasks
       )}`;
       const taskOverridesRows = [];
-      if (Object.keys(overrides).length > 0) {
+      const filteredOverrides = Object.entries(overrides).filter(
+        // Don't print the data passed through from the version subcommand to the publish executor options, it could be quite large and it's an implementation detail.
+        ([flag]) => flag !== 'nxReleaseVersionData'
+      );
+      if (filteredOverrides.length > 0) {
         taskOverridesRows.push('');
         taskOverridesRows.push(
-          `${EXTENDED_LEFT_PAD}${output.dim.red('With additional flags:')}`
+          `${EXTENDED_LEFT_PAD}${pc.dim(pc.red('With additional flags:'))}`
         );
-        Object.entries(overrides)
+        filteredOverrides
           .map(([flag, value]) =>
-            output.dim.red(formatFlags(EXTENDED_LEFT_PAD, flag, value))
+            pc.dim(pc.red(formatFlags(EXTENDED_LEFT_PAD, flag, value)))
           )
           .forEach((arg) => taskOverridesRows.push(arg));
       }
@@ -386,7 +406,7 @@ export async function createRunManyDynamicOutputRenderer({
       const failureSummaryRows = [
         output.applyNxPrefix(
           'red',
-          output.colors.red(text) + output.dim.white(` (${timeTakenText})`)
+          output.colors.red(text) + pc.dim(pc.white(` (${timeTakenText})`))
         ),
         ...taskOverridesRows,
         '',

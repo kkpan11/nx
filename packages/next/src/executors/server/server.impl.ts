@@ -1,7 +1,9 @@
+import { createAsyncIterable } from '@nx/devkit/internal';
 import {
   ExecutorContext,
   parseTargetString,
   readTargetOptions,
+  logger,
 } from '@nx/devkit';
 import { resolve } from 'path';
 
@@ -12,18 +14,22 @@ import {
 import { fork } from 'child_process';
 import customServer from './custom-server.impl';
 import { createCliOptions } from '../../utils/create-cli-options';
-import { createAsyncIterable } from '@nx/devkit/src/utils/async-iterable';
-import { waitForPortOpen } from '@nx/web/src/utils/wait-for-port-open';
+import { waitForPortOpen } from '@nx/web/internal';
+import { getInstalledNextVersionRuntime } from '../../utils/runtime-version-utils';
+import { warnNextServerExecutorDeprecation } from '../../utils/deprecation';
 
 export default async function* serveExecutor(
   options: NextServeBuilderOptions,
   context: ExecutorContext
 ) {
+  warnNextServerExecutorDeprecation();
+
   const buildOptions = readTargetOptions<NextBuildBuilderOptions>(
     parseTargetString(options.buildTarget, context),
     context
   );
-  const projectRoot = context.workspace.projects[context.projectName].root;
+  const projectRoot =
+    context.projectsConfigurations.projects[context.projectName].root;
   // This is required for the default custom server to work. See the @nx/next:app generator.
   const nextDir =
     !options.dev && resolve(context.root, buildOptions.outputPath);
@@ -39,8 +45,8 @@ export default async function* serveExecutor(
   (process.env as any).NODE_ENV = process.env.NODE_ENV
     ? process.env.NODE_ENV
     : options.dev
-    ? 'development'
-    : 'production';
+      ? 'development'
+      : 'production';
 
   // Setting port that the custom server should use.
   process.env.PORT = options.port ? `${options.port}` : process.env.PORT;
@@ -53,14 +59,54 @@ export default async function* serveExecutor(
   }
 
   const mode = options.dev ? 'dev' : 'start';
-  const turbo = options.turbo && options.dev ? '--turbo' : '';
+
+  // Determine bundler flag based on Next.js version and options
+  let bundlerFlag = '';
+  if (options.dev) {
+    // Check for conflicting flags
+    if (options.turbo && options.webpack) {
+      throw new Error(
+        'Cannot specify both --turbo and --webpack flags. Please use only one bundler option.'
+      );
+    }
+
+    const nextJsVersion = getInstalledNextVersionRuntime();
+    const isNext16Plus = nextJsVersion !== null && nextJsVersion >= 16;
+
+    if (isNext16Plus) {
+      // Next.js 16+: Turbopack is default, use --webpack to opt-in to webpack
+      if (options.webpack) {
+        bundlerFlag = '--webpack';
+        logger.info('Using webpack bundler (Next.js 16+ detected)');
+      } else if (options.turbo) {
+        logger.warn(
+          'The --turbo flag is redundant in Next.js 16+ as Turbopack is now the default bundler. You can remove this flag.'
+        );
+      }
+    } else {
+      // Next.js 15 and below: webpack is default, use --turbo to opt-in to turbopack
+      if (options.turbo) {
+        bundlerFlag = '--turbo';
+      } else if (options.webpack) {
+        logger.warn(
+          'The --webpack flag is only applicable in Next.js 16 and above. It will be ignored.'
+        );
+      }
+    }
+  }
+
   const nextBin = require.resolve('next/dist/bin/next');
 
   yield* createAsyncIterable<{ success: boolean; baseUrl: string }>(
     async ({ done, next, error }) => {
       const server = fork(
         nextBin,
-        [mode, ...args, turbo, ...getExperimentalHttpsFlags(options)],
+        [
+          mode,
+          ...args,
+          bundlerFlag,
+          ...getExperimentalHttpsFlags(options),
+        ].filter((arg) => arg !== ''),
         {
           cwd: options.dev ? projectRoot : nextDir,
           stdio: 'inherit',

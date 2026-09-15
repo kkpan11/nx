@@ -16,10 +16,11 @@ async function readDefaultTsConfig(fileName: string) {
   const extraOptions: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
 
+    composite: false,
     // sourcemaps
-    sourceMap: false,
+    sourceMap: true,
     inlineSources: true,
-    inlineSourceMap: true,
+    inlineSourceMap: false,
 
     outDir: '',
     declaration: true,

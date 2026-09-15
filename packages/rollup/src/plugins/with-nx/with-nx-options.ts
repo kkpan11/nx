@@ -16,6 +16,10 @@ export interface RollupWithNxPluginOptions {
    */
   babelUpwardRootMode?: boolean;
   /**
+   * Build the libraries from source. Default is `true`.
+   */
+  buildLibsFromSource?: boolean;
+  /**
    * Which compiler to use.
    */
   compiler?: 'babel' | 'tsc' | 'swc';
@@ -69,9 +73,19 @@ export interface RollupWithNxPluginOptions {
    */
   skipTypeField?: boolean;
   /**
+   * Output sourcemaps.
+   */
+  sourceMap?: boolean;
+  /**
    * The path to tsconfig file.
    */
   tsConfig: string;
+  /**
+   * Whether to generate a package.json file in the output path. It's not supported when the workspace is
+   * set up with TypeScript Project References along with the package managers' Workspaces feature. Otherwise,
+   * it defaults to `true`.
+   */
+  generatePackageJson?: boolean;
 }
 
 export interface AssetGlobPattern {
@@ -81,8 +95,7 @@ export interface AssetGlobPattern {
   output: string;
 }
 
-export interface NormalizedRollupWithNxPluginOptions
-  extends RollupWithNxPluginOptions {
+export interface NormalizedRollupWithNxPluginOptions extends RollupWithNxPluginOptions {
   assets: AssetGlobPattern[];
   compiler: 'babel' | 'tsc' | 'swc';
   format: ('cjs' | 'esm')[];

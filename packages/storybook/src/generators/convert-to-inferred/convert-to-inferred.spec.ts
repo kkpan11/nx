@@ -12,9 +12,9 @@ import {
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { TempFs } from '@nx/devkit/internal-testing-utils';
-import { getRelativeProjectJsonSchemaPath } from 'nx/src/generators/utils/project-configuration';
 import { join } from 'path';
 import { convertToInferred } from './convert-to-inferred';
+import { getRelativeProjectJsonSchemaPath } from '@nx/devkit/internal';
 
 let fs: TempFs;
 let projectGraph: ProjectGraph;
@@ -37,9 +37,8 @@ jest.mock('@nx/devkit', () => ({
         ) {
           // Re-order `targets` to appear after the `// target` comment.
           delete projectConfiguration.targets;
-          projectConfiguration[
-            '// targets'
-          ] = `to see all targets run: nx show project ${projectName} --web`;
+          projectConfiguration['// targets'] =
+            `to see all targets run: nx show project ${projectName} --web`;
           projectConfiguration.targets = {};
         } else {
           delete projectConfiguration['// targets'];
@@ -236,7 +235,7 @@ describe('Storybook - Convert To Inferred', () => {
             },
             "outputs": [
               "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
+              "{projectRoot}/storybook-static",
               "{options.output-dir}",
               "{options.outputDir}",
               "{options.o}",
@@ -312,7 +311,7 @@ describe('Storybook - Convert To Inferred', () => {
             },
             "outputs": [
               "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
+              "{projectRoot}/storybook-static",
               "{options.output-dir}",
               "{options.outputDir}",
               "{options.o}",
@@ -383,11 +382,11 @@ describe('Storybook - Convert To Inferred', () => {
             "options": {
               "config-dir": ".storybook",
               "output-dir": "../../dist/storybook/apps/app1",
-              "webpack-stats-json": true,
+              "stats-json": true,
             },
             "outputs": [
               "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
+              "{projectRoot}/storybook-static",
               "{options.output-dir}",
               "{options.outputDir}",
               "{options.o}",
@@ -446,7 +445,7 @@ describe('Storybook - Convert To Inferred', () => {
             },
             "outputs": [
               "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
+              "{projectRoot}/storybook-static",
               "{options.output-dir}",
               "{options.outputDir}",
               "{options.o}",
@@ -560,28 +559,7 @@ describe('Storybook - Convert To Inferred', () => {
         {
           "build-storybook": {
             "options": {
-              "config-dir": ".storybook",
               "output-dir": "../../dist/storybook/apps/app1",
-            },
-            "outputs": [
-              "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
-              "{options.output-dir}",
-              "{options.outputDir}",
-              "{options.o}",
-            ],
-          },
-          "storybook": {
-            "configurations": {
-              "ci": {
-                "args": [
-                  "--quiet",
-                ],
-              },
-            },
-            "options": {
-              "config-dir": ".storybook",
-              "port": 4400,
             },
           },
         }
@@ -592,28 +570,7 @@ describe('Storybook - Convert To Inferred', () => {
         {
           "build-storybook": {
             "options": {
-              "config-dir": ".storybook",
               "output-dir": "../../dist/storybook/apps/project2",
-            },
-            "outputs": [
-              "{projectRoot}/{options.output-dir}",
-              "{workspaceRoot}/{projectRoot}/storybook-static",
-              "{options.output-dir}",
-              "{options.outputDir}",
-              "{options.o}",
-            ],
-          },
-          "storybook": {
-            "configurations": {
-              "ci": {
-                "args": [
-                  "--quiet",
-                ],
-              },
-            },
-            "options": {
-              "config-dir": ".storybook",
-              "port": 4400,
             },
           },
         }
@@ -626,6 +583,34 @@ describe('Storybook - Convert To Inferred', () => {
       );
       expect(storybookPlugin).toBeTruthy();
       expect(storybookPlugin.include).toBeUndefined();
+
+      // the config shared by both projects was hoisted into plugin-scoped
+      // targetDefaults entries, not dropped, and the workspace's pre-existing
+      // defaults are preserved
+      expect(readNxJson(tree).targetDefaults).toEqual({
+        build: { cache: true },
+        lint: { cache: true },
+        'build-storybook': [
+          {
+            filter: { plugin: '@nx/storybook/plugin' },
+            options: { 'config-dir': '.storybook' },
+            outputs: [
+              '{projectRoot}/{options.output-dir}',
+              '{projectRoot}/storybook-static',
+              '{options.output-dir}',
+              '{options.outputDir}',
+              '{options.o}',
+            ],
+          },
+        ],
+        storybook: [
+          {
+            filter: { plugin: '@nx/storybook/plugin' },
+            configurations: { ci: { args: ['--quiet'] } },
+            options: { 'config-dir': '.storybook', port: 4400 },
+          },
+        ],
+      });
     });
   });
 });

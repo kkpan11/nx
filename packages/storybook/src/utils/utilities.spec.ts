@@ -3,6 +3,7 @@ import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
   findStorybookAndBuildTargetsAndCompiler,
   isTheFileAStory,
+  getStorybookVersionToInstall,
 } from './utilities';
 import * as targetVariations from './test-configs/different-target-variations.json';
 
@@ -16,7 +17,7 @@ describe('testing utilities', () => {
       appTree.write(
         `test-ui-lib/src/lib/button/button.component.stories.ts`,
         `
-      import { Story, Meta } from '@storybook/react';
+      import { Story, Meta } from '@storybook/react-webpack5';
       import { Button } from './button';
 
       export default {
@@ -34,7 +35,7 @@ describe('testing utilities', () => {
       appTree.write(
         `test-ui-lib/src/lib/button/button.other.stories.ts`,
         `
-        import type { Meta } from '@storybook/react';
+        import type { Meta } from '@storybook/react-webpack5';
         import { Button } from './button';
 
         const Story: Meta<typeof Button> = {
@@ -62,7 +63,7 @@ describe('testing utilities', () => {
         `test-ui-lib/src/lib/button/button.test.stories.ts`,
         `
         import { Button } from './button';
-        import * as Storybook from '@storybook/react';
+        import * as Storybook from '@storybook/react-webpack5';
 
         // test test
       `
@@ -80,7 +81,7 @@ describe('testing utilities', () => {
       appTree.write(
         `test-ui-lib/src/lib/button/button.component.new-syntax.ts`,
         `
-       import { ComponentStory } from '@storybook/react';
+       import { ComponentStory } from '@storybook/react-webpack5';
 
         // test test
       `
@@ -200,6 +201,65 @@ describe('testing utilities', () => {
   });
 
   describe('Test pure utility functions', () => {
+    describe('getStorybookVersionToInstall', () => {
+      it('should return the v10 install constant when v10 is installed', () => {
+        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+        tree.write(
+          'package.json',
+          JSON.stringify({
+            devDependencies: {
+              storybook: '^10.0.0',
+            },
+          })
+        );
+        const version = getStorybookVersionToInstall(tree);
+        expect(version).toBe('^10.5.0');
+      });
+
+      it('should return the v8 install constant when v8 is installed', () => {
+        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+        tree.write(
+          'package.json',
+          JSON.stringify({
+            devDependencies: {
+              storybook: '~8.5.3',
+            },
+          })
+        );
+        const version = getStorybookVersionToInstall(tree);
+        expect(version).toBe('^8.6.11');
+      });
+
+      it('should fall through to the latest install constant when an unsupported version is installed', () => {
+        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+        tree.write(
+          'package.json',
+          JSON.stringify({
+            devDependencies: {
+              storybook: '7.0.0',
+            },
+          })
+        );
+        const version = getStorybookVersionToInstall(tree);
+        // v7 is below the floor; no version map entry — fall through to latest.
+        expect(version).toBe('^10.5.0');
+      });
+
+      it('should return the v9 install constant when v9 is installed via dependencies', () => {
+        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+        tree.write(
+          'package.json',
+          JSON.stringify({
+            dependencies: {
+              storybook: '^9.0.0',
+            },
+          })
+        );
+        const version = getStorybookVersionToInstall(tree);
+        expect(version).toBe('^9.0.5');
+      });
+    });
+
     describe('findStorybookAndBuildTargetsAndCompiler', () => {
       it('should find correct targets and compiler for the provided next app config', () => {
         const result = findStorybookAndBuildTargetsAndCompiler(
@@ -213,6 +273,13 @@ describe('testing utilities', () => {
           otherBuildTarget: undefined,
           compiler: undefined,
         });
+      });
+
+      it('should treat the modern angular application builder as the ng build target', () => {
+        const result = findStorybookAndBuildTargetsAndCompiler({
+          build: { executor: '@angular/build:application' },
+        });
+        expect(result.ngBuildTarget).toEqual('build');
       });
 
       it('should find correct targets and compiler for the provided web app config', () => {

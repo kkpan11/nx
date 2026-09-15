@@ -1,17 +1,29 @@
 pub mod cache;
 pub mod glob;
 pub mod hasher;
-mod logger;
+pub mod ide;
+pub mod logger;
+mod machine_id;
+pub mod metadata;
 pub mod plugins;
 pub mod project_graph;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod pseudo_terminal;
 pub mod tasks;
 mod types;
-mod utils;
+pub mod utils;
 mod walker;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod watch;
 pub mod workspace;
 
-pub mod wasm;
+mod config;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod db;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod metrics;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pseudo_terminal;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod telemetry;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tui;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod watch;
+pub mod worktree;

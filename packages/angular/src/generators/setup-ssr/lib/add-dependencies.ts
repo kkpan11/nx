@@ -1,46 +1,56 @@
-import { addDependenciesToPackageJson, type Tree } from '@nx/devkit';
-import { gte } from 'semver';
-import type { VersionMap } from '../../../utils/backward-compatible-versions';
 import {
-  getInstalledAngularVersionInfo,
-  getInstalledPackageVersionInfo,
+  addDependenciesToPackageJson,
+  getDependencyVersionFromPackageJson,
+  type Tree,
+} from '@nx/devkit';
+import { nxVersion } from '../../../utils/versions';
+import {
+  getInstalledAngularDevkitVersion,
   versions,
+  withSsrAllowedHostsSupport,
 } from '../../utils/version-utils';
+import type { NormalizedGeneratorOptions } from '../schema';
 
 export function addDependencies(
   tree: Tree,
-  isUsingApplicationBuilder: boolean
+  options: NormalizedGeneratorOptions
 ): void {
   const pkgVersions = versions(tree);
-  const { major: angularMajorVersion, version: angularVersion } =
-    getInstalledAngularVersionInfo(tree);
 
   const dependencies: Record<string, string> = {
     '@angular/platform-server':
-      getInstalledPackageVersionInfo(tree, '@angular/platform-server')
-        ?.version ?? pkgVersions.angularVersion,
+      getDependencyVersionFromPackageJson(tree, '@angular/platform-server') ??
+      pkgVersions.angularVersion,
     express: pkgVersions.expressVersion,
   };
   const devDependencies: Record<string, string> = {
     '@types/express': pkgVersions.typesExpressVersion,
+    '@types/node': pkgVersions.typesNodeVersion,
   };
 
-  if (angularMajorVersion >= 17) {
-    dependencies['@angular/ssr'] =
-      getInstalledPackageVersionInfo(tree, '@angular-devkit/build-angular')
-        ?.version ?? pkgVersions.angularDevkitVersion;
-    if (!isUsingApplicationBuilder && gte(angularVersion, '17.1.0')) {
-      devDependencies['browser-sync'] = pkgVersions.browserSyncVersion;
+  const angularDevkitVersion =
+    getInstalledAngularDevkitVersion(tree) ?? pkgVersions.angularDevkitVersion;
+  // The setup below configures the allowed hosts when the version allows it,
+  // so ask for one that does rather than for whichever the range resolves to
+  dependencies['@angular/ssr'] =
+    withSsrAllowedHostsSupport(angularDevkitVersion);
+
+  if (options.isUsingApplicationBuilder) {
+    dependencies['@angular-devkit/build-angular'] = angularDevkitVersion;
+  } else if (!options.isRspack) {
+    // The rspack conversion removes the targets that use these packages
+    devDependencies['browser-sync'] = pkgVersions.browserSyncVersion;
+    if (options.isUsingWebpackBuilder) {
+      devDependencies['@nx/webpack'] = nxVersion;
+      devDependencies['webpack-merge'] = pkgVersions.webpackMergeVersion;
     }
-  } else {
-    dependencies['@nguniversal/express-engine'] =
-      getInstalledPackageVersionInfo(tree, '@nguniversal/express-engine')
-        ?.version ??
-      (pkgVersions as VersionMap['angularV16']).ngUniversalVersion;
-    devDependencies['@nguniversal/builders'] =
-      getInstalledPackageVersionInfo(tree, '@nguniversal/builders')?.version ??
-      (pkgVersions as VersionMap['angularV16']).ngUniversalVersion;
   }
 
-  addDependenciesToPackageJson(tree, dependencies, devDependencies);
+  addDependenciesToPackageJson(
+    tree,
+    dependencies,
+    devDependencies,
+    undefined,
+    true
+  );
 }

@@ -1,26 +1,26 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { readJson, updateJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
+  readJson,
+  updateJson,
   getProjects,
   readProjectConfiguration,
-} from 'nx/src/generators/utils/project-configuration';
+} from '@nx/devkit';
+import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { E2eTestRunner, UnitTestRunner } from '../../utils/test-runners';
 import {
   generateTestHostApplication,
   generateTestRemoteApplication,
 } from '../utils/testing';
-import { Linter } from '@nx/eslint';
 
 describe('Host App Generator', () => {
   it('should generate a host app with no remotes', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'test',
+      directory: 'test',
       typescriptConfiguration: false,
       standalone: false,
       skipFormat: true,
@@ -31,11 +31,11 @@ describe('Host App Generator', () => {
   });
   it('should generate a host app with no remotes when --typescript=true', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'test',
+      directory: 'test',
       typescriptConfiguration: true,
       standalone: false,
       skipFormat: true,
@@ -47,10 +47,10 @@ describe('Host App Generator', () => {
 
   it('should generate a host app with a remote', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     await generateTestRemoteApplication(tree, {
-      name: 'remote',
+      directory: 'remote',
       typescriptConfiguration: false,
       standalone: false,
       skipFormat: true,
@@ -58,7 +58,7 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'test',
+      directory: 'test',
       remotes: ['remote'],
       typescriptConfiguration: false,
       standalone: false,
@@ -71,10 +71,10 @@ describe('Host App Generator', () => {
   });
   it('should generate a host app with a remote when --typesscript=true', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     await generateTestRemoteApplication(tree, {
-      name: 'remote',
+      directory: 'remote',
       typescriptConfiguration: true,
       standalone: false,
       skipFormat: true,
@@ -82,7 +82,7 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'test',
+      directory: 'test',
       remotes: ['remote'],
       typescriptConfiguration: true,
       standalone: false,
@@ -96,12 +96,12 @@ describe('Host App Generator', () => {
 
   it('should generate a host and any remotes that dont exist with correct routing setup', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
 
     await generateTestHostApplication(tree, {
-      name: 'host-app',
+      directory: 'host-app',
       remotes: ['remote1', 'remote2'],
       typescriptConfiguration: false,
       standalone: false,
@@ -114,7 +114,7 @@ describe('Host App Generator', () => {
     expect(
       tree.read('host-app/module-federation.config.js', 'utf-8')
     ).toContain(`'remote1','remote2'`);
-    expect(tree.read('host-app/src/app/app.component.html', 'utf-8'))
+    expect(tree.read('host-app/src/app/app.html', 'utf-8'))
       .toMatchInlineSnapshot(`
       "<ul class="remote-menu">
       <li><a routerLink="/">Home</a></li>
@@ -128,12 +128,12 @@ describe('Host App Generator', () => {
 
   it('should generate a host and any remotes that dont exist with correct routing setup when --typescript=true', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
 
     await generateTestHostApplication(tree, {
-      name: 'host-app',
+      directory: 'host-app',
       remotes: ['remote1', 'remote2'],
       typescriptConfiguration: true,
       standalone: false,
@@ -146,7 +146,7 @@ describe('Host App Generator', () => {
     expect(
       tree.read('host-app/module-federation.config.ts', 'utf-8')
     ).toContain(`'remote1','remote2'`);
-    expect(tree.read('host-app/src/app/app.component.html', 'utf-8'))
+    expect(tree.read('host-app/src/app/app.html', 'utf-8'))
       .toMatchInlineSnapshot(`
       "<ul class="remote-menu">
       <li><a routerLink="/">Home</a></li>
@@ -160,9 +160,9 @@ describe('Host App Generator', () => {
 
   it('should generate a host, integrate existing remotes and generate any remotes that dont exist', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
     await generateTestRemoteApplication(tree, {
-      name: 'remote1',
+      directory: 'remote1',
       typescriptConfiguration: false,
       standalone: false,
       skipFormat: true,
@@ -170,7 +170,7 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host-app',
+      directory: 'host-app',
       remotes: ['remote1', 'remote2', 'remote3'],
       typescriptConfiguration: false,
       standalone: false,
@@ -188,9 +188,9 @@ describe('Host App Generator', () => {
 
   it('should generate a host, integrate existing remotes and generate any remotes that dont exist when --typescript=true', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
     await generateTestRemoteApplication(tree, {
-      name: 'remote1',
+      directory: 'remote1',
       typescriptConfiguration: true,
       standalone: false,
       skipFormat: true,
@@ -198,7 +198,7 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host-app',
+      directory: 'host-app',
       remotes: ['remote1', 'remote2', 'remote3'],
       typescriptConfiguration: true,
       standalone: false,
@@ -216,9 +216,9 @@ describe('Host App Generator', () => {
 
   it('should generate a host, integrate existing remotes and generate any remotes that dont exist, in a directory', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
     await generateTestRemoteApplication(tree, {
-      name: 'remote1',
+      directory: 'remote1',
       typescriptConfiguration: false,
       standalone: false,
       skipFormat: true,
@@ -226,7 +226,6 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host-app',
       directory: 'foo/host-app',
       remotes: ['remote1', 'remote2', 'remote3'],
       typescriptConfiguration: false,
@@ -245,9 +244,9 @@ describe('Host App Generator', () => {
 
   it('should generate a host, integrate existing remotes and generate any remotes that dont exist, in a directory when --typescript=true', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
     await generateTestRemoteApplication(tree, {
-      name: 'remote1',
+      directory: 'remote1',
       typescriptConfiguration: true,
       standalone: false,
       skipFormat: true,
@@ -255,7 +254,6 @@ describe('Host App Generator', () => {
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host-app',
       directory: 'foo/host-app',
       remotes: ['remote1', 'remote2', 'remote3'],
       typescriptConfiguration: true,
@@ -274,47 +272,42 @@ describe('Host App Generator', () => {
 
   it('should generate a host with remotes using standalone components', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host',
+      directory: 'host',
       remotes: ['remote1'],
       skipFormat: true,
     });
 
     // ASSERT
-    expect(tree.exists(`host/src/app/app.module.ts`)).toBeFalsy();
+    expect(tree.exists(`host/src/app/app-module.ts`)).toBeFalsy();
     expect(tree.read(`host/src/bootstrap.ts`, 'utf-8')).toMatchSnapshot();
-    expect(
-      tree.read(`host/src/app/app.component.ts`, 'utf-8')
-    ).toMatchSnapshot();
+    expect(tree.read(`host/src/app/app.ts`, 'utf-8')).toMatchSnapshot();
   });
 
   it('should generate the correct app component spec file', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'host',
+      directory: 'host',
       remotes: ['remote1'],
       skipFormat: true,
     });
 
     // ASSERT
-    expect(
-      tree.read(`host/src/app/app.component.spec.ts`, 'utf-8')
-    ).toMatchSnapshot();
+    expect(tree.read(`host/src/app/app.spec.ts`, 'utf-8')).toMatchSnapshot();
   });
 
   it('should generate the correct app component spec file with a directory', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'dashboard',
       remotes: ['remote1'],
       directory: 'test/dashboard',
       skipFormat: true,
@@ -322,17 +315,17 @@ describe('Host App Generator', () => {
 
     // ASSERT
     expect(
-      tree.read(`test/dashboard/src/app/app.component.spec.ts`, 'utf-8')
+      tree.read(`test/dashboard/src/app/app.spec.ts`, 'utf-8')
     ).toMatchSnapshot();
   });
 
   it('should not generate an e2e project when e2eTestRunner is none', async () => {
     // ARRANGE
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
 
     // ACT
     await generateTestHostApplication(tree, {
-      name: 'dashboard',
+      directory: 'dashboard',
       remotes: ['remote1'],
       e2eTestRunner: E2eTestRunner.None,
       standalone: false,
@@ -348,11 +341,11 @@ describe('Host App Generator', () => {
   describe('--ssr', () => {
     it('should generate the correct files', async () => {
       // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+      const tree = createTreeWithEmptyWorkspace();
 
       // ACT
       await generateTestHostApplication(tree, {
-        name: 'test',
+        directory: 'test',
         ssr: true,
         typescriptConfiguration: false,
         standalone: false,
@@ -361,14 +354,14 @@ describe('Host App Generator', () => {
       // ASSERT
       const project = readProjectConfiguration(tree, 'test');
       expect(
-        tree.read(`test/src/app/app.module.ts`, 'utf-8')
+        tree.read(`test/src/app/app-module.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/bootstrap.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/src/bootstrap.server.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toMatchSnapshot();
-      expect(tree.read(`test/server.ts`, 'utf-8')).toMatchSnapshot();
+      expect(tree.read(`test/src/server.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/module-federation.config.js`, 'utf-8')
       ).toMatchSnapshot();
@@ -382,13 +375,28 @@ describe('Host App Generator', () => {
       expect(project.targets['serve-ssr']).toMatchSnapshot();
     });
 
+    it('should not import from `zone.js/node` in the server file even when zoneless is false', async () => {
+      const tree = createTreeWithEmptyWorkspace();
+
+      await generateTestHostApplication(tree, {
+        directory: 'test',
+        ssr: true,
+        zoneless: false,
+        skipFormat: true,
+      });
+
+      expect(tree.read(`test/src/main.server.ts`, 'utf-8')).not.toContain(
+        "import 'zone.js/node';"
+      );
+    });
+
     it('should generate the correct files when --typescript=true', async () => {
       // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+      const tree = createTreeWithEmptyWorkspace();
 
       // ACT
       await generateTestHostApplication(tree, {
-        name: 'test',
+        directory: 'test',
         ssr: true,
         typescriptConfiguration: true,
         standalone: false,
@@ -398,14 +406,14 @@ describe('Host App Generator', () => {
       // ASSERT
       const project = readProjectConfiguration(tree, 'test');
       expect(
-        tree.read(`test/src/app/app.module.ts`, 'utf-8')
+        tree.read(`test/src/app/app-module.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/bootstrap.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/src/bootstrap.server.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toMatchSnapshot();
-      expect(tree.read(`test/server.ts`, 'utf-8')).toMatchSnapshot();
+      expect(tree.read(`test/src/server.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/module-federation.config.ts`, 'utf-8')
       ).toMatchSnapshot();
@@ -421,24 +429,24 @@ describe('Host App Generator', () => {
 
     it('should generate the correct files for standalone', async () => {
       // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+      const tree = createTreeWithEmptyWorkspace();
 
       // ACT
       await generateTestHostApplication(tree, {
-        name: 'test',
+        directory: 'test',
         ssr: true,
         typescriptConfiguration: false,
       });
 
       // ASSERT
       const project = readProjectConfiguration(tree, 'test');
-      expect(tree.exists(`test/src/app/app.module.ts`)).toBeFalsy();
+      expect(tree.exists(`test/src/app/app-module.ts`)).toBeFalsy();
       expect(tree.read(`test/src/bootstrap.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/src/bootstrap.server.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toMatchSnapshot();
-      expect(tree.read(`test/server.ts`, 'utf-8')).toMatchSnapshot();
+      expect(tree.read(`test/src/server.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/module-federation.config.js`, 'utf-8')
       ).toMatchSnapshot();
@@ -460,11 +468,11 @@ describe('Host App Generator', () => {
 
     it('should generate the correct files for standalone when --typescript=true', async () => {
       // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+      const tree = createTreeWithEmptyWorkspace();
 
       // ACT
       await generateTestHostApplication(tree, {
-        name: 'test',
+        directory: 'test',
         ssr: true,
         typescriptConfiguration: true,
         skipFormat: true,
@@ -472,13 +480,13 @@ describe('Host App Generator', () => {
 
       // ASSERT
       const project = readProjectConfiguration(tree, 'test');
-      expect(tree.exists(`test/src/app/app.module.ts`)).toBeFalsy();
+      expect(tree.exists(`test/src/app/app-module.ts`)).toBeFalsy();
       expect(tree.read(`test/src/bootstrap.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/src/bootstrap.server.ts`, 'utf-8')
       ).toMatchSnapshot();
       expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toMatchSnapshot();
-      expect(tree.read(`test/server.ts`, 'utf-8')).toMatchSnapshot();
+      expect(tree.read(`test/src/server.ts`, 'utf-8')).toMatchSnapshot();
       expect(
         tree.read(`test/module-federation.config.ts`, 'utf-8')
       ).toMatchSnapshot();
@@ -497,143 +505,10 @@ describe('Host App Generator', () => {
       expect(project.targets.server).toMatchSnapshot();
       expect(project.targets['serve-ssr']).toMatchSnapshot();
     });
-
-    describe('compat', () => {
-      it('should generate the correct main.server.ts', async () => {
-        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-        updateJson(tree, 'package.json', (json) => ({
-          ...json,
-          dependencies: {
-            '@angular/core': '15.2.0',
-          },
-        }));
-
-        await generateTestHostApplication(tree, {
-          name: 'test',
-          ssr: true,
-          skipFormat: true,
-        });
-
-        expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toMatchSnapshot();
-      });
-
-      it('should generate the correct app component spec file using RouterTestingModule', async () => {
-        const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-        updateJson(tree, 'package.json', (json) => ({
-          ...json,
-          dependencies: {
-            '@angular/core': '15.2.0',
-          },
-        }));
-
-        await generateTestHostApplication(tree, {
-          name: 'host',
-          remotes: ['remote1'],
-          skipFormat: true,
-        });
-
-        expect(
-          tree.read(`host/src/app/app.component.spec.ts`, 'utf-8')
-        ).toMatchSnapshot();
-      });
-    });
-  });
-
-  describe('--project-name-and-root-format=derived', () => {
-    it('should generate a host, integrate existing remotes and generate any remotes that dont exist', async () => {
-      // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-      await generateTestRemoteApplication(tree, {
-        name: 'remote1',
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: false,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ACT
-      await generateTestHostApplication(tree, {
-        name: 'hostApp',
-        remotes: ['remote1', 'remote2', 'remote3'],
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: false,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ASSERT
-      expect(tree.exists('apps/remote1/project.json')).toBeTruthy();
-      expect(tree.exists('apps/remote2/project.json')).toBeTruthy();
-      expect(tree.exists('apps/remote3/project.json')).toBeTruthy();
-      expect(
-        tree.read('apps/host-app/module-federation.config.js', 'utf-8')
-      ).toContain(`'remote1','remote2','remote3'`);
-    });
-
-    it('should generate a host, integrate existing remotes and generate any remotes that dont exist, in a directory', async () => {
-      // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-      await generateTestRemoteApplication(tree, {
-        name: 'remote1',
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: false,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ACT
-      await generateTestHostApplication(tree, {
-        name: 'hostApp',
-        directory: 'foo',
-        remotes: ['remote1', 'remote2', 'remote3'],
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: false,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ASSERT
-      expect(tree.exists('apps/remote1/project.json')).toBeTruthy();
-      expect(tree.exists('apps/foo/remote2/project.json')).toBeTruthy();
-      expect(tree.exists('apps/foo/remote3/project.json')).toBeTruthy();
-      expect(
-        tree.read('apps/foo/host-app/module-federation.config.js', 'utf-8')
-      ).toContain(`'remote1','foo-remote2','foo-remote3'`);
-    });
-    it('should generate a host, integrate existing remotes and generate any remotes that dont exist, in a directory when --typescript=true', async () => {
-      // ARRANGE
-      const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-      await generateTestRemoteApplication(tree, {
-        name: 'remote1',
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: true,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ACT
-      await generateTestHostApplication(tree, {
-        name: 'hostApp',
-        directory: 'foo',
-        remotes: ['remote1', 'remote2', 'remote3'],
-        projectNameAndRootFormat: 'derived',
-        typescriptConfiguration: true,
-        standalone: false,
-        skipFormat: true,
-      });
-
-      // ASSERT
-      expect(tree.exists('apps/remote1/project.json')).toBeTruthy();
-      expect(tree.exists('apps/foo/remote2/project.json')).toBeTruthy();
-      expect(tree.exists('apps/foo/remote3/project.json')).toBeTruthy();
-      expect(
-        tree.read('apps/foo/host-app/module-federation.config.ts', 'utf-8')
-      ).toContain(`'remote1','foo-remote2','foo-remote3'`);
-    });
   });
 
   it('should not touch the package.json when run with `--skipPackageJson`', async () => {
-    const tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    const tree = createTreeWithEmptyWorkspace();
     let initialPackageJson;
     updateJson(tree, 'package.json', (json) => {
       json.dependencies = {};
@@ -644,7 +519,7 @@ describe('Host App Generator', () => {
     });
 
     await generateTestHostApplication(tree, {
-      name: 'test',
+      directory: 'test',
       ssr: true,
       skipFormat: true,
       skipPackageJson: true,
@@ -660,16 +535,39 @@ describe('Host App Generator', () => {
 
     await expect(
       generateTestHostApplication(tree, {
-        name: 'myhostapp',
+        directory: 'myhostapp',
         remotes: [remote],
         dynamic: true,
-        projectNameAndRootFormat: 'as-provided',
         e2eTestRunner: E2eTestRunner.None,
-        linter: Linter.None,
+        linter: 'none',
         style: 'css',
         unitTestRunner: UnitTestRunner.None,
         typescriptConfiguration: false,
       })
-    ).rejects.toThrowError(`Invalid remote name provided: ${remote}.`);
+    ).rejects.toThrow(`Invalid remote name provided: ${remote}.`);
+  });
+
+  describe('compat', () => {
+    it('should import from `zone.js/node` in the server file for versions lower than v21', async () => {
+      const tree = createTreeWithEmptyWorkspace();
+      updateJson(tree, 'package.json', (json) => {
+        json.dependencies = {
+          ...json.dependencies,
+          '@angular/core': '~20.3.0',
+        };
+        return json;
+      });
+
+      await generateTestHostApplication(tree, {
+        directory: 'test',
+        ssr: true,
+        zoneless: false,
+        skipFormat: true,
+      });
+
+      expect(tree.read(`test/src/main.server.ts`, 'utf-8')).toContain(
+        "import 'zone.js/node';"
+      );
+    });
   });
 });

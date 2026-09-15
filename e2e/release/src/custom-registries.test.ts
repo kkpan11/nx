@@ -9,22 +9,40 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { execSync } from 'child_process';
+import { NxReleaseVersionConfiguration } from 'nx/src/config/nx-json';
 import type { PackageJson } from 'nx/src/utils/package-json';
 
 describe('nx release - custom npm registries', () => {
   const verdaccioPort = 7191;
   const customRegistryUrl = `http://localhost:${verdaccioPort}`;
   const scope = 'scope';
+  let previousPackageManager: string;
+  let e2eRegistryHost: string;
 
   beforeAll(async () => {
+    previousPackageManager = process.env.SELECTED_PM;
+    // We are testing some more advanced scoped registry features that only npm has within this file
+    process.env.SELECTED_PM = 'npm';
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     });
-  }, 60000);
-  afterAll(() => cleanupProject());
+
+    // Get the e2e registry URL and parse it for auth token setup AFTER project is created
+    const e2eRegistryUrl = execSync('npm config get registry')
+      .toString()
+      .trim();
+    // Remove http:// or https:// and trailing slash to get just //host:port format for npm config
+    e2eRegistryHost = e2eRegistryUrl
+      .replace(/^https?:\/\//, '//')
+      .replace(/\/$/, '');
+  });
+
+  afterAll(() => {
+    cleanupProject();
+    process.env.SELECTED_PM = previousPackageManager;
+  });
 
   it('should respect registry configuration for each package', async () => {
     updateJson<NxJsonConfiguration>('nx.json', (nxJson) => {
@@ -37,12 +55,30 @@ describe('nx release - custom npm registries', () => {
     const e2eRegistryUrl = execSync('npm config get registry')
       .toString()
       .trim();
+    const e2eRegistryHost = e2eRegistryUrl
+      .replace(/^https?:\/\//, '//')
+      .replace(/\/$/, '');
 
     const npmrcEntries = [
       `@${scope}:registry=http://scoped-registry.com`,
       'tag=next',
       // We can't test overriding the default registry in this file since our e2e tests override it anyway.
       // Instead, we'll just assert that the e2e registry is used anytime we expect the default registry
+      '',
+      // Many publishes here target intentionally-unreachable registries. npm still
+      // does a network preflight (even for --dry-run) and retries on failure, so cap
+      // the retry backoff to keep resilience without the default ~70s sleep per call.
+      'fetch-retry-mintimeout=100',
+      'fetch-retry-maxtimeout=1000',
+      // Add auth tokens for all registries (required for NPM 11)
+      `${e2eRegistryHost}/:_authToken=test-auth-token`,
+      '//publish-config-registry.com/:_authToken=test-auth-token',
+      '//default-override-registy.com/:_authToken=test-auth-token',
+      '//scope-override-registry.com/:_authToken=test-auth-token',
+      '//scope-override-arg-registry.com/:_authToken=test-auth-token',
+      '//default-override-arg-registry.com/:_authToken=test-auth-token',
+      '//ignored-registry.com/:_authToken=test-auth-token',
+      '//scoped-registry.com/:_authToken=test-auth-token',
     ];
     createFile('.npmrc', npmrcEntries.join('\n'));
 
@@ -197,7 +233,9 @@ describe('nx release - custom npm registries', () => {
     runCLI(`generate setup-verdaccio`);
 
     const process = await runCommandUntil(
-      `local-registry @proj/source --port=${verdaccioPort}`,
+      // location=none so a killed process can't leak registry config into
+      // ~/.npmrc; every consumer passes --registry explicitly instead
+      `local-registry @proj/source --port=${verdaccioPort} --location none`,
       (output) => output.includes(`warn --- http address`)
     );
 
@@ -205,6 +243,15 @@ describe('nx release - custom npm registries', () => {
       `@${scope}:registry=${customRegistryUrl}`,
       `registry=http://ignored-registry.com`,
       'tag=next',
+      '',
+      // Cap retry backoff (see note on npmrcEntries) so unreachable-registry calls
+      // fail fast while reachable verdaccio reads keep their retry resilience.
+      'fetch-retry-mintimeout=100',
+      'fetch-retry-maxtimeout=1000',
+      // Add auth tokens for all registries (required for NPM 11)
+      `//localhost:${verdaccioPort}/:_authToken=test-auth-token`,
+      `${e2eRegistryHost}/:_authToken=test-auth-token`,
+      '//ignored-registry.com/:_authToken=test-auth-token',
     ];
     updateFile('.npmrc', npmrcEntries2.join('\n'));
 
@@ -300,7 +347,7 @@ describe('nx release - custom npm registries', () => {
     expect(
       versionResult.match(
         new RegExp(
-          `Resolved the current version as 0.0.0 for tag "alpha" from registry ${e2eRegistryUrl}`,
+          `Resolved the current version as 0.0.0 from the remote registry: "@scope:registry=${e2eRegistryUrl}" tag=alpha`,
           'g'
         )
       ).length
@@ -309,7 +356,7 @@ describe('nx release - custom npm registries', () => {
     expect(
       versionResult.match(
         new RegExp(
-          `Resolved the current version as 0.0.0 for tag "next" from registry ${customRegistryUrl}`,
+          `Resolved the current version as 0.0.0 from the remote registry: "@scope:registry=${customRegistryUrl}" tag=next`,
           'g'
         )
       ).length
@@ -318,7 +365,7 @@ describe('nx release - custom npm registries', () => {
     expect(
       versionResult.match(
         new RegExp(
-          `Resolved the current version as 0.0.0 for tag "beta" from registry ${customRegistryUrl}`,
+          `Resolved the current version as 0.0.0 from the remote registry: "registry=${customRegistryUrl}" tag=beta`,
           'g'
         )
       ).length
@@ -327,12 +374,12 @@ describe('nx release - custom npm registries', () => {
     expect(
       versionResult.match(
         new RegExp(
-          `Resolved the current version as 0.0.0 for tag "prev" from registry ${e2eRegistryUrl}`,
+          `Resolved the current version as 0.0.0 from the remote registry: "@scope:registry=${e2eRegistryUrl}" tag=prev`,
           'g'
         )
       ).length
     ).toBe(1);
-  }, 600000);
+  }, 1_000_000);
 
   function newPackage(
     name: string,
@@ -370,14 +417,14 @@ describe('nx release - custom npm registries', () => {
     });
 
     updateJson<ProjectConfiguration>(`${projectName}/project.json`, (json) => {
+      const releaseConfig = (json.release ?? {}) as {
+        version: NxReleaseVersionConfiguration;
+      };
+
       if (options.projectConfig) {
-        json.release = {
-          version: {
-            generatorOptions: {
-              currentVersionResolver: 'registry',
-              currentVersionResolverMetadata: {},
-            },
-          },
+        releaseConfig.version = {
+          currentVersionResolver: 'registry',
+          currentVersionResolverMetadata: {},
         };
         json.targets = {
           ...json.targets,
@@ -390,16 +437,20 @@ describe('nx release - custom npm registries', () => {
         json.targets['nx-release-publish'].options.registry =
           options.projectConfig.registry;
         (
-          json.release.version.generatorOptions
-            .currentVersionResolverMetadata as Record<string, string>
+          releaseConfig.version.currentVersionResolverMetadata as Record<
+            string,
+            string
+          >
         ).registry = options.projectConfig.registry;
       }
       if (options.projectConfig?.tag) {
         json.targets['nx-release-publish'].options.tag =
           options.projectConfig.tag;
         (
-          json.release.version.generatorOptions
-            .currentVersionResolverMetadata as Record<string, string>
+          releaseConfig.version.currentVersionResolverMetadata as Record<
+            string,
+            string
+          >
         ).tag = options.projectConfig.tag;
       }
       if (options.projectConfig?.publish?.registry) {
@@ -412,16 +463,21 @@ describe('nx release - custom npm registries', () => {
       }
       if (options.projectConfig?.version?.registry) {
         (
-          json.release.version.generatorOptions
-            .currentVersionResolverMetadata as Record<string, string>
+          releaseConfig.version.currentVersionResolverMetadata as Record<
+            string,
+            string
+          >
         ).registry = options.projectConfig.version.registry;
       }
       if (options.projectConfig?.version?.tag) {
         (
-          json.release.version.generatorOptions
-            .currentVersionResolverMetadata as Record<string, string>
+          releaseConfig.version.currentVersionResolverMetadata as Record<
+            string,
+            string
+          >
         ).tag = options.projectConfig.version.tag;
       }
+      json.release = releaseConfig;
       return json;
     });
 

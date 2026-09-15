@@ -1,10 +1,9 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { getProjects, Tree, updateProjectConfiguration } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import libraryGenerator from '../library/library';
 import componentStoryGenerator from './component-story';
-import { Linter } from '@nx/eslint';
 
 describe('react:component-story', () => {
   let appTree: Tree;
@@ -126,24 +125,16 @@ describe('react:component-story', () => {
     });
 
     describe('component with props', () => {
-      beforeEach(async () => {
+      it('should setup controls based on the component props defined in an interface', async () => {
         appTree.write(
           cmpPath,
-          `import React from 'react';
-
-          import './test.scss';
-
-          export interface TestProps {
+          `export interface TestProps {
             name: string;
             displayAge: boolean;
           }
 
           export const Test = (props: TestProps) => {
-            return (
-              <div>
-                <h1>Welcome to test component, {props.name}</h1>
-              </div>
-            );
+            return <h1>Welcome to test component, {props.name}</h1>;
           };
 
           export default Test;
@@ -154,9 +145,88 @@ describe('react:component-story', () => {
           componentPath: 'lib/test-ui-lib.tsx',
           project: 'test-ui-lib',
         });
+
+        expect(appTree.read(storyFilePath, 'utf-8')).toMatchSnapshot();
       });
 
-      it('should setup controls based on the component props', () => {
+      it('should setup controls based on the component props defined in a literal type', async () => {
+        appTree.write(
+          cmpPath,
+          `export type TestProps = {
+            name: string;
+            displayAge: boolean;
+          }
+
+          export const Test = (props: TestProps) => {
+            return <h1>Welcome to test component, {props.name}</h1>;
+          };
+
+          export default Test;
+          `
+        );
+
+        await componentStoryGenerator(appTree, {
+          componentPath: 'lib/test-ui-lib.tsx',
+          project: 'test-ui-lib',
+        });
+
+        expect(appTree.read(storyFilePath, 'utf-8')).toMatchSnapshot();
+      });
+
+      it('should setup controls based on the component props defined in an inline literal type', async () => {
+        appTree.write(
+          cmpPath,
+          `export const Test = (props: { name: string; displayAge: boolean }) => {
+            return <h1>Welcome to test component, {props.name}</h1>;
+          };
+
+          export default Test;
+          `
+        );
+
+        await componentStoryGenerator(appTree, {
+          componentPath: 'lib/test-ui-lib.tsx',
+          project: 'test-ui-lib',
+        });
+
+        expect(appTree.read(storyFilePath, 'utf-8')).toMatchSnapshot();
+      });
+
+      it('should setup controls based on the component destructured props defined in an inline literal type', async () => {
+        appTree.write(
+          cmpPath,
+          `export const Test = ({ name, displayAge }: { name: string; displayAge: boolean }) => {
+            return <h1>Welcome to test component, {props.name}</h1>;
+          };
+
+          export default Test;
+          `
+        );
+
+        await componentStoryGenerator(appTree, {
+          componentPath: 'lib/test-ui-lib.tsx',
+          project: 'test-ui-lib',
+        });
+
+        expect(appTree.read(storyFilePath, 'utf-8')).toMatchSnapshot();
+      });
+
+      it('should setup controls based on the component destructured props without type', async () => {
+        appTree.write(
+          cmpPath,
+          `export const Test = ({ name, displayAge }) => {
+            return <h1>Welcome to test component, {props.name}</h1>;
+          };
+
+          export default Test;
+          `
+        );
+
+        await componentStoryGenerator(appTree, {
+          componentPath: 'lib/test-ui-lib.tsx',
+          project: 'test-ui-lib',
+        });
+
         expect(appTree.read(storyFilePath, 'utf-8')).toMatchSnapshot();
       });
     });
@@ -528,14 +598,13 @@ describe('react:component-story', () => {
 export async function createTestUILib(libName: string): Promise<Tree> {
   let appTree = createTreeWithEmptyWorkspace();
   await libraryGenerator(appTree, {
-    name: libName,
-    linter: Linter.EsLint,
+    directory: libName,
+    linter: 'eslint',
     component: true,
     skipFormat: true,
     skipTsConfig: false,
     style: 'css',
     unitTestRunner: 'jest',
-    projectNameAndRootFormat: 'as-provided',
   });
 
   const currentWorkspaceJson = getProjects(appTree);

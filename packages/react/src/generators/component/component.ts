@@ -7,35 +7,26 @@ import {
   getProjects,
   joinPathFragments,
   runTasksInSerial,
-  toJS,
   Tree,
 } from '@nx/devkit';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import { dirname, join, parse, relative } from 'path';
 
-import { addStyledModuleDependencies } from '../../rules/add-styled-dependencies';
 import { addImport } from '../../utils/ast-utils';
 import { getInSourceVitestTestsTemplate } from '../../utils/get-in-source-vitest-tests-template';
-import { reactRouterDomVersion } from '../../utils/versions';
 import { getComponentTests } from './lib/get-component-tests';
 import { NormalizedSchema, Schema } from './schema';
 import { normalizeOptions } from './lib/normalize-options';
+import { reactRouterDomVersion } from '../../utils/versions';
+import { assertSupportedReactVersion } from '../../utils/assert-supported-react-version';
 
 export async function componentGenerator(host: Tree, schema: Schema) {
-  return componentGeneratorInternal(host, {
-    nameAndDirectoryFormat: 'derived',
-    ...schema,
-  });
-}
+  assertSupportedReactVersion(host);
 
-export async function componentGeneratorInternal(host: Tree, schema: Schema) {
   const options = await normalizeOptions(host, schema);
   createComponentFiles(host, options);
 
   const tasks: GeneratorCallback[] = [];
-
-  const styledTask = addStyledModuleDependencies(host, options);
-  tasks.push(styledTask);
 
   addExportsToBarrel(host, options);
 
@@ -43,7 +34,9 @@ export async function componentGeneratorInternal(host: Tree, schema: Schema) {
     const routingTask = addDependenciesToPackageJson(
       host,
       { 'react-router-dom': reactRouterDomVersion },
-      {}
+      {},
+      undefined,
+      true
     );
     tasks.push(routingTask);
   }
@@ -61,44 +54,29 @@ function createComponentFiles(host: Tree, options: NormalizedSchema) {
     ...options,
     componentTests,
     inSourceVitestTests: getInSourceVitestTestsTemplate(componentTests),
-    tmpl: '',
+    isTs: options.fileExtensionType === 'ts',
+    ext: options.fileExtension,
   });
 
-  for (const c of host.listChanges()) {
-    let deleteFile = false;
-
-    if (
-      (options.skipTests || options.inSourceTests) &&
-      /.*spec.tsx/.test(c.path)
-    ) {
-      deleteFile = true;
-    }
-
-    if (
-      (options.styledModule || !options.hasStyles) &&
-      c.path.endsWith(`.${options.style}`)
-    ) {
-      deleteFile = true;
-    }
-
-    if (options.globalCss && c.path.endsWith(`.module.${options.style}`)) {
-      deleteFile = true;
-    }
-
-    if (
-      !options.globalCss &&
-      c.path.endsWith(`${options.fileName}.${options.style}`)
-    ) {
-      deleteFile = true;
-    }
-
-    if (deleteFile) {
-      host.delete(c.path);
-    }
+  if (options.skipTests || options.inSourceTests) {
+    host.delete(
+      joinPathFragments(
+        options.directory,
+        `${options.fileName}.spec.${options.fileExtension}`
+      )
+    );
   }
 
-  if (options.js) {
-    toJS(host);
+  if (!options.hasStyles || !options.globalCss) {
+    host.delete(
+      join(options.directory, `${options.fileName}.${options.style}`)
+    );
+  }
+
+  if (!options.hasStyles || options.globalCss) {
+    host.delete(
+      join(options.directory, `${options.fileName}.module.${options.style}`)
+    );
   }
 }
 
@@ -114,27 +92,32 @@ function addExportsToBarrel(host: Tree, options: NormalizedSchema) {
 
   if (options.export && !isApp) {
     const indexFilePath = joinPathFragments(
-      options.projectSourceRoot,
-      options.js ? 'index.js' : 'index.ts'
+      ...(options.projectSourceRoot
+        ? [options.projectSourceRoot]
+        : [options.projectRoot, 'src']),
+      options.fileExtensionType === 'js' ? 'index.js' : 'index.ts'
     );
-    const indexSource = host.read(indexFilePath, 'utf-8');
-    if (indexSource !== null) {
-      const indexSourceFile = tsModule.createSourceFile(
-        indexFilePath,
-        indexSource,
-        tsModule.ScriptTarget.Latest,
-        true
-      );
-      const relativePathFromIndex = getRelativeImportToFile(
-        indexFilePath,
-        options.filePath
-      );
-      const changes = applyChangesToString(
-        indexSource,
-        addImport(indexSourceFile, `export * from '${relativePathFromIndex}';`)
-      );
-      host.write(indexFilePath, changes);
+
+    if (!host.exists(indexFilePath)) {
+      return;
     }
+
+    const indexSource = host.read(indexFilePath, 'utf-8');
+    const indexSourceFile = tsModule.createSourceFile(
+      indexFilePath,
+      indexSource,
+      tsModule.ScriptTarget.Latest,
+      true
+    );
+    const relativePathFromIndex = getRelativeImportToFile(
+      indexFilePath,
+      options.filePath
+    );
+    const changes = applyChangesToString(
+      indexSource,
+      addImport(indexSourceFile, `export * from '${relativePathFromIndex}';`)
+    );
+    host.write(indexFilePath, changes);
   }
 }
 

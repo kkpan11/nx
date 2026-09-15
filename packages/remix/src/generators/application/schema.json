@@ -5,48 +5,44 @@
   "description": "Generate a new Remix application.",
   "type": "object",
   "properties": {
-    "name": {
-      "type": "string",
-      "description": "",
-      "$default": {
-        "$source": "argv",
-        "index": 0
-      },
-      "x-prompt": "What is the name of the application?"
-    },
-    "js": {
-      "type": "boolean",
-      "description": "Generate JavaScript files rather than TypeScript files.",
-      "default": false
-    },
     "directory": {
       "type": "string",
       "description": "A directory where the app is placed.",
       "alias": "dir",
+      "$default": {
+        "$source": "argv",
+        "index": 0
+      },
+      "x-prompt": "Which directory do you want to create the application in?"
+    },
+    "name": {
+      "type": "string",
+      "description": "The name of the application.",
       "x-priority": "important"
     },
-    "projectNameAndRootFormat": {
-      "description": "Whether to generate the project name and root directory as provided (`as-provided`) or generate them composing their values and taking the configured layout into account (`derived`).",
-      "type": "string",
-      "enum": ["as-provided", "derived"]
-    },
     "linter": {
-      "description": "The tool to use for running lint checks.",
+      "description": "The tool to use for running lint checks. Defaults to the linter the workspace already uses.",
       "type": "string",
-      "enum": ["eslint", "none"],
-      "default": "eslint"
+      "enum": ["eslint", "oxlint", "none"],
+      "x-priority": "important"
+    },
+    "formatter": {
+      "description": "The tool to use for code formatting.",
+      "type": "string",
+      "enum": ["none", "prettier", "oxfmt"]
     },
     "unitTestRunner": {
       "type": "string",
       "enum": ["vitest", "jest", "none"],
-      "default": "vitest",
+      "default": "none",
       "description": "Test runner to use for unit tests.",
-      "x-prompt": "What unit test runner should be used?"
+      "x-prompt": "What unit test runner should be used?",
+      "x-priority": "important"
     },
     "e2eTestRunner": {
       "type": "string",
       "enum": ["playwright", "cypress", "none"],
-      "default": "playwright",
+      "default": "none",
       "description": "Test runner to use for e2e tests",
       "x-prompt": "Which E2E test runner would you like to use?"
     },
@@ -64,6 +60,11 @@
       "type": "boolean",
       "x-priority": "internal",
       "default": false
+    },
+    "useProjectJson": {
+      "type": "boolean",
+      "description": "Use a `project.json` configuration file instead of inlining the Nx configuration in the `package.json` file."
     }
-  }
+  },
+  "required": ["directory"]
 }

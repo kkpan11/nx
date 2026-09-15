@@ -1,5 +1,11 @@
-import { lstatSync, Mode, readFileSync, writeFileSync } from 'fs';
-import { removeSync, ensureDirSync } from 'fs-extra';
+import {
+  lstatSync,
+  mkdirSync,
+  Mode,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirSync, file } from 'tmp';
 import * as path from 'path';
 import {
@@ -18,11 +24,11 @@ describe('tree', () => {
     let tree: FsTree;
 
     beforeEach(() => {
-      console.error = jest.fn();
-      console.log = jest.fn();
+      console.error = vi.fn();
+      console.log = vi.fn();
 
       dir = dirSync().name;
-      ensureDirSync(path.join(dir, 'parent/child'));
+      mkdirSync(path.join(dir, 'parent/child'), { recursive: true });
       writeFileSync(path.join(dir, 'root-file.txt'), 'root content');
       writeFileSync(
         path.join(dir, 'parent', 'parent-file.txt'),
@@ -41,7 +47,7 @@ describe('tree', () => {
     });
 
     afterEach(() => {
-      removeSync(dir);
+      rmSync(dir, { recursive: true, force: true });
     });
 
     afterAll(() => {
@@ -385,11 +391,11 @@ describe('tree', () => {
         tree.write('parent/child/child-file2.txt', 'new child content');
         tree.write('parent/new-child/new-child-file.txt', 'new child content');
 
-        expect(tree.children('parent')).toEqual([
+        expect(tree.children('parent').sort()).toEqual([
           'child',
+          'new-child',
           'parent-file-with-write-options.txt',
           'parent-file.txt',
-          'new-child',
         ]);
         expect(tree.children('parent/child')).toEqual([
           'child-file.txt',
@@ -518,7 +524,7 @@ describe('tree', () => {
         const filePath = 'root-file.txt';
         tree.delete(filePath);
 
-        expect(() => tree.changePermissions(filePath, '755')).toThrowError(
+        expect(() => tree.changePermissions(filePath, '755')).toThrow(
           `Cannot change permissions of deleted file ${filePath}.`
         );
       });
@@ -526,7 +532,7 @@ describe('tree', () => {
       it('should throw when the file does not exist', () => {
         const filePath = 'non-existent-file.txt';
 
-        expect(() => tree.changePermissions(filePath, '755')).toThrowError(
+        expect(() => tree.changePermissions(filePath, '755')).toThrow(
           `Cannot change permissions of non-existing file ${filePath}.`
         );
       });
@@ -534,7 +540,7 @@ describe('tree', () => {
       it('should throw when the path provided is not a file', () => {
         const dirPath = 'parent';
 
-        expect(() => tree.changePermissions(dirPath, '755')).toThrowError(
+        expect(() => tree.changePermissions(dirPath, '755')).toThrow(
           `Cannot change permissions of non-file ${dirPath}.`
         );
       });

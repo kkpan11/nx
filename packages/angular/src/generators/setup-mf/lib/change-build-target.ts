@@ -1,4 +1,5 @@
 import type { Tree } from '@nx/devkit';
+import { addBuildTargetDefaults } from '@nx/devkit/internal';
 import type { Schema } from '../schema';
 
 import {
@@ -27,4 +28,6 @@ export function changeBuildTarget(host: Tree, options: Schema) {
   };
 
   updateProjectConfiguration(host, options.appName, appConfig);
+
+  addBuildTargetDefaults(host, '@nx/angular:webpack-browser');
 }

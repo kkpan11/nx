@@ -1,76 +1,88 @@
 {
   "generators": {
-    "update-16-0-0-add-nx-packages": {
+    "update-22-0-0-add-svgr-to-next-config": {
       "cli": "nx",
-      "version": "16.0.0-beta.1",
-      "description": "Replace @nrwl/next with @nx/next",
-      "implementation": "./src/migrations/update-16-0-0-add-nx-packages/update-16-0-0-add-nx-packages"
+      "version": "22.0.0-beta.0",
+      "description": "Updates next.config.js files to add SVGR webpack configuration directly instead of using the nx.svgr option in withNx.",
+      "factory": "./dist/src/migrations/update-22-0-0/add-svgr-to-next-config"
     },
-    "update-16-3-0-remove-root-build-option": {
+    "update-22-2-0-create-ai-instructions-for-next-16": {
       "cli": "nx",
-      "version": "16.3.0-beta.9",
-      "description": "Remove root build option from project configurations since it is not needed.",
-      "implementation": "./src/migrations/update-16-3-0/remove-root-build-option"
+      "version": "22.2.0-beta.1",
+      "requires": {
+        "next": ">=16.0.0"
+      },
+      "description": "Create AI Instructions to help migrate users workspaces to Next.js 16.",
+      "prompt": "./dist/src/migrations/update-22-2-0/ai-instructions-for-next-16.md"
     },
-    "update-16-4-0-update-next-dependency": {
-      "cli": "nx",
-      "version": "16.4.0-beta.3",
-      "description": "Update package.json moving @nx/next from dependency to devDependency",
-      "implementation": "./src/migrations/update-16-4-0/update-nx-next-dependency"
+    "update-23-0-0-migrate-create-nodes-v2-import": {
+      "version": "23.0.0-beta.24",
+      "description": "Rename imports of `createNodesV2` from `@nx/next/plugin` to the canonical `createNodes` export.",
+      "implementation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes",
+      "documentation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes.md"
     },
-    "update-17-2-7": {
-      "cli": "nx",
-      "version": "17.2.7",
-      "description": "Remove patched eslint rule for @next/next/no-html-link-for-pages",
-      "implementation": "./src/migrations/update-17-2-7/remove-eslint-rules-patch"
+    "update-23-1-0-create-ai-instructions-for-next-15": {
+      "version": "23.1.0-beta.0",
+      "requires": {
+        "next": ">=15.0.0 <16.0.0"
+      },
+      "description": "Create AI instructions to help migrate workspaces from Next.js 14 to 15.",
+      "prompt": "./dist/src/migrations/update-23-1-0/ai-instructions-for-next-15.md",
+      "documentation": "./dist/src/migrations/update-23-1-0/upgrade-to-next-15.md"
+    },
+    "update-23-2-0-add-svgr-webpack-if-used": {
+      "version": "23.2.0-beta.4",
+      "description": "Add `@svgr/webpack` when a next config references it.",
+      "implementation": "./dist/src/migrations/update-23-2-0/add-svgr-webpack-if-used",
+      "documentation": "./dist/src/migrations/update-23-2-0/add-svgr-webpack-if-used.md"
     }
   },
   "packageJsonUpdates": {
-    "16.0.0": {
-      "version": "16.0.0-beta.0",
+    "22.2.0-beta.1": {
+      "version": "22.2.0-beta.1",
+      "requires": {
+        "next": "^15.0.0"
+      },
       "packages": {
         "next": {
-          "version": "13.3.0",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "16.4.0-beta.4": {
-      "version": "16.4.0-beta.4",
-      "packages": {
-        "stylus": {
-          "version": "^0.59.0",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "17.3.1-beta.0": {
-      "version": "17.3.1-beta.0",
-      "packages": {
-        "next": {
-          "version": "14.0.4",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "18.0.4": {
-      "version": "18.0.4-beta.0",
-      "packages": {
-        "@swc-node/register": {
-          "version": "~1.8.0",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "19.0.3": {
-      "version": "19.0.3-beta.0",
-      "packages": {
-        "next": {
-          "version": "14.2.3",
+          "version": "~16.0.1",
           "alwaysAddToPackageJson": false
         },
         "eslint-config-next": {
-          "version": "14.2.3",
+          "version": "^16.0.1",
+          "alwaysAddToPackageJson": false
+        }
+      }
+    },
+    "22.6.0": {
+      "version": "22.6.0-beta.10",
+      "x-prompt": "Bump Next.js to ~16.1.6 to resolve GHSA-9g9p-9gw9-jx7f and GHSA-5f7q-jpqc-wp7h",
+      "requires": {
+        "next": ">=16.0.0"
+      },
+      "packages": {
+        "next": {
+          "version": "~16.1.6",
+          "alwaysAddToPackageJson": false
+        },
+        "eslint-config-next": {
+          "version": "^16.1.6",
+          "alwaysAddToPackageJson": false
+        }
+      }
+    },
+    "23.1.0": {
+      "version": "23.1.0-beta.0",
+      "requires": {
+        "next": ">=14.0.0 <15.0.0"
+      },
+      "packages": {
+        "next": {
+          "version": "~15.5.18",
+          "alwaysAddToPackageJson": false
+        },
+        "eslint-config-next": {
+          "version": "^15.5.18",
           "alwaysAddToPackageJson": false
         }
       }

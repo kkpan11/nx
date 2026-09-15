@@ -9,19 +9,16 @@ import {
   ProjectGraphProjectNode,
   workspaceRoot,
 } from '@nx/devkit';
-import { getRootTsConfigFileName } from '@nx/js';
-import {
-  resolveModuleByImport,
-  TargetProjectLocator,
-} from '@nx/js/src/internal';
+import { getRootTsConfigFileName, resolveModuleByImport } from '@nx/js';
+import { TargetProjectLocator } from '@nx/js/internal';
 import { AST_NODE_TYPES, TSESLint, TSESTree } from '@typescript-eslint/utils';
 import * as path from 'node:path';
+import { getPath, pathExists } from './graph-utils';
 import {
   findProjectForPath,
   ProjectRootMappings,
-} from 'nx/src/project-graph/utils/find-project-for-path';
-import { readFileIfExisting } from 'nx/src/utils/fileutils';
-import { getPath, pathExists } from './graph-utils';
+  readFileIfExisting,
+} from '@nx/devkit/internal';
 
 export type Deps = { [projectName: string]: ProjectGraphDependency[] };
 type SingleSourceTagConstraint = {
@@ -210,7 +207,9 @@ export function hasStaticImportOfDynamicResource(
     | TSESTree.ExportNamedDeclaration,
   graph: ProjectGraph,
   sourceProjectName: string,
-  targetProjectName: string
+  targetProjectName: string,
+  importExpr: string,
+  filePath: string
 ): boolean {
   if (
     node.type !== AST_NODE_TYPES.ImportDeclaration ||
@@ -218,10 +217,17 @@ export function hasStaticImportOfDynamicResource(
   ) {
     return false;
   }
-  return onlyLoadChildren(graph, sourceProjectName, targetProjectName, []);
+  return (
+    hasDynamicImport(graph, sourceProjectName, targetProjectName, []) &&
+    !getSecondaryEntryPointPath(
+      importExpr,
+      filePath,
+      graph.nodes[targetProjectName].data.root
+    )
+  );
 }
 
-function onlyLoadChildren(
+function hasDynamicImport(
   graph: ProjectGraph,
   sourceProjectName: string,
   targetProjectName: string,
@@ -238,7 +244,7 @@ function onlyLoadChildren(
       if (d.target === targetProjectName) {
         return true;
       }
-      return onlyLoadChildren(graph, d.target, targetProjectName, [
+      return hasDynamicImport(graph, d.target, targetProjectName, [
         ...visited,
         sourceProjectName,
       ]);
@@ -261,19 +267,22 @@ export function getSourceFilePath(sourceFileName: string, projectPath: string) {
 function isConstraintBanningProject(
   externalProject: ProjectGraphExternalNode,
   constraint: DepConstraint,
-  imp: string
+  importSpecifier: string
 ): boolean {
   const { allowedExternalImports, bannedExternalImports } = constraint;
   const { packageName } = externalProject.data;
 
-  if (imp !== packageName && !imp.startsWith(`${packageName}/`)) {
+  if (
+    importSpecifier !== packageName &&
+    !importSpecifier.startsWith(`${packageName}/`)
+  ) {
     return false;
   }
 
   /* Check if import is banned... */
   if (
     bannedExternalImports?.some((importDefinition) =>
-      mapGlobToRegExp(importDefinition).test(imp)
+      mapGlobToRegExp(importDefinition).test(importSpecifier)
     )
   ) {
     return true;
@@ -282,8 +291,8 @@ function isConstraintBanningProject(
   /* ... then check if there is a whitelist and if there is a match in the whitelist.  */
   return allowedExternalImports?.every(
     (importDefinition) =>
-      !imp.startsWith(packageName) ||
-      !mapGlobToRegExp(importDefinition).test(imp)
+      !importSpecifier.startsWith(packageName) ||
+      !mapGlobToRegExp(importDefinition).test(importSpecifier)
   );
 }
 
@@ -332,13 +341,18 @@ export function findTransitiveExternalDependencies(
   }
 
   const externalDependencies = [];
+  const seen = new Set<string>();
   for (let i = 0; i < allReachableProjects.length; i++) {
     const dependencies = graph.dependencies[allReachableProjects[i]];
     if (dependencies) {
       for (let d = 0; d < dependencies.length; d++) {
         const dependency = dependencies[d];
         if (graph.externalNodes[dependency.target]) {
-          externalDependencies.push(dependency);
+          const key = `${dependency.source}|${graph.externalNodes[dependency.target].data.packageName}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            externalDependencies.push(dependency);
+          }
         }
       }
     }
@@ -357,8 +371,7 @@ export function findTransitiveExternalDependencies(
 export function hasBannedDependencies(
   externalDependencies: ProjectGraphDependency[],
   graph: ProjectGraph,
-  depConstraint: DepConstraint,
-  imp: string
+  depConstraint: DepConstraint
 ):
   | Array<[ProjectGraphExternalNode, ProjectGraphProjectNode, DepConstraint]>
   | undefined {
@@ -367,7 +380,7 @@ export function hasBannedDependencies(
       isConstraintBanningProject(
         graph.externalNodes[dependency.target],
         depConstraint,
-        imp
+        graph.externalNodes[dependency.target].data.packageName
       )
     )
     .map((dep) => [
@@ -443,7 +456,20 @@ export function hasBuildExecutor(
 
 const ESLINT_REGEX = /node_modules.*[\/\\]eslint(?:\.js)?$/;
 const JEST_REGEX = /node_modules\/.bin\/jest$/; // when we run unit tests in jest
-const NRWL_CLI_REGEX = /nx[\/\\]bin[\/\\]run-executor\.js$/;
+const NRWL_CLI_REGEX = /nx[\/\\]dist[\/\\]bin[\/\\]run-executor\.js$/;
+// `@nx/oxlint` runs this rule through Oxlint's JS-plugin bridge, where argv[1]
+// is `node_modules/oxlint/bin/oxlint`. Without this, `ensureGlobalProjectGraph`
+// (project-graph-utils.ts) never memoizes and every linted file re-reads the
+// whole project graph.
+const OXLINT_REGEX = /node_modules.*[\/\\]oxlint(?:\.js)?$/;
+
+// `oxlint --lsp` is the same binary, and it is how the oxc editor extension
+// starts its server — so the language server matches the regex above and has to
+// be excluded by flag instead. JS plugins do load in LSP mode, so without this
+// the long-lived editor process would pin a graph from startup.
+function isOxlintTerminalRun(argv: string[]): boolean {
+  return !!argv[1].match(OXLINT_REGEX) && !argv.includes('--lsp');
+}
 
 export function isTerminalRun(): boolean {
   return (
@@ -451,6 +477,7 @@ export function isTerminalRun(): boolean {
     (!!process.argv[1].match(NRWL_CLI_REGEX) ||
       !!process.argv[1].match(JEST_REGEX) ||
       !!process.argv[1].match(ESLINT_REGEX) ||
+      isOxlintTerminalRun(process.argv) ||
       !!process.argv[1].endsWith('/bin/jest.js'))
   );
 }
@@ -490,47 +517,126 @@ export function groupImports(
 /**
  * Checks if source file belongs to a secondary entry point different than the import one
  */
-export function belongsToDifferentNgEntryPoint(
+export function belongsToDifferentEntryPoint(
   importExpr: string,
   filePath: string,
   projectRoot: string
 ): boolean {
-  const resolvedImportFile = resolveModuleByImport(
+  const importEntryPoint = getSecondaryEntryPointPath(
     importExpr,
-    filePath, // not strictly necessary, but speeds up resolution
-    path.join(workspaceRoot, getRootTsConfigFileName())
-  );
-
-  if (!resolvedImportFile) {
-    return false;
-  }
-
-  const importEntryPoint = getAngularEntryPoint(
-    resolvedImportFile,
+    filePath,
     projectRoot
   );
-  const srcEntryPoint = getAngularEntryPoint(filePath, projectRoot);
+  const srcEntryPoint = getEntryPoint(filePath, projectRoot);
 
   // check if the entry point of import expression is different than the source file's entry point
   return importEntryPoint !== srcEntryPoint;
 }
 
-function getAngularEntryPoint(file: string, projectRoot: string): string {
+export function getSecondaryEntryPointPath(
+  importExpr: string,
+  filePath: string,
+  projectRoot: string
+): string | undefined {
+  const resolvedImportFile = resolveModuleByImport(
+    importExpr,
+    filePath, // not strictly necessary, but speeds up resolution
+    path.join(workspaceRoot, getRootTsConfigFileName())
+  );
+  if (!resolvedImportFile) {
+    return undefined;
+  }
+  const entryPoint = getEntryPoint(resolvedImportFile, projectRoot);
+  return entryPoint;
+}
+
+function getEntryPoint(file: string, projectRoot: string): string {
+  const packageEntryPoints = getPackageEntryPoints(projectRoot);
+  const fileEntryPoint = packageEntryPoints.find(
+    (entry) => entry.file === file
+  );
+  if (fileEntryPoint) {
+    return fileEntryPoint.file;
+  }
+
   let parent = joinPathFragments(file, '../');
   while (parent !== `${projectRoot}/`) {
-    // we need to find closest existing ng-package.json
+    const entryPoint = packageEntryPoints.find(
+      (entry) => entry.path === parent
+    );
+    if (entryPoint) {
+      return entryPoint.file;
+    }
+    // for Angular we need to find closest existing ng-package.json
     // in order to determine if the file matches the secondary entry point
     const ngPackageContent = readFileIfExisting(
       path.join(workspaceRoot, parent, 'ng-package.json')
     );
     if (ngPackageContent) {
       // https://github.com/ng-packagr/ng-packagr/blob/23c718d04eea85e015b4c261310b7bd0c39e5311/src/ng-package.schema.json#L54
-      const entryFile = parseJson(ngPackageContent)?.lib?.entryFile;
+      const entryFile =
+        parseJson(ngPackageContent)?.lib?.entryFile ?? 'src/public_api.ts';
       return joinPathFragments(parent, entryFile);
     }
     parent = joinPathFragments(parent, '../');
   }
   return undefined;
+}
+
+function getPackageEntryPoints(
+  projectRoot: string
+): Array<{ path: string; file: string }> {
+  const packageContent = readFileIfExisting(
+    path.join(workspaceRoot, projectRoot, 'package.json')
+  );
+  if (!packageContent) {
+    return [];
+  }
+  const exports = parseJson(packageContent).exports;
+  if (!exports) {
+    return [];
+  }
+  const entryPaths: Array<{ path: string; file: string }> = [];
+  parseExports(exports, projectRoot, entryPaths);
+  return entryPaths;
+}
+
+export function parseExports(
+  exports: string | null | Record<string, any>,
+  projectRoot: string,
+  entryPaths: Array<{ path: string; file: string }>,
+  basePath: string = '.'
+): Array<{ path: string; file: string }> {
+  if (exports === null) {
+    return;
+  }
+  if (typeof exports === 'string') {
+    if (basePath === '.') {
+      return;
+    } else {
+      entryPaths.push({
+        path: joinPathFragments(projectRoot, basePath),
+        file: joinPathFragments(projectRoot, exports),
+      });
+      return;
+    }
+  }
+
+  // parse conditional exports
+  if (exports.import || exports.require || exports.default || exports.node) {
+    parseExports(
+      exports.default || exports.import || exports.require || exports.node,
+      projectRoot,
+      entryPaths,
+      basePath
+    );
+    return;
+  }
+
+  // parse general nested exports
+  for (const [key, value] of Object.entries(exports)) {
+    parseExports(value, projectRoot, entryPaths, key);
+  }
 }
 
 /**

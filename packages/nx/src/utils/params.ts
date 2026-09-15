@@ -1,12 +1,16 @@
 import { logger } from './logger';
+import { handleImport } from './handle-import';
+import {
+  selectPrompt,
+  multiselectPrompt,
+  textPrompt,
+  confirmationPrompt,
+} from './prompt-helpers';
 import type { NxJsonConfiguration } from '../config/nx-json';
 import type {
   ProjectsConfigurations,
   TargetConfiguration,
 } from '../config/workspace-json-project-json';
-import { output } from './output';
-import type { ProjectGraphError } from '../project-graph/error-types';
-import { daemonClient } from '../daemon/client/client';
 
 type PropertyDescription = {
   type?: string | string[];
@@ -16,7 +20,8 @@ type PropertyDescription = {
   oneOf?: PropertyDescription[];
   anyOf?: PropertyDescription[];
   allOf?: PropertyDescription[];
-  items?: any;
+  items?: PropertyDescription | PropertyDescription[];
+  additionalItems?: boolean | PropertyDescription;
   alias?: string;
   aliases?: string[];
   description?: string;
@@ -56,6 +61,10 @@ type PropertyDescription = {
   minLength?: number;
   maxLength?: number;
 
+  // Arrays Only
+  minItems?: number;
+  maxItems?: number;
+
   // Objects Only
   patternProperties?: {
     [pattern: string]: PropertyDescription;
@@ -88,56 +97,6 @@ export type Options = {
   '--'?: Unmatched[];
   [k: string]: string | number | boolean | string[] | Unmatched[] | undefined;
 };
-
-export async function handleErrors(
-  isVerbose: boolean,
-  fn: Function
-): Promise<number> {
-  try {
-    const result = await fn();
-    if (typeof result === 'number') {
-      return result;
-    }
-    return 0;
-  } catch (err) {
-    err ||= new Error('Unknown error caught');
-    if (err.constructor.name === 'UnsuccessfulWorkflowExecution') {
-      logger.error('The generator workflow failed. See above.');
-    } else if (err.name === 'ProjectGraphError') {
-      const projectGraphError = err as ProjectGraphError;
-      let title = projectGraphError.message;
-      if (isVerbose) {
-        title += ' See errors below.';
-      }
-
-      const bodyLines = isVerbose
-        ? [projectGraphError.stack]
-        : ['Pass --verbose to see the stacktraces.'];
-
-      output.error({
-        title,
-        bodyLines: bodyLines,
-      });
-    } else {
-      const lines = (err.message ? err.message : err.toString()).split('\n');
-      const bodyLines = lines.slice(1);
-      if (err.stack && !isVerbose) {
-        bodyLines.push('Pass --verbose to see the stacktrace.');
-      }
-      output.error({
-        title: lines[0],
-        bodyLines,
-      });
-      if (err.stack && isVerbose) {
-        logger.info(err.stack);
-      }
-    }
-    if (daemonClient.enabled()) {
-      daemonClient.reset();
-    }
-    return 1;
-  }
-}
 
 function camelCase(input: string): string {
   if (input.indexOf('-') > 1) {
@@ -209,7 +168,8 @@ function coerceType(prop: PropertyDescription | undefined, value: any) {
   ) {
     return Number(value);
   } else if (prop.type == 'array') {
-    return value.split(',').map((v) => coerceType(prop.items, v));
+    const itemSchema = Array.isArray(prop.items) ? undefined : prop.items;
+    return value.split(',').map((v) => coerceType(itemSchema, v));
   } else {
     return value;
   }
@@ -540,9 +500,57 @@ function validateProperty(
     }
   } else if (Array.isArray(value)) {
     if (schema.type !== 'array') throwInvalidSchema(propName, schema);
-    value.forEach((valueInArray) =>
-      validateProperty(propName, valueInArray, schema.items || {}, definitions)
-    );
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
+      throwInvalidSchema(propName, schema);
+    }
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
+      throwInvalidSchema(propName, schema);
+    }
+    if (Array.isArray(schema.items)) {
+      // Tuple validation: each item is validated against the corresponding positional schema
+      value.forEach((valueInArray, index) => {
+        if (index < (schema.items as PropertyDescription[]).length) {
+          validateProperty(
+            propName,
+            valueInArray,
+            (schema.items as PropertyDescription[])[index],
+            definitions
+          );
+        } else if (schema.additionalItems === false) {
+          throwInvalidSchema(propName, schema);
+        } else if (
+          schema.additionalItems &&
+          typeof schema.additionalItems === 'object'
+        ) {
+          validateProperty(
+            propName,
+            valueInArray,
+            schema.additionalItems,
+            definitions
+          );
+        }
+        // If additionalItems is not specified or true, additional items are allowed
+      });
+    } else {
+      value.forEach((valueInArray) =>
+        validateProperty(
+          propName,
+          valueInArray,
+          (schema.items as PropertyDescription) || {},
+          definitions
+        )
+      );
+    }
+  } else if (value === null) {
+    // Special handling for null since typeof null === 'object' in JavaScript
+    // null is valid if schema.type is 'null' or if it's an array containing 'null'
+    if (Array.isArray(schema.type)) {
+      if (!schema.type.includes('null')) {
+        throwInvalidSchema(propName, schema);
+      }
+    } else if (schema.type !== 'null') {
+      throwInvalidSchema(propName, schema);
+    }
   } else {
     if (schema.type !== 'object') throwInvalidSchema(propName, schema);
     validateObject(value, schema, definitions);
@@ -589,15 +597,13 @@ function setPropertyDefault(
   schema: any,
   definitions: Properties
 ) {
+  let defaultValueToSet: any | undefined;
+
   if (schema.$ref) {
     schema = resolveDefinition(schema.$ref, definitions);
   }
 
-  if (schema.type !== 'object' && schema.type !== 'array') {
-    if (opts[propName] === undefined && schema.default !== undefined) {
-      opts[propName] = schema.default;
-    }
-  } else if (schema.type === 'array') {
+  if (schema.type === 'array') {
     const items = schema.items || {};
     if (
       opts[propName] &&
@@ -608,20 +614,33 @@ function setPropertyDefault(
         setDefaultsInObject(valueInArray, items.properties || {}, definitions)
       );
     } else if (!opts[propName] && schema.default) {
-      opts[propName] = schema.default;
+      defaultValueToSet = schema.default;
     }
   } else {
-    const wasUndefined = opts[propName] === undefined;
-    if (wasUndefined) {
-      // We need an object to set values onto
-      opts[propName] = {};
+    if (opts[propName] === undefined && schema.default !== undefined) {
+      defaultValueToSet = schema.default;
     }
 
-    setDefaultsInObject(opts[propName], schema.properties || {}, definitions);
+    if (schema.type === 'object') {
+      const wasUndefined = opts[propName] === undefined;
+      if (!wasUndefined) {
+        setDefaultsInObject(
+          opts[propName],
+          schema.properties || {},
+          definitions
+        );
+      }
+    }
+  }
 
-    // If the property was initially undefined but no properties were added, we remove it again instead of having an {}
-    if (wasUndefined && Object.keys(opts[propName]).length === 0) {
-      delete opts[propName];
+  if (defaultValueToSet !== undefined) {
+    try {
+      validateProperty(propName, defaultValueToSet, schema, definitions);
+      opts[propName] = defaultValueToSet;
+    } catch (e) {
+      // If the default value is invalid, we don't set it...
+      // this should honestly never be needed... but some notable
+      // 3rd party schema's are invalid.
     }
   }
 }
@@ -664,7 +683,7 @@ export function combineOptionsForExecutor(
     schema,
     false
   );
-  let combined = target.options || {};
+  let combined = { ...target.options };
   if (config && target.configurations && target.configurations[config]) {
     Object.assign(combined, target.configurations[config]);
   }
@@ -840,13 +859,19 @@ function getGeneratorDefaults(
   return defaults;
 }
 
-type Prompt = ConstructorParameters<typeof import('enquirer').Prompt>[0] & {
+type Prompt = {
   name: string;
   type: 'input' | 'autocomplete' | 'multiselect' | 'confirm' | 'numeral';
   message: string;
   initial?: any;
+  /**
+   * Retained because {@link getPromptsForSchema} is exported and asserted on;
+   * the prompt itself scrolls rather than truncating.
+   */
   limit?: number;
   choices?: (string | { name: string; message: string })[];
+  /** Returns `true` when valid, otherwise the message to show. */
+  validate?: (value: any) => boolean | string;
 };
 
 export function getPromptsForSchema(
@@ -873,7 +898,11 @@ export function getPromptsForSchema(
             type: 'confirm',
             message,
           };
-        } else if (v.type === 'array' && v.items?.enum) {
+        } else if (
+          v.type === 'array' &&
+          !Array.isArray(v.items) &&
+          v.items?.enum
+        ) {
           v['x-prompt'] = {
             type: 'multiselect',
             items: v.items.enum,
@@ -958,15 +987,82 @@ async function promptForValues(
   schema: Schema,
   projectsConfigurations: ProjectsConfigurations
 ) {
-  return await (
-    await import('enquirer')
-  )
-    .prompt(getPromptsForSchema(opts, schema, projectsConfigurations))
-    .then((values) => ({ ...opts, ...values }))
-    .catch((e) => {
-      console.error(e);
-      process.exit(0);
-    });
+  try {
+    const values: Options = {};
+    // Asked one at a time; a schema prompt has no cross-question state, so the
+    // order is just the schema's own.
+    for (const question of getPromptsForSchema(
+      opts,
+      schema,
+      projectsConfigurations
+    )) {
+      values[question.name] = await askSchemaQuestion(question);
+    }
+    return { ...opts, ...values };
+  } catch (e) {
+    console.error(e);
+    process.exit(1);
+  }
+}
+
+async function askSchemaQuestion(question: Prompt): Promise<any> {
+  const validate = question.validate
+    ? (value: any) => {
+        const result = question.validate(value);
+        return result === true
+          ? undefined
+          : typeof result === 'string'
+            ? result
+            : 'Invalid value';
+      }
+    : undefined;
+
+  const choices = (question.choices ?? []).map((c) =>
+    typeof c === 'string' ? { value: c } : { value: c.name, label: c.message }
+  );
+
+  switch (question.type) {
+    case 'confirm':
+      return confirmationPrompt({
+        message: question.message,
+        initial: question.initial !== false,
+      });
+    case 'multiselect':
+      return multiselectPrompt({
+        message: question.message,
+        choices,
+        initialValues: Array.isArray(question.initial)
+          ? question.initial
+          : undefined,
+      });
+    case 'autocomplete':
+      return selectPrompt({
+        message: question.message,
+        choices,
+        initial: question.initial,
+      });
+    case 'numeral': {
+      // No numeric prompt; the answer is parsed back so the schema still
+      // receives a number.
+      const answer = await textPrompt({
+        message: question.message,
+        initialValue:
+          question.initial === undefined ? undefined : String(question.initial),
+        validate: (value) =>
+          value !== '' && !Number.isNaN(Number(value))
+            ? validate?.(Number(value))
+            : 'Please enter a number',
+      });
+      return Number(answer);
+    }
+    default:
+      return textPrompt({
+        message: question.message,
+        initialValue:
+          typeof question.initial === 'string' ? question.initial : undefined,
+        validate,
+      });
+  }
 }
 
 function findSchemaForProperty(

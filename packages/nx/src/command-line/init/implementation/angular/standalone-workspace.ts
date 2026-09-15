@@ -1,7 +1,10 @@
 import { unlinkSync } from 'fs';
-import { dirname, join, relative, resolve } from 'path';
+import { dirname, join, posix, relative, resolve } from 'node:path';
 import { toNewFormat } from '../../../../adapter/angular-json';
-import type { NxJsonConfiguration } from '../../../../config/nx-json';
+import type {
+  NxJsonConfiguration,
+  TargetDefaults,
+} from '../../../../config/nx-json';
 import type { ProjectConfiguration } from '../../../../config/workspace-json-project-json';
 import {
   fileExists,
@@ -10,12 +13,17 @@ import {
 } from '../../../../utils/fileutils';
 import type { PackageJson } from '../../../../utils/package-json';
 import { normalizePath } from '../../../../utils/path';
-import { addVsCodeRecommendedExtensions, createNxJsonFile } from '../utils';
+import {
+  addVsCodeRecommendedExtensions,
+  createNxJsonFile,
+  upsertTargetDefaultEntry,
+} from '../utils';
 import type {
   AngularJsonConfig,
   AngularJsonProjectConfiguration,
   WorkspaceCapabilities,
 } from './types';
+import { recordInitWrite } from '../format';
 
 export async function setupStandaloneWorkspace(
   repoRoot: string,
@@ -48,8 +56,9 @@ export async function setupStandaloneWorkspace(
   // update its targets outputs and delete angular.json
   const projects = toNewFormat(angularJson).projects;
   for (const [projectName, project] of Object.entries(projects ?? {})) {
-    updateProjectOutputs(repoRoot, project);
-    writeJsonFile(join(project.root, 'project.json'), {
+    updateProjectOutputs(repoRoot, projectName, project, cacheableOperations);
+    const projectJsonPath = join(project.root, 'project.json');
+    writeJsonFile(projectJsonPath, {
       $schema: normalizePath(
         relative(
           join(repoRoot, project.root),
@@ -60,6 +69,7 @@ export async function setupStandaloneWorkspace(
       ...project,
       root: undefined,
     });
+    recordInitWrite(projectJsonPath);
   }
   unlinkSync(angularJsonPath);
 }
@@ -91,63 +101,78 @@ function createNxJson(
           ].filter(Boolean)
         : []),
       ...(eslintProjectConfigFile
-        ? ['!{projectRoot}/.eslintrc.json', '!{projectRoot}/eslint.config.js']
+        ? ['!{projectRoot}/.eslintrc.json', '!{projectRoot}/eslint.config.cjs']
         : []),
     ].filter(Boolean),
   };
-  nxJson.targetDefaults ??= {};
+  const defaults: TargetDefaults = { ...(nxJson.targetDefaults ?? {}) };
   if (workspaceTargets.includes('build')) {
-    nxJson.targetDefaults.build = {
-      ...nxJson.targetDefaults.build,
+    upsertTargetDefaultEntry(defaults, 'build', {
       dependsOn: ['^build'],
       inputs: ['production', '^production'],
-    };
+    });
   }
   if (workspaceTargets.includes('server')) {
-    nxJson.targetDefaults.server = {
-      ...nxJson.targetDefaults.server,
+    upsertTargetDefaultEntry(defaults, 'server', {
       inputs: ['production', '^production'],
-    };
+    });
   }
   if (workspaceTargets.includes('test')) {
     const inputs = ['default', '^production'];
     if (fileExists(join(repoRoot, 'karma.conf.js'))) {
       inputs.push('{workspaceRoot}/karma.conf.js');
     }
-    nxJson.targetDefaults.test = {
-      ...nxJson.targetDefaults.test,
-      inputs,
-    };
+    upsertTargetDefaultEntry(defaults, 'test', { inputs });
   }
   if (workspaceTargets.includes('lint')) {
     const inputs = ['default'];
     if (fileExists(join(repoRoot, '.eslintrc.json'))) {
       inputs.push('{workspaceRoot}/.eslintrc.json');
     }
-    if (fileExists(join(repoRoot, 'eslint.config.js'))) {
-      inputs.push('{workspaceRoot}/eslint.config.js');
+    if (fileExists(join(repoRoot, 'eslint.config.cjs'))) {
+      inputs.push('{workspaceRoot}/eslint.config.cjs');
     }
-    nxJson.targetDefaults.lint = {
-      ...nxJson.targetDefaults.lint,
-      inputs,
-    };
+    upsertTargetDefaultEntry(defaults, 'lint', { inputs });
   }
   if (workspaceTargets.includes('e2e')) {
-    nxJson.targetDefaults.e2e = {
-      ...nxJson.targetDefaults.e2e,
+    upsertTargetDefaultEntry(defaults, 'e2e', {
       inputs: ['default', '^production'],
-    };
+    });
   }
-  writeJsonFile(join(repoRoot, 'nx.json'), nxJson);
+  if (Object.keys(defaults).length > 0) {
+    nxJson.targetDefaults = defaults;
+  }
+  const nxJsonPath = join(repoRoot, 'nx.json');
+  writeJsonFile(nxJsonPath, nxJson);
+  recordInitWrite(nxJsonPath);
 }
 
 function updateProjectOutputs(
   repoRoot: string,
-  project: ProjectConfiguration
+  projectName: string,
+  project: ProjectConfiguration,
+  cacheableOperations: string[]
 ): void {
-  Object.values(project.targets ?? {}).forEach((target) => {
+  Object.entries(project.targets ?? {}).forEach(([targetName, target]) => {
     if (
+      target.executor === '@angular/build:application' ||
+      target.executor === '@angular-devkit/build-angular:application'
+    ) {
+      if (target.options.outputPath) {
+        if (typeof target.options.outputPath === 'string') {
+          target.outputs = ['{options.outputPath}'];
+        } else if (target.options.outputPath.base) {
+          target.outputs = ['{options.outputPath.base}'];
+        } else if (cacheableOperations.includes(targetName)) {
+          target.cache = false;
+        }
+      } else {
+        target.options.outputPath = posix.join('dist', projectName);
+        target.outputs = ['{options.outputPath}'];
+      }
+    } else if (
       [
+        '@angular-devkit/build-angular:browser-esbuild',
         '@angular-devkit/build-angular:browser',
         '@angular-builders/custom-webpack:browser',
         'ngx-build-plus:browser',
@@ -156,12 +181,21 @@ function updateProjectOutputs(
         'ngx-build-plus:server',
       ].includes(target.executor)
     ) {
-      target.outputs = ['{options.outputPath}'];
+      if (target.options.outputPath) {
+        target.outputs = ['{options.outputPath}'];
+      } else if (cacheableOperations.includes(targetName)) {
+        target.cache = false;
+      }
     } else if (target.executor === '@angular-eslint/builder:lint') {
       target.outputs = ['{options.outputFile}'];
-    } else if (target.executor === '@angular-devkit/build-angular:ng-packagr') {
+    } else if (
+      target.executor === '@angular-devkit/build-angular:ng-packagr' ||
+      target.executor === '@angular/build:ng-packagr'
+    ) {
       try {
-        const ngPackageJsonPath = join(repoRoot, target.options.project);
+        const ngPackagrProject =
+          target.options.project ?? posix.join(project.root, 'ng-package.json');
+        const ngPackageJsonPath = join(repoRoot, ngPackagrProject);
         const ngPackageJson = readJsonFile(ngPackageJsonPath);
         const outputPath = relative(
           repoRoot,
@@ -215,7 +249,9 @@ function projectUsesKarmaBuilder(
   project: AngularJsonProjectConfiguration
 ): boolean {
   return Object.values(project.architect ?? {}).some(
-    (target) => target.builder === '@angular-devkit/build-angular:karma'
+    (target) =>
+      target.builder === '@angular/build:karma' ||
+      target.builder === '@angular-devkit/build-angular:karma'
   );
 }
 
@@ -230,7 +266,9 @@ function projectHasEslintConfig(
 ): boolean {
   return (
     fileExists(join(project.root, '.eslintrc.json')) ||
-    fileExists(join(project.root, 'eslint.config.js'))
+    fileExists(join(project.root, 'eslint.config.js')) ||
+    fileExists(join(project.root, 'eslint.config.mjs')) ||
+    fileExists(join(project.root, 'eslint.config.cjs'))
   );
 }
 
@@ -245,4 +283,5 @@ function replaceNgWithNxInPackageJsonScripts(repoRoot: string): void {
       .replace(/ ng /g, ' nx ');
   });
   writeJsonFile(packageJsonPath, packageJson);
+  recordInitWrite(packageJsonPath);
 }

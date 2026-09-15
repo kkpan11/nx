@@ -1,11 +1,9 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type {
   ProjectGraphClientResponse,
   TaskGraphClientResponse,
 } from 'nx/src/command-line/graph/graph';
 import { ProjectGraphService } from './get-project-graph-data-service';
-/* eslint-enable @nx/enforce-module-boundaries */
 
 export class FetchProjectGraphService implements ProjectGraphService {
   private taskInputsUrl: string;
@@ -18,8 +16,12 @@ export class FetchProjectGraphService implements ProjectGraphService {
     return response.json();
   }
 
-  async getProjectGraph(url: string): Promise<ProjectGraphClientResponse> {
-    const request = new Request(url, { mode: 'no-cors' });
+  async getProjectGraph(
+    url: string,
+    requestFull = false
+  ): Promise<ProjectGraphClientResponse> {
+    const requestUrl = requestFull ? `${url}?full=true` : url;
+    const request = new Request(requestUrl, { mode: 'no-cors' });
 
     const response = await fetch(request);
 
@@ -48,12 +50,38 @@ export class FetchProjectGraphService implements ProjectGraphService {
     this.taskInputsUrl = url;
   }
 
+  async getSpecificTaskGraph(
+    url: string,
+    projects: string[] | null,
+    targets: string[],
+    configuration?: string
+  ): Promise<TaskGraphClientResponse> {
+    const params = new URLSearchParams();
+
+    if (projects) {
+      params.append('projects', projects.join(' '));
+    }
+
+    params.append('targets', targets.join(' '));
+
+    if (configuration) {
+      params.append('configuration', configuration);
+    }
+
+    const request = new Request(`${url}?${params.toString()}`, {
+      mode: 'no-cors',
+    });
+
+    return await fetch(request).then((res) => res.json());
+  }
+
   async getExpandedTaskInputs(
     taskId: string
   ): Promise<Record<string, string[]>> {
     if (!this.taskInputsUrl) {
       return {};
     }
+
     const request = new Request(`${this.taskInputsUrl}?taskId=${taskId}`, {
       mode: 'no-cors',
     });

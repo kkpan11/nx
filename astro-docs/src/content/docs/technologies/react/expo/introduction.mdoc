@@ -1,0 +1,389 @@
+---
+title: Nx with Expo
+description: Nx scales your Expo monorepo with caching, distributed task execution, and affected-only builds.
+sidebar:
+  label: 'Introduction'
+weight: 2
+filter: 'type:References'
+---
+
+Expo is an open-source framework for apps that run natively on Android, iOS, and the web. In an Expo monorepo, Nx lets you share code across native and web targets while keeping builds and tests fast. Expo brings together the best of mobile and the web and enables many important features for building and scaling an app.
+
+Expo is a set of tools built on top of React Native. The Nx Plugin for Expo contains generators for managing Expo applications and libraries within an Nx workspace.
+
+## Requirements
+
+The `@nx/expo` plugin supports the following package versions.
+
+| Package        | Supported Versions                |
+| -------------- | --------------------------------- |
+| `metro-config` | >= 0.82.0                         |
+| `expo`         | ^53.0.0 \|\| ^54.0.0 \|\| ^55.0.0 |
+
+[Nx generators](/docs/features/generate-code) install the latest supported versions automatically when scaffolding new projects.
+
+## Setting up Expo
+
+To create a new workspace with Expo, run the following command:
+
+```shell
+ npx create-nx-workspace@latest --preset=expo --appName=your-app-name
+```
+
+### Installation
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/expo` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+{% /aside %}
+
+In any Nx workspace, you can install `@nx/expo` by running the following command:
+
+```shell
+nx add @nx/expo
+```
+
+This will install the correct version of `@nx/expo`.
+
+### How @nx/expo infers tasks
+
+The `@nx/expo` plugin will create a task for any project that has an app configuration file present. Any of the following files will be recognized as an app configuration file:
+
+- `app.config.js`
+- `app.config.ts`
+- `app.json`
+
+The directory must contain both `package.json` and `metro.config.js`.
+Nx treats the project as Expo when the app configuration has an `expo` key or `package.json` lists
+`expo` as a dependency or development dependency:
+
+```json
+// app.json
+{
+  "expo": {
+    "name": "MyProject",
+    "slug": "my-project"
+  }
+}
+```
+
+### View inferred tasks
+
+To view inferred tasks for a project, open the [project details view](/docs/concepts/mental-model#inferred-tasks) in Nx Console or run `nx show project my-project --web` in the command line.
+
+### @nx/expo configuration
+
+The `@nx/expo/plugin` is configured in the `plugins` array in `nx.json`.
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/expo/plugin",
+      "options": {
+        "startTargetName": "start",
+        "serveTargetName": "serve",
+        "runIosTargetName": "run-ios",
+        "runAndroidTargetName": "run-android",
+        "exportTargetName": "export",
+        "prebuildTargetName": "prebuild",
+        "installTargetName": "install",
+        "buildTargetName": "build",
+        "submitTargetName": "submit",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    }
+  ]
+}
+```
+
+| Option                 | Default       | Inferred behavior                                     |
+| ---------------------- | ------------- | ----------------------------------------------------- |
+| `startTargetName`      | `start`       | Runs the `@nx/expo:start` executor continuously.      |
+| `serveTargetName`      | `serve`       | Runs `expo start --web` continuously.                 |
+| `runIosTargetName`     | `run-ios`     | Runs `expo run:ios` continuously.                     |
+| `runAndroidTargetName` | `run-android` | Runs `expo run:android` continuously.                 |
+| `exportTargetName`     | `export`      | Runs and caches `expo export`, including its outputs. |
+| `prebuildTargetName`   | `prebuild`    | Runs the `@nx/expo:prebuild` executor.                |
+| `installTargetName`    | `install`     | Runs the `@nx/expo:install` executor.                 |
+| `buildTargetName`      | `build`       | Runs the `@nx/expo:build` executor.                   |
+| `submitTargetName`     | `submit`      | Runs `eas submit`.                                    |
+| `buildDepsTargetName`  | none          | Name of an optional dependency build task.            |
+| `watchDepsTargetName`  | none          | Name of an optional dependency watch task.            |
+
+Use `include` and `exclude` glob patterns on the plugin entry to scope inference. A [target defaults](/docs/reference/nx-json#target-defaults) `plugin` filter must use the exact identifier `@nx/expo/plugin`.
+
+### Creating applications
+
+Add a new application to your workspace with the following command:
+
+```shell
+nx g @nx/expo:app apps/my-app
+```
+
+Start the application by running:
+
+```shell
+nx start my-app
+```
+
+### Generating libraries
+
+To generate a new library run:
+
+```shell
+npx nx g @nx/expo:lib libs/your-lib-name
+```
+
+### Generating components
+
+To generate a new component inside library run:
+
+```shell
+npx nx g @nx/expo:component libs/your-lib-name/src/your-component-name --export
+```
+
+Replace `your-lib-name` with the app's name as defined in your `tsconfig.base.json` file or the `name` property of your `package.json`
+
+## Using Expo
+
+### Start a development server
+
+You can start a development server by running:
+
+```shell
+nx start <app-name>
+```
+
+### Compile app locally
+
+You can compile your app locally with `run-ios` and `run-android` commands:
+
+{% tabs syncKey="platform" %}
+{% tabitem label="iOS" %}
+
+Compile for iOS:
+
+```shell
+nx run-ios <app-name>
+```
+
+{% /tabitem %}
+{% tabitem label="Android" %}
+
+Compile for Android:
+
+```shell
+nx run-android <app-name>
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+To run these commands, you need to have your development environment setup. To run an iOS app,it can only be run on a Mac, and Xcode must be installed. Similarly, to run an Android app, it requires Android Studio and Java to be installed and configured on your computer. Setup steps: https://reactnative.dev/docs/environment-setup.
+
+### Compile web assets
+
+You can build your JavaScript bundle using Metro bundler by running:
+
+```shell
+nx export <app-name>
+```
+
+{% tabs syncKey="platform" %}
+{% tabitem label="All Platforms" %}
+
+Compile for all platforms:
+
+```shell
+nx export <app-name> --platform=all
+```
+
+{% /tabitem %}
+{% tabitem label="iOS" %}
+
+Compile for iOS:
+
+```shell
+nx export <app-name> --platform=ios
+```
+
+{% /tabitem %}
+{% tabitem label="Android" %}
+
+Compile for Android:
+
+```shell
+nx export <app-name> --platform=android
+```
+
+{% /tabitem %}
+{% tabitem label="Web" %}
+
+Compile for Web:
+
+```shell
+nx export <app-name> --platform=web
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+### Generate native code
+
+To generate native code, run:
+
+```shell
+nx prebuild <app-name>
+```
+
+{% tabs syncKey="platform" %}
+{% tabitem label="All Platforms" %}
+
+Generate for all platforms:
+
+```shell
+nx prebuild <app-name> --platform=all
+```
+
+{% /tabitem %}
+{% tabitem label="iOS" %}
+
+Generate for iOS:
+
+```shell
+nx prebuild <app-name> --platform=ios
+```
+
+{% /tabitem %}
+{% tabitem label="Android" %}
+
+Generate for Android:
+
+```shell
+nx prebuild <app-name> --platform=android
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+### Install compatible npm packages
+
+To install packages that is compatible with current version of Expo, run:
+
+```shell
+nx install <app-name>
+```
+
+Unlike npm's `install` command, this `install` command will install the exact right version for currently installed copy of Expo.
+
+To install a specify NPM package, run:
+
+```shell
+nx install <app-name> --packages=<packpage-name>
+nx install <app-name> --packages=<packpage-name-1>,<packpage-name-2>,<packpage-name-3>
+```
+
+To check and fix package versions, run:
+
+{% tabs %}
+{% tabitem label="check" %}
+
+Check which packages needed to be updated:
+
+```shell
+nx install <app-name> --check
+```
+
+{% /tabitem %}
+{% tabitem label="fix" %}
+
+Automatically update invalid packages versions:
+
+```shell
+nx install <app-name> --fix
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+### Run an EAS build
+
+Expo Application Services (EAS) are deeply integrated cloud services for Expo and React Native apps. EAS Build is a hosted service for building app binaries for your Expo and React Native projects.
+
+To run an EAS build:
+
+```shell
+nx build <app-name>
+```
+
+If you are not signed into an EAS account, run the following command to log in:
+
+```shell
+npx eas login
+```
+
+To check the details of your build status, run:
+
+```shell
+nx build-list  <app-name>
+```
+
+### Submit an EAS build
+
+EAS Submit is a hosted service for uploading and submitting your app binaries to the app stores. Since it's a hosted service, you can submit your app to both stores as long as you can run EAS CLI on your machine.
+
+To submit an EAS build:
+
+```shell
+nx submit <app-name>
+```
+
+### Update an EAS build
+
+EAS Update is a hosted service that serves updates for projects using the `expo-updates` library.
+
+EAS Update makes fixing small bugs and pushing quick fixes a snap in between app store submissions. It accomplishes this by allowing an end-user's app to swap out the non-native parts of their app (for example, JS, styling, and image changes) with a new update that contains bug fixes and other updates.
+
+To update an EAS build:
+
+```shell
+nx update <app-name>
+```
+
+### Testing projects
+
+You can run unit tests with:
+
+```shell
+nx test <project-name>
+```
+
+## Expo commands
+
+Below table is a map between expo commands and Nx commands:
+
+| Expo Commands      | Nx Commands                 |
+| ------------------ | --------------------------- |
+| `expo start`       | `nx start <app-name>`       |
+| `expo run:ios`     | `nx run-ios <app-name>`     |
+| `expo run:android` | `nx run-android <app-name>` |
+| `expo export`      | `nx export <app-name>`      |
+| `expo prebuild`    | `nx prebuild <app-name>`    |
+| `expo install`     | `nx install <app-name>`     |
+| `eas build`        | `nx build <app-name>`       |
+| `eas build:list`   | `nx build-list <app-name>`  |
+| `eas update`       | `nx update <app-name>`      |
+| `eas submit`       | `nx submit <app-name>`      |
+
+## More documentation
+
+- [Using Detox](/docs/technologies/test-tools/detox/introduction)
+- [Using Jest](/docs/technologies/test-tools/jest/introduction)
+
+## Set up CI for your Expo monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).

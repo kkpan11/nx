@@ -4,15 +4,18 @@ import {
   ClipboardDocumentIcon,
   SparklesIcon,
 } from '@heroicons/react/24/outline';
+import cx from 'classnames';
 import { JSX, ReactNode, useEffect, useState } from 'react';
 // @ts-ignore
-import { CopyToClipboard } from 'react-copy-to-clipboard';
+import * as reactCopyToClipboard from 'react-copy-to-clipboard';
 // @ts-ignore
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { CodeOutput } from './fences/code-output';
 import { TerminalOutput } from './fences/terminal-output';
 
 import { Selector } from './selector';
+
+const { CopyToClipboard } = reactCopyToClipboard;
 
 function resolveLanguage(lang: string) {
   switch (lang) {
@@ -28,21 +31,33 @@ function resolveLanguage(lang: string) {
 function CodeWrapper(options: {
   fileName: string;
   command: string;
+  title: string;
   path: string;
   language: string;
+  isWithinTab?: boolean;
   children: string; // intentionally typed as such
 }): ({ children }: { children: ReactNode }) => JSX.Element {
   return ({ children }: { children: ReactNode }) =>
     options.language === 'shell' ? (
-      <TerminalOutput command={options.children} path="" content={null} />
+      <TerminalOutput
+        command={options.children}
+        path={options.path}
+        title={options.title}
+        content={null}
+      />
     ) : options.command ? (
       <TerminalOutput
         content={children}
         command={options.command}
         path={options.path}
+        title={options.title}
       />
     ) : (
-      <CodeOutput content={children} fileName={options.fileName} />
+      <CodeOutput
+        content={children}
+        fileName={options.fileName}
+        isWithinTab={options.isWithinTab}
+      />
     );
 }
 
@@ -75,6 +90,7 @@ function processHighlightLines(highlightLines: any): number[] {
 export interface FenceProps {
   children: string;
   command: string;
+  title: string;
   path: string;
   fileName: string;
   highlightLines: number[];
@@ -84,11 +100,14 @@ export interface FenceProps {
   skipRescope?: boolean;
   selectedLineGroup?: string;
   onLineGroupSelectionChange?: (selection: string) => void;
+  isWithinTab?: boolean;
+  lineWrap?: number;
 }
 
 export function Fence({
   children,
   command,
+  title,
   path,
   fileName,
   lineGroups,
@@ -98,6 +117,8 @@ export function Fence({
   selectedLineGroup,
   skipRescope,
   onLineGroupSelectionChange,
+  isWithinTab,
+  lineWrap,
 }: FenceProps) {
   if (highlightLines) {
     highlightLines = processHighlightLines(highlightLines);
@@ -159,9 +180,14 @@ export function Fence({
   }
 
   return (
-    <div className="code-block group relative w-full">
+    <div
+      className={cx(
+        'code-block group relative mb-4',
+        isWithinTab ? '-mr-4 -ml-4 w-[calc(100%+2rem)]' : 'w-auto'
+      )}
+    >
       <div>
-        <div className="absolute right-0 top-0 z-10 flex">
+        <div className="absolute top-0 right-0 z-10 flex">
           {enableCopy && enableCopy === true && (
             <CopyToClipboard
               text={command && command !== '' ? command : children}
@@ -172,14 +198,14 @@ export function Fence({
               <button
                 type="button"
                 className={
-                  'not-prose flex border border-slate-200 bg-slate-50/50 p-2 opacity-0 transition-opacity group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-800/60' +
-                  (highlightOptions && highlightOptions[0]
+                  'not-prose flex border border-zinc-200 bg-zinc-50/50 p-2 opacity-0 transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-800/60' +
+                  ((highlightOptions && highlightOptions[0]) || isWithinTab
                     ? ''
                     : ' rounded-tr-lg')
                 }
               >
                 {copied ? (
-                  <ClipboardDocumentCheckIcon className="h-5 w-5 text-blue-500 dark:text-sky-500" />
+                  <ClipboardDocumentCheckIcon className="h-5 w-5 text-blue-500 dark:text-blue-500" />
                 ) : (
                   <ClipboardDocumentIcon className="h-5 w-5" />
                 )}
@@ -188,7 +214,7 @@ export function Fence({
           )}
           {highlightOptions && highlightOptions[0] && (
             <Selector
-              className="rounded-tr-lg"
+              className={cx(isWithinTab ? '' : 'rounded-tr-lg')}
               items={highlightOptions}
               selected={selectedOption}
               onChange={highlightChange}
@@ -202,16 +228,42 @@ export function Fence({
           showLineNumbers={true}
           lineNumberStyle={lineNumberStyle}
           language={resolveLanguage(language)}
-          children={children}
+          children={lineWrap ? wrapChildren(children, lineWrap) : children}
           PreTag={CodeWrapper({
             fileName,
             command,
+            title,
             path,
             language,
-            children,
+            children: lineWrap ? wrapChildren(children, lineWrap) : children,
+            isWithinTab,
           })}
         />
       </div>
     </div>
   );
+}
+
+function wrapChildren(children: string, wrapLength = 80): string {
+  const incomingLines = children.split('\n');
+  const outgoingLines: string[] = [];
+  for (const line of incomingLines) {
+    let count = 0;
+    const words = line.split(' ');
+    let currentLine: string[] = [];
+    for (const word of words) {
+      if (count + 1 + word.length >= wrapLength) {
+        outgoingLines.push(currentLine.join(' '));
+        currentLine = [word];
+        count = word.length + 1;
+      } else {
+        currentLine.push(word);
+        count += word.length + 1;
+      }
+    }
+    outgoingLines.push(currentLine.join(' '));
+  }
+  const toReturn = outgoingLines.join('\n');
+  console.log(toReturn);
+  return toReturn;
 }

@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import { gte, major } from 'semver';
 import { readJsonFile, writeJsonFile } from '../../../../utils/fileutils';
+import { getNxRequirePaths } from '../../../../utils/installation-directory';
 import { sortObjectByKeys } from '../../../../utils/object-sort';
 import { output } from '../../../../utils/output';
 import { readModulePackageJson } from '../../../../utils/package-json';
@@ -11,18 +12,25 @@ import {
   resolvePackageVersionUsingInstallation,
   resolvePackageVersionUsingRegistry,
 } from '../../../../utils/package-manager';
-import { initCloud } from '../utils';
+import { connectExistingRepoToNxCloudPrompt } from '../../../nx-cloud/connect/connect-to-nx-cloud';
+import { initCloud, setNeverConnectToCloud } from '../utils';
+import { MessageOptionKey } from '../../../../utils/ab-testing';
 import type { Options } from './types';
-import { connectExistingRepoToNxCloudPrompt } from '../../../connect/connect-to-nx-cloud';
+import { recordInitWrite } from '../format';
 
 // map of Angular major versions to Nx versions to use for legacy `nx init` migrations,
 // key is major Angular version and value is Nx version to use
 const nxAngularLegacyVersionMap: Record<number, string> = {
   14: '~17.0.0',
   15: '~19.0.0',
+  16: '~20.1.0',
+  17: '~21.1.0',
+  18: '~22.2.0',
+  19: '~23.0.0',
 };
 // min major angular version supported in latest Nx
-const minMajorAngularVersionSupported = 16;
+const minMajorAngularVersionSupported =
+  Math.max(...Object.keys(nxAngularLegacyVersionMap).map(Number)) + 1;
 // version when the Nx CLI changed from @nrwl/tao & @nrwl/cli to nx
 const versionWithConsolidatedPackages = '13.9.0';
 // version when packages were rescoped from @nrwl/* to @nx/*
@@ -32,9 +40,25 @@ export async function getLegacyMigrationFunctionIfApplicable(
   repoRoot: string,
   options: Options
 ): Promise<() => Promise<void> | null> {
-  const angularVersion =
-    readModulePackageJson('@angular/core').packageJson.version;
-  const majorAngularVersion = major(angularVersion);
+  let majorAngularVersion: number;
+  try {
+    const angularVersion = readModulePackageJson('@angular/core', [
+      repoRoot,
+      ...getNxRequirePaths(),
+    ]).packageJson.version;
+    majorAngularVersion = major(angularVersion);
+  } catch {
+    output.error({
+      title: 'Could not determine the existing Angular version',
+      bodyLines: [
+        'Please ensure "@angular/core" is installed in the workspace and you are running this command from the root of the workspace.',
+      ],
+    });
+    // errors are caught in the initHandler and not logged to the user, so we
+    // log it first and then throw to ensure it is logged to the user
+    throw new Error('Could not determine the existing Angular version');
+  }
+
   if (majorAngularVersion >= minMajorAngularVersionSupported) {
     // non-legacy
     return null;
@@ -86,11 +110,14 @@ export async function getLegacyMigrationFunctionIfApplicable(
 
   return async () => {
     output.log({ title: '🐳 Nx initialization' });
-    const useNxCloud =
-      options.nxCloud ??
-      (options.interactive
-        ? await connectExistingRepoToNxCloudPrompt()
-        : false);
+    const nxCloudChoice: MessageOptionKey =
+      options.nxCloud === true
+        ? 'yes'
+        : options.nxCloud === false
+          ? 'skip'
+          : options.interactive
+            ? await connectExistingRepoToNxCloudPrompt()
+            : 'skip';
 
     output.log({ title: '📦 Installing dependencies' });
     const pmc = getPackageManagerCommand();
@@ -106,11 +133,19 @@ export async function getLegacyMigrationFunctionIfApplicable(
     );
 
     output.log({ title: '📝 Setting up workspace' });
-    execSync(`${pmc.exec} ${legacyMigrationCommand}`, { stdio: [0, 1, 2] });
+    // Intentionally not runNxSync: legacyMigrationCommand is either the Angular
+    // CLI (`ng g ...:ng-add`) or a version-pinned `nx@<version> init`, neither
+    // of which is the local nx that runNxSync would resolve.
+    execSync(`${pmc.exec} ${legacyMigrationCommand}`, {
+      stdio: [0, 1, 2],
+      windowsHide: true,
+    });
 
-    if (useNxCloud) {
+    if (nxCloudChoice === 'yes') {
       output.log({ title: '🛠️ Setting up Nx Cloud' });
-      initCloud(repoRoot, 'nx-init-angular');
+      await initCloud('nx-init-angular');
+    } else if (nxCloudChoice === 'never') {
+      setNeverConnectToCloud(repoRoot);
     }
   };
 }
@@ -145,8 +180,9 @@ async function installDependencies(
     json.dependencies = sortObjectByKeys(json.dependencies);
   }
   writeJsonFile(`package.json`, json);
+  recordInitWrite('package.json');
 
-  execSync(pmc.install, { stdio: [0, 1, 2] });
+  execSync(pmc.install, { stdio: [0, 1, 2], windowsHide: true });
 }
 
 async function resolvePackageVersion(

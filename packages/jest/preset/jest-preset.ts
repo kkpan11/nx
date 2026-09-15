@@ -1,17 +1,31 @@
-import type { Config } from 'jest';
+import { Config, getVersion } from 'jest';
+import { major } from 'semver';
+
+const jestMajorVersion = major(getVersion());
+
 export const nxPreset: Config = {
   // This is one of the patterns that jest finds by default https://jestjs.io/docs/configuration#testmatch-arraystring
-  testMatch: ['**/?(*.)+(spec|test).[jt]s?(x)'],
+  testMatch: [
+    jestMajorVersion >= 30
+      ? '**/?(*.)+(spec|test).?([mc])[jt]s?(x)'
+      : '**/?(*.)+(spec|test).[jt]s?(x)',
+  ],
   resolver: '@nx/jest/plugins/resolver',
-  moduleFileExtensions: ['ts', 'js', 'mjs', 'html'],
+  moduleFileExtensions:
+    jestMajorVersion >= 30
+      ? ['ts', 'js', 'mts', 'mjs', 'cts', 'cjs', 'html']
+      : ['ts', 'js', 'mjs', 'html'],
   coverageReporters: ['html'],
   transform: {
-    '^.+\\.(ts|js|html)$': [
+    [jestMajorVersion >= 30
+      ? '^.+\\.(ts|js|mts|mjs|cts|cjs|html)$'
+      : '^.+\\.(ts|js|html)$']: [
       'ts-jest',
       { tsconfig: '<rootDir>/tsconfig.spec.json' },
     ],
   },
   testEnvironment: 'jsdom',
+  modulePathIgnorePatterns: ['<rootDir>/dist/', '<rootDir>/out-tsc/'],
   /**
    * manually set the exports names to load in common js, to mimic the behaviors of jest 27
    * before jest didn't fully support package exports and would load in common js code (typically via main field). now jest 28+ will load in the browser esm code, but jest esm support is not fully supported.

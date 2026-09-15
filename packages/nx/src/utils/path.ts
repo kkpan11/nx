@@ -2,7 +2,7 @@ import * as path from 'path';
 import { workspaceRoot } from './workspace-root';
 
 function removeWindowsDriveLetter(osSpecificPath: string): string {
-  return osSpecificPath.replace(/^[A-Z]:/, '');
+  return osSpecificPath.replace(/^[a-zA-Z]:/, '');
 }
 
 /**
@@ -19,6 +19,23 @@ export function normalizePath(osSpecificPath: string): string {
  */
 export function joinPathFragments(...fragments: string[]): string {
   return normalizePath(path.join(...fragments));
+}
+
+/**
+ * True when `relativePath` stays inside the directory it is resolved against.
+ * Absolute paths are rejected because `path.join` silently treats them as
+ * relative, so they would otherwise slip past a `..` check.
+ */
+export function isContainedRelativePath(relativePath: string): boolean {
+  if (path.isAbsolute(relativePath)) {
+    return false;
+  }
+  const normalized = path.normalize(relativePath);
+  return !(
+    normalized === '..' ||
+    normalized.startsWith(`..${path.sep}`) ||
+    normalized.startsWith(`..${path.posix.sep}`)
+  );
 }
 
 /**

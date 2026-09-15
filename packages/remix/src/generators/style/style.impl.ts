@@ -1,3 +1,4 @@
+import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/internal';
 import {
   formatFiles,
   joinPathFragments,
@@ -6,33 +7,33 @@ import {
   Tree,
 } from '@nx/devkit';
 import { RemixStyleSchema } from './schema';
+import { assertSupportedRemixVersion } from '../../utils/versions';
 
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
 import { dirname, relative } from 'path';
 import { insertImport } from '../../utils/insert-import';
 import { insertStatementAfterImports } from '../../utils/insert-statement-after-imports';
 import {
   normalizeRoutePath,
   resolveRemixAppDirectory,
-  resolveRemixRouteFile,
 } from '../../utils/remix-route-utils';
 
 export default async function (tree: Tree, options: RemixStyleSchema) {
-  const { project: projectName, artifactName: name } =
-    await determineArtifactNameAndDirectoryOptions(tree, {
-      artifactType: 'style',
-      callingGenerator: '@nx/remix:style',
-      name: options.path,
-      nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-      project: options.project,
-    });
+  assertSupportedRemixVersion(tree);
+
+  const {
+    project: projectName,
+    directory,
+    fileName,
+  } = await determineArtifactNameAndDirectoryOptions(tree, {
+    path: options.path,
+  });
   const project = readProjectConfiguration(tree, projectName);
   if (!project) throw new Error(`Project does not exist: ${projectName}`);
 
   const appDir = await resolveRemixAppDirectory(tree, project.name);
-  const normalizedRoutePath = `${normalizeRoutePath(options.path)
-    .replace(/^\//, '')
-    .replace('.tsx', '')}.css`;
+  const normalizedRoutePath = `${normalizeRoutePath(
+    joinPathFragments(directory, fileName)
+  ).replace(/^\//, '')}.css`;
   const stylesheetPath = joinPathFragments(
     appDir,
     'styles',
@@ -53,9 +54,7 @@ export default async function (tree: Tree, options: RemixStyleSchema) {
     `
   );
 
-  const routeFilePath = options.nameAndDirectoryFormat
-    ? options.path
-    : await resolveRemixRouteFile(tree, options.path, options.project, '.tsx');
+  const routeFilePath = options.path;
 
   insertImport(tree, routeFilePath, 'LinksFunction', '@remix-run/node', {
     typeOnly: true,

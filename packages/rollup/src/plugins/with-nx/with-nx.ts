@@ -1,43 +1,63 @@
-import { existsSync } from 'node:fs';
-import { dirname, join, parse } from 'node:path';
-import * as ts from 'typescript';
-import * as rollup from 'rollup';
-import { getBabelInputPlugin } from '@rollup/plugin-babel';
-import * as autoprefixer from 'autoprefixer';
 import {
-  joinPathFragments,
   logger,
+  normalizePath,
   type ProjectGraph,
   readCachedProjectGraph,
   readJsonFile,
   workspaceRoot,
 } from '@nx/devkit';
+import { isAbsolute, resolve } from 'path';
 import {
   calculateProjectBuildableDependencies,
   computeCompilerOptionsPaths,
+  createTmpTsConfig,
   DependentBuildableProjectNode,
-} from '@nx/js/src/utils/buildable-libs-utils';
+  getProjectSourceRoot,
+  isUsingTsSolutionSetup,
+} from '@nx/js/internal';
+import { typeDefinitions } from './type-definitions';
+import { resolvePathsBaseUrl } from '@nx/js';
+import { getBabelInputPlugin } from '@rollup/plugin-babel';
 import nodeResolve from '@rollup/plugin-node-resolve';
-import { typeDefinitions } from '@nx/js/src/plugins/rollup/type-definitions';
-
+import autoprefixer from 'autoprefixer';
+import { existsSync } from 'node:fs';
+import { dirname, join, parse } from 'node:path';
+import * as rollup from 'rollup';
 import { analyze } from '../analyze';
-import { swc } from '../swc';
-import { generatePackageJson } from '../package-json/generate-package-json';
-import { getProjectNode } from './get-project-node';
 import { deleteOutput } from '../delete-output';
-import { AssetGlobPattern, RollupWithNxPluginOptions } from './with-nx-options';
+import { nxCopyAssetsPlugin } from '../nx-copy-assets.plugin';
+import { generatePackageJson } from '../package-json/generate-package-json';
+import { swc } from '../swc';
+import { getProjectNode } from './get-project-node';
 import { normalizeOptions } from './normalize-options';
-import { PackageJson } from 'nx/src/utils/package-json';
+import { RollupWithNxPluginOptions } from './with-nx-options';
 
 // These use require because the ES import isn't correct.
 const commonjs = require('@rollup/plugin-commonjs');
 const image = require('@rollup/plugin-image');
 
 const json = require('@rollup/plugin-json');
-const copy = require('rollup-plugin-copy');
-const postcss = require('rollup-plugin-postcss');
+
+// Use our inlined postcss plugin instead of external rollup-plugin-postcss
+import { postcss } from '../postcss';
+import { PackageJson } from '@nx/devkit/internal';
 
 const fileExtensions = ['.js', '.jsx', '.ts', '.tsx'];
+
+let ts: typeof import('typescript');
+
+function ensureTypeScript() {
+  if (!ts) {
+    try {
+      ts = require('typescript');
+    } catch (e) {
+      throw new Error(
+        'TypeScript is required for the @nx/rollup plugin. Please install it in your workspace.'
+      );
+    }
+  }
+  return ts;
+}
 
 export function withNx(
   rawOptions: RollupWithNxPluginOptions,
@@ -70,16 +90,27 @@ export function withNx(
     dependencies = result.dependencies;
   }
 
+  const projectSourceRoot = getProjectSourceRoot(projectNode.data);
   const options = normalizeOptions(
     projectNode.data.root,
-    projectNode.data.sourceRoot,
+    projectSourceRoot,
     rawOptions
   );
 
   const useBabel = options.compiler === 'babel';
   const useSwc = options.compiler === 'swc';
 
-  const tsConfigPath = joinPathFragments(workspaceRoot, options.tsConfig);
+  const tsConfigPath =
+    options.buildLibsFromSource || global.NX_GRAPH_CREATION
+      ? join(workspaceRoot, options.tsConfig)
+      : createTmpTsConfig(
+          options.tsConfig,
+          workspaceRoot,
+          projectNode.data.root,
+          dependencies
+        );
+
+  ensureTypeScript();
   const tsConfigFile = ts.readConfigFile(tsConfigPath, ts.sys.readFile);
   const tsConfig = ts.parseJsonConfigFileContent(
     tsConfigFile.config,
@@ -127,6 +158,7 @@ export function withNx(
           // Cannot be joined with workspace root now, but will be handled by @nx/rollup/plugin.
           options.outputPath
         : join(workspaceRoot, options.outputPath),
+      sourcemap: options.sourceMap,
     }));
   }
 
@@ -181,28 +213,63 @@ export function withNx(
   }
 
   if (!global.NX_GRAPH_CREATION) {
+    // Ensure TypeScript is available before any plugin initialization
+    ensureTypeScript();
+
+    const isTsSolutionSetup = isUsingTsSolutionSetup();
+    if (isTsSolutionSetup) {
+      if (options.generatePackageJson) {
+        throw new Error(
+          `Setting 'generatePackageJson: true' is not supported with the current TypeScript setup. Update the 'package.json' file at the project root as needed and unset the 'generatePackageJson' option. See https://nx.dev/docs/technologies/node/guides/deploying-node-projects for the recommended pruned package.json workflow.`
+        );
+      }
+      if (options.generateExportsField) {
+        throw new Error(
+          `Setting 'generateExportsField: true' is not supported with the current TypeScript setup. Set 'exports' field in the 'package.json' file at the project root and unset the 'generateExportsField' option.`
+        );
+      }
+    } else {
+      options.generatePackageJson ??= true;
+    }
+
+    const originalTsConfigPath = join(workspaceRoot, options.tsConfig);
+    const compilerOptions: Record<string, unknown> = createTsCompilerOptions(
+      projectRoot,
+      tsConfig,
+      originalTsConfigPath,
+      options,
+      dependencies
+    );
+    compilerOptions.outDir = Array.isArray(finalConfig.output)
+      ? finalConfig.output[0].dir
+      : finalConfig.output.dir;
+
     finalConfig.plugins = [
-      copy({
-        targets: convertCopyAssetsToRollupOptions(
-          options.outputPath,
-          options.assets
-        ),
+      nxCopyAssetsPlugin({
+        assets: options.assets,
+        outputPath: options.outputPath,
+        projectRoot,
       }),
       image(),
       json(),
-      // Needed to generate type definitions, even if we're using babel or swc.
-      require('rollup-plugin-typescript2')({
-        check: !options.skipTypeCheck,
-        tsconfig: options.tsConfig,
-        tsconfigOverride: {
-          compilerOptions: createTsCompilerOptions(
-            projectRoot,
-            tsConfig,
-            options,
-            dependencies
-          ),
-        },
-      }),
+      (() => {
+        // @rollup/plugin-typescript needs outDir and declarationDir to match Rollup's output directory
+        const { outDir, declarationDir, ...tsCompilerOptions } =
+          compilerOptions;
+        const rollupOutputDir = Array.isArray(finalConfig.output)
+          ? finalConfig.output[0].dir
+          : finalConfig.output.dir;
+        return require('@rollup/plugin-typescript')({
+          tsconfig: tsConfigPath,
+          compilerOptions: {
+            ...tsCompilerOptions,
+            composite: false,
+            outDir: rollupOutputDir,
+            declarationDir: rollupOutputDir,
+            noEmitOnError: !options.skipTypeCheck,
+          },
+        });
+      })(),
       typeDefinitions({
         projectRoot,
       }),
@@ -233,10 +300,7 @@ export function withNx(
             supportsStaticESM: true,
             isModern: true,
           },
-          cwd: join(
-            workspaceRoot,
-            projectNode.data.sourceRoot ?? projectNode.data.root
-          ),
+          cwd: join(workspaceRoot, projectSourceRoot),
           rootMode: options.babelUpwardRootMode ? 'upward' : undefined,
           babelrc: true,
           extensions: fileExtensions,
@@ -246,8 +310,8 @@ export function withNx(
         }),
       commonjs(),
       analyze(),
-      generatePackageJson(options, packageJson),
-    ];
+      options.generatePackageJson && generatePackageJson(options, packageJson),
+    ].filter(Boolean);
     if (Array.isArray(rollupConfig.plugins)) {
       finalConfig.plugins.push(...rollupConfig.plugins);
     }
@@ -273,16 +337,19 @@ function createInput(
   if (global.NX_GRAPH_CREATION) return {};
   const mainEntryFileName = options.outputFileName || options.main;
   const input: Record<string, string> = {};
-  input[parse(mainEntryFileName).name] = join(workspaceRoot, options.main);
+  input[parse(mainEntryFileName).name] = normalizePath(
+    join(workspaceRoot, options.main)
+  );
   options.additionalEntryPoints?.forEach((entry) => {
-    input[parse(entry).name] = join(workspaceRoot, entry);
+    input[parse(entry).name] = normalizePath(join(workspaceRoot, entry));
   });
   return input;
 }
 
 function createTsCompilerOptions(
   projectRoot: string,
-  config: ts.ParsedCommandLine,
+  config: ReturnType<typeof ts.parseJsonConfigFileContent>,
+  tsConfigPath: string,
   options: RollupWithNxPluginOptions,
   dependencies?: DependentBuildableProjectNode[]
 ) {
@@ -290,12 +357,25 @@ function createTsCompilerOptions(
     config,
     dependencies ?? []
   );
+  // Resolve paths to absolute so they work without baseUrl and regardless
+  // of which tsconfig the plugin reads (project vs workspace root).
+  const pathsBase = resolvePathsBaseUrl(tsConfigPath);
+  for (const key of Object.keys(compilerOptionPaths)) {
+    compilerOptionPaths[key] = compilerOptionPaths[key].map((p) => {
+      if (isAbsolute(p)) {
+        return p;
+      }
+      const stripped = p.startsWith('./') ? p.slice(2) : p;
+      return resolve(pathsBase, stripped).replace(/\\/g, '/');
+    });
+  }
   const compilerOptions = {
     rootDir: projectRoot,
     allowJs: options.allowJs,
     declaration: true,
     paths: compilerOptionPaths,
   };
+  ensureTypeScript();
   if (config.options.module === ts.ModuleKind.CommonJS) {
     compilerOptions['module'] = 'ESNext';
   }
@@ -305,26 +385,10 @@ function createTsCompilerOptions(
   return compilerOptions;
 }
 
-interface RollupCopyAssetOption {
-  src: string;
-  dest: string;
-}
-
-function convertCopyAssetsToRollupOptions(
-  outputPath: string,
-  assets: AssetGlobPattern[]
-): RollupCopyAssetOption[] {
-  return assets
-    ? assets.map((a) => ({
-        src: join(a.input, a.glob).replace(/\\/g, '/'),
-        dest: join(workspaceRoot, outputPath, a.output).replace(/\\/g, '/'),
-      }))
-    : undefined;
-}
-
 function readCompatibleFormats(
-  config: ts.ParsedCommandLine
+  config: ReturnType<typeof ts.parseJsonConfigFileContent>
 ): ('cjs' | 'esm')[] {
+  ensureTypeScript();
   switch (config.options.module) {
     case ts.ModuleKind.CommonJS:
     case ts.ModuleKind.UMD:

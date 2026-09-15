@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { readJson, Tree, writeJson } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
@@ -24,8 +24,7 @@ describe('updatePackageJson', () => {
 
     tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
     await libraryGenerator(tree, {
-      name: 'my-lib',
-      projectNameAndRootFormat: 'as-provided',
+      directory: 'my-lib',
     });
   });
 

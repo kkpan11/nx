@@ -6,11 +6,14 @@ import {
   runCLI,
   runCommandUntil,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('file-server', () => {
   beforeAll(() => {
-    newProject({ name: uniq('fileserver') });
+    newProject({
+      name: uniq('fileserver'),
+      packages: ['@nx/web', '@nx/angular', '@nx/react', '@nx/vite'],
+    });
   });
 
   afterAll(() => cleanupProject());
@@ -29,14 +32,6 @@ describe('file-server', () => {
     );
     runCLI(
       `generate @nx/react:app ${reactAppName} --no-interactive --e2eTestRunner=none`,
-      {
-        env: {
-          NX_ADD_PLUGINS: 'false',
-        },
-      }
-    );
-    runCLI(
-      `generate @nx/web:static-config --buildTarget=${ngAppName}:build --outputPath=dist/apps/${ngAppName}/browser --no-interactive`,
       {
         env: {
           NX_ADD_PLUGINS: 'false',

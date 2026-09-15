@@ -1,68 +1,172 @@
-import * as ora from 'ora';
-import { execAndWait } from '../child-process-utils';
-import { output } from '../output';
-import { getPackageManagerCommand, PackageManager } from '../package-manager';
-import { mapErrorToBodyLines } from '../error-utils';
+import { VcsPushStatus } from '../git/git';
+import { isCI } from '../ci/is-ci';
+import { CLIOutput } from '../output';
+import {
+  getCompletionMessage,
+  getSkippedCloudMessage,
+  CompletionMessageKey,
+} from './messages';
+import { getBannerVariant, getFlowVariant } from './ab-testing';
+import { nxVersion } from './nx-version';
+import ora from 'ora';
 
-export type NxCloud = 'yes' | 'github' | 'circleci' | 'skip';
+export type NxCloud =
+  | 'yes'
+  | 'github'
+  | 'gitlab'
+  | 'azure'
+  | 'bitbucket-pipelines'
+  | 'circleci'
+  | 'skip'
+  | 'never';
 
-export async function setupNxCloud(
+export async function connectToNxCloudForTemplate(
   directory: string,
-  packageManager: PackageManager,
-  nxCloud: NxCloud,
+  installationSource: string,
   useGitHub?: boolean
+): Promise<string | null> {
+  // nx-ignore-next-line
+  const { connectToNxCloud } = require(
+    require.resolve(
+      'nx/src/nx-cloud/generators/connect-to-nx-cloud/connect-to-nx-cloud',
+      {
+        paths: [directory],
+      }
+      // nx-ignore-next-line
+    )
+  ) as typeof import('nx/src/nx-cloud/generators/connect-to-nx-cloud/connect-to-nx-cloud');
+
+  // nx-ignore-next-line
+  const { FsTree, flushChanges } = require(
+    require.resolve('nx/src/generators/tree', {
+      paths: [directory],
+      // nx-ignore-next-line
+    })
+  ) as typeof import('nx/src/generators/tree');
+
+  const tree = new FsTree(directory, false);
+  const result = await connectToNxCloud(tree, {
+    installationSource,
+    directory: '',
+    github: useGitHub,
+  });
+
+  // Flush the tree changes to disk
+  flushChanges(directory, tree.listChanges());
+
+  return result;
+}
+
+export function readNxCloudToken(directory: string) {
+  const nxCloudSpinner = ora(`Checking Nx Cloud setup`).start();
+  // nx-ignore-next-line
+  const { getCloudOptions } = require(
+    require.resolve(
+      'nx/src/nx-cloud/utilities/get-cloud-options',
+      {
+        paths: [directory],
+      }
+      // nx-ignore-next-line
+    )
+  ) as typeof import('nx/src/nx-cloud/utilities/get-cloud-options');
+
+  const { accessToken, nxCloudId } = getCloudOptions(directory);
+  nxCloudSpinner.succeed('Nx Cloud configuration was successfully added');
+  return accessToken || nxCloudId;
+}
+
+export async function createNxCloudOnboardingUrl(
+  nxCloud: NxCloud,
+  token: string | undefined,
+  directory: string,
+  useGitHub?: boolean
+): Promise<string> {
+  // nx-ignore-next-line
+  const { createNxCloudOnboardingURL } = require(
+    require.resolve(
+      'nx/src/nx-cloud/utilities/url-shorten',
+      {
+        paths: [directory],
+      }
+      // nx-ignore-next-line
+    )
+  ) as any;
+
+  // Source determines the onboarding flow type
+  const source =
+    nxCloud === 'yes'
+      ? 'create-nx-workspace-success-cache-setup'
+      : 'create-nx-workspace-success-ci-setup';
+
+  const meta = JSON.stringify({
+    variant: getFlowVariant(),
+    nxVersion,
+  });
+
+  return createNxCloudOnboardingURL(
+    source,
+    token,
+    meta,
+    false,
+    useGitHub ??
+      (nxCloud === 'yes' || nxCloud === 'github' || nxCloud === 'circleci'),
+    directory
+  );
+}
+
+export async function getNxCloudInfo(
+  connectCloudUrl: string,
+  pushedToVcs: VcsPushStatus,
+  completionMessageKey?: CompletionMessageKey,
+  workspaceName?: string
 ) {
-  const nxCloudSpinner = ora(`Setting up Nx Cloud`).start();
+  const out = new CLIOutput(false);
+  // Get the banner variant based on the cloud URL
+  // Enterprise URLs automatically get variant 0 (plain link)
+  const bannerVariant = getBannerVariant(connectCloudUrl);
+  const message = getCompletionMessage(
+    completionMessageKey,
+    connectCloudUrl,
+    pushedToVcs,
+    workspaceName,
+    bannerVariant
+  );
+
+  // Variant 2 (deferred connection): No title, just output the banner directly
+  // without the NX badge since nothing was actually configured
+  if (!message.title) {
+    out.addNewline();
+    out.writeLines(message.bodyLines ?? []);
+  } else {
+    out.success(message);
+  }
+  return out.getOutput();
+}
+
+export function getSkippedNxCloudInfo() {
+  const out = new CLIOutput(false);
+  out.success(getSkippedCloudMessage());
+  return out.getOutput();
+}
+
+export async function openCloudSetupUrl(connectUrl: string): Promise<void> {
+  if (isCI()) {
+    return;
+  }
+
   try {
-    const pmc = getPackageManagerCommand(packageManager);
-    const res = await execAndWait(
-      `${
-        pmc.exec
-      } nx g nx:connect-to-nx-cloud --installationSource=create-nx-workspace --directory=${directory} ${
-        useGitHub ? '--github' : ''
-      } --no-interactive`,
-      directory
-    );
-
-    if (nxCloud !== 'yes') {
-      nxCloudSpinner.succeed(
-        'CI workflow with Nx Cloud has been generated successfully'
-      );
-    } else {
-      nxCloudSpinner.succeed('Nx Cloud has been set up successfully');
-    }
-    return res;
-  } catch (e) {
-    nxCloudSpinner.fail();
-
-    if (e instanceof Error) {
-      output.error({
-        title: `Failed to setup Nx Cloud`,
-        bodyLines: mapErrorToBodyLines(e),
-      });
-    } else {
-      console.error(e);
-    }
-
-    process.exit(1);
-  } finally {
-    nxCloudSpinner.stop();
+    const open = require('open');
+    await open(connectUrl);
+  } catch {
+    // Fail gracefully — the URL is already displayed in the terminal banner
   }
 }
 
-export function printNxCloudSuccessMessage(nxCloudOut: string) {
-  // remove leading Nx carret and any new lines
-  const logContent = nxCloudOut.split('NX   ')[1];
-  const indexOfTitleEnd = logContent.indexOf('\n');
-  const title = logContent.slice(0, logContent.indexOf('\n')).trim();
-  const bodyLines = logContent
-    .slice(indexOfTitleEnd)
-    .replace(/^\n*/, '') // remove leading new lines
-    .replace(/\n*$/, '') // remove trailing new lines
-    .split('\n')
-    .map((r) => r.trim());
-  output.warn({
-    title,
-    bodyLines,
-  });
+export function setNeverConnectToCloud(directory: string): void {
+  const { readFileSync, writeFileSync } = require('fs');
+  const { join } = require('path');
+  const nxJsonPath = join(directory, 'nx.json');
+  const nxJson = JSON.parse(readFileSync(nxJsonPath, 'utf-8'));
+  nxJson.neverConnectToCloud = true;
+  writeFileSync(nxJsonPath, JSON.stringify(nxJson, null, 2) + '\n');
 }

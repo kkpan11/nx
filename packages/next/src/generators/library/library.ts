@@ -7,34 +7,54 @@ import {
   Tree,
   updateJson,
 } from '@nx/devkit';
-import { libraryGenerator as reactLibraryGenerator } from '@nx/react/src/generators/library/library';
+import { libraryGenerator as reactLibraryGenerator } from '@nx/react';
 import { addTsConfigPath, initGenerator as jsInitGenerator } from '@nx/js';
-import { testingLibraryReactVersion } from '@nx/react/src/utils/versions';
+import {
+  testingLibraryDomVersion,
+  testingLibraryReactVersion,
+} from '@nx/react/internal';
 
 import { nextInitGenerator } from '../init/init';
+import { assertSupportedNextVersion } from '../../utils/assert-supported-next-version';
 import { Schema } from './schema';
-import { normalizeOptions } from './lib/normalize-options';
-import { eslintConfigNextVersion, tsLibVersion } from '../../utils/versions';
-
+import { normalizeOptions, NormalizedSchema } from './lib/normalize-options';
+import { updateViteConfigForServerEntry } from './lib/update-vite-config';
+import { addRollupServerEntry } from './lib/add-rollup-server-entry';
+import { tsLibVersion } from '../../utils/versions';
+import {
+  isUsingTsSolutionSetup,
+  addProjectToTsSolutionWorkspace,
+  updateTsconfigFiles,
+  shouldConfigureTsSolutionSetup,
+  getDefinedCustomConditionName,
+  sortPackageJsonFields,
+} from '@nx/js/internal';
 export async function libraryGenerator(host: Tree, rawOptions: Schema) {
   return await libraryGeneratorInternal(host, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
+    useProjectJson: true,
     ...rawOptions,
   });
 }
 
 export async function libraryGeneratorInternal(host: Tree, rawOptions: Schema) {
-  const options = await normalizeOptions(host, rawOptions);
+  assertSupportedNextVersion(host);
+
   const tasks: GeneratorCallback[] = [];
 
+  const addTsPlugin = shouldConfigureTsSolutionSetup(
+    host,
+    rawOptions.addPlugin
+  );
   const jsInitTask = await jsInitGenerator(host, {
-    js: options.js,
-    skipPackageJson: options.skipPackageJson,
+    js: rawOptions.js,
+    addTsPlugin,
+    skipPackageJson: rawOptions.skipPackageJson,
     skipFormat: true,
   });
   tasks.push(jsInitTask);
 
+  const options = await normalizeOptions(host, rawOptions);
   const initTask = await nextInitGenerator(host, {
     ...options,
     skipFormat: true,
@@ -43,26 +63,24 @@ export async function libraryGeneratorInternal(host: Tree, rawOptions: Schema) {
 
   const libTask = await reactLibraryGenerator(host, {
     ...options,
-    compiler: 'swc',
     skipFormat: true,
   });
   tasks.push(libTask);
 
   if (!options.skipPackageJson) {
     const devDependencies: Record<string, string> = {};
-    if (options.linter === 'eslint') {
-      devDependencies['eslint-config-next'] = eslintConfigNextVersion;
-    }
-
     if (options.unitTestRunner && options.unitTestRunner !== 'none') {
       devDependencies['@testing-library/react'] = testingLibraryReactVersion;
+      devDependencies['@testing-library/dom'] = testingLibraryDomVersion;
     }
 
     tasks.push(
       addDependenciesToPackageJson(
         host,
         { tslib: tsLibVersion },
-        devDependencies
+        devDependencies,
+        undefined,
+        true
       )
     );
   }
@@ -101,23 +119,58 @@ export async function libraryGeneratorInternal(host: Tree, rawOptions: Schema) {
       `hello-server.${options.js ? 'js' : 'tsx'}`
     ),
     `// React server components are async so you make database or API calls.
-      export async function HelloServer() {
-        return <h1>Hello Server</h1>
-      }
-    `
+export async function HelloServer() {
+  return <h1>Hello Server</h1>;
+}
+`
   );
-  addTsConfigPath(host, `${options.importPath}/server`, [serverEntryPath]);
 
-  updateJson(
-    host,
-    joinPathFragments(options.projectRoot, 'tsconfig.json'),
-    (json) => {
-      if (options.style === '@emotion/styled') {
-        json.compilerOptions.jsxImportSource = '@emotion/react';
-      }
-      return json;
+  const isTsSolutionSetup = isUsingTsSolutionSetup(host);
+  if (!options.skipTsConfig && !isTsSolutionSetup) {
+    addTsConfigPath(host, `${options.importPath}/server`, [serverEntryPath]);
+  }
+
+  // The React library generator defaults buildable and publishable libraries to Rollup.
+  const bundler =
+    options.bundler && options.bundler !== 'none'
+      ? options.bundler
+      : options.buildable || options.publishable
+        ? 'rollup'
+        : 'none';
+  if (bundler === 'vite') {
+    updateViteConfigForServerEntry(
+      host,
+      joinPathFragments(options.projectRoot, 'vite.config.mts')
+    );
+    addServerExport(host, options, './dist/server.js');
+  } else if (bundler === 'rollup') {
+    addRollupServerEntry(host, options);
+    if (isTsSolutionSetup) {
+      // Other setups publish no exports field, and introducing one would close
+      // every other subpath of the package.
+      addServerExport(host, options, './dist/server.esm.js');
     }
-  );
+  } else if (bundler === 'none' && isTsSolutionSetup) {
+    // Non-buildable libs resolve `.` straight to source, so `./server` does the same.
+    const packageJsonPath = joinPathFragments(
+      options.projectRoot,
+      'package.json'
+    );
+    if (host.exists(packageJsonPath)) {
+      updateJson(host, packageJsonPath, (json) => {
+        json.exports ??= {};
+        const serverSource = `./src/server.${options.js ? 'js' : 'ts'}`;
+        json.exports['./server'] = options.js
+          ? serverSource
+          : {
+              types: serverSource,
+              import: serverSource,
+              default: serverSource,
+            };
+        return json;
+      });
+    }
+  }
 
   updateJson(
     host,
@@ -140,11 +193,64 @@ export async function libraryGeneratorInternal(host: Tree, rawOptions: Schema) {
     }
   );
 
+  updateTsconfigFiles(
+    host,
+    options.projectRoot,
+    'tsconfig.lib.json',
+    {
+      jsx: 'react-jsx',
+      module: 'esnext',
+      moduleResolution: 'bundler',
+    },
+    options.linter === 'eslint'
+      ? ['eslint.config.js', 'eslint.config.cjs', 'eslint.config.mjs']
+      : undefined
+  );
+
+  if (options.isUsingTsSolutionConfig) {
+    await addProjectToTsSolutionWorkspace(host, options.projectRoot);
+  }
+
+  sortPackageJsonFields(host, options.projectRoot);
+
   if (!options.skipFormat) {
     await formatFiles(host);
   }
 
   return runTasksInSerial(...tasks);
+}
+
+function addServerExport(
+  host: Tree,
+  options: NormalizedSchema,
+  distFile: string
+): void {
+  const packageJsonPath = joinPathFragments(
+    options.projectRoot,
+    'package.json'
+  );
+  if (!host.exists(packageJsonPath)) {
+    return;
+  }
+  updateJson(host, packageJsonPath, (json) => {
+    json.exports ??= {};
+    const serverExport: Record<string, string> = {};
+    if (options.isUsingTsSolutionConfig) {
+      const customConditionName = getDefinedCustomConditionName(host);
+      if (customConditionName) {
+        serverExport[customConditionName] = `./src/server.${
+          options.js ? 'js' : 'ts'
+        }`;
+      }
+    }
+    // Both bundlers name the declaration after the entry, without the format
+    // suffix the JavaScript output carries.
+    serverExport.types = './dist/server.d.ts';
+    serverExport.import = distFile;
+    serverExport.default = distFile;
+    json.exports['./server'] = serverExport;
+    return json;
+  });
 }
 
 export default libraryGenerator;

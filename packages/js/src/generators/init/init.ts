@@ -1,142 +1,162 @@
+import { addPlugin, detectFormatterInTree } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
+  createProjectGraphAsync,
   ensurePackage,
   formatFiles,
   generateFiles,
   GeneratorCallback,
   readJson,
-  stripIndents,
+  readNxJson,
+  runTasksInSerial,
   Tree,
-  updateJson,
-  writeJson,
 } from '@nx/devkit';
-import { checkAndCleanWithSemver } from '@nx/devkit/src/utils/semver';
-import { readModulePackageJson } from 'nx/src/utils/package-json';
-import { satisfies, valid } from 'semver';
+import { join } from 'path';
+import { createNodesV2 } from '../../plugins/typescript/plugin';
+import { assertSupportedTypescriptVersion } from '../../utils/assert-supported-typescript-version';
+import { getFormatterSetup } from '../../utils/formatter-setup';
+import { assertNxSupportsFormatters } from '../../utils/nx-formatter-internals';
+import { getTsConfigBaseOptions } from '../../utils/typescript/create-ts-config';
 import { getRootTsConfigFileName } from '../../utils/typescript/ts-config';
+import { getCustomConditionName } from '../../utils/typescript/ts-solution-setup';
 import {
   nxVersion,
-  prettierVersion,
-  supportedTypescriptVersions,
-  swcCoreVersion,
   swcHelpersVersion,
-  swcNodeVersion,
+  tsLibVersion,
   typescriptVersion,
 } from '../../utils/versions';
 import { InitSchema } from './schema';
-import { join } from 'path';
-
-async function getInstalledTypescriptVersion(
-  tree: Tree
-): Promise<string | null> {
-  const rootPackageJson = readJson(tree, 'package.json');
-  const tsVersionInRootPackageJson =
-    rootPackageJson.devDependencies?.['typescript'] ??
-    rootPackageJson.dependencies?.['typescript'];
-
-  if (!tsVersionInRootPackageJson) {
-    return null;
-  }
-  if (valid(tsVersionInRootPackageJson)) {
-    // it's a pinned version, return it
-    return tsVersionInRootPackageJson;
-  }
-
-  // it's a version range, check whether the installed version matches it
-  try {
-    const tsPackageJson = readModulePackageJson('typescript').packageJson;
-    const installedTsVersion =
-      tsPackageJson.devDependencies?.['typescript'] ??
-      tsPackageJson.dependencies?.['typescript'];
-    // the installed version matches the package.json version range
-    if (
-      installedTsVersion &&
-      satisfies(installedTsVersion, tsVersionInRootPackageJson)
-    ) {
-      return installedTsVersion;
-    }
-  } finally {
-    return checkAndCleanWithSemver('typescript', tsVersionInRootPackageJson);
-  }
-}
 
 export async function initGenerator(
   tree: Tree,
   schema: InitSchema
 ): Promise<GeneratorCallback> {
-  const tasks: GeneratorCallback[] = [];
-  // add tsconfig.base.json
-  if (!getRootTsConfigFileName(tree)) {
-    generateFiles(tree, join(__dirname, './files'), '.', {
-      fileName: schema.tsConfigName ?? 'tsconfig.base.json',
-    });
+  schema.addTsPlugin ??= false;
+  // Detection is the only thing here that needs the nx-side helpers, so the
+  // assert belongs with it: `'none'` must still work on an older peer-compatible
+  // nx, and it reaches no formatter code at all. An explicit `'prettier'` or
+  // `'oxfmt'` does not - both setups assert for themselves.
+  if (schema.formatter == null) {
+    assertNxSupportsFormatters();
+    // Defer to `detectFormatterInTree` rather than re-deriving: it encodes the
+    // oxfmt-over-prettier precedence, which a prettier-first check gets
+    // backwards for a workspace configured with both. Falling back to "none"
+    // rather than a formatter keeps this from installing one the caller never
+    // asked for.
+    schema.formatter = detectFormatterInTree(tree) ?? 'none';
   }
-  const devDependencies = {
-    '@nx/js': nxVersion,
-    prettier: prettierVersion,
-    // When loading .ts config files (e.g. webpack.config.ts, jest.config.ts, etc.)
-    // we prefer to use SWC, and fallback to ts-node for workspaces that don't use SWC.
-    '@swc-node/register': swcNodeVersion,
-    '@swc/core': swcCoreVersion,
-    '@swc/helpers': swcHelpersVersion,
-  };
 
-  if (!schema.js && !schema.keepExistingVersions) {
-    const installedTsVersion = await getInstalledTypescriptVersion(tree);
+  return initGeneratorInternal(tree, {
+    addTsConfigBase: true,
+    ...schema,
+  });
+}
 
-    if (
-      !installedTsVersion ||
-      !satisfies(installedTsVersion, supportedTypescriptVersions, {
-        includePrerelease: true,
-      })
-    ) {
-      devDependencies['typescript'] = typescriptVersion;
+export async function initGeneratorInternal(
+  tree: Tree,
+  schema: InitSchema
+): Promise<GeneratorCallback> {
+  assertSupportedTypescriptVersion(tree);
+
+  const tasks: GeneratorCallback[] = [];
+
+  const nxJson = readNxJson(tree);
+  schema.addPlugin ??=
+    process.env.NX_ADD_PLUGINS !== 'false' &&
+    nxJson.useInferencePlugins !== false;
+  schema.addTsPlugin ??= schema.addPlugin;
+
+  if (schema.addTsPlugin) {
+    await addPlugin(
+      tree,
+      await createProjectGraphAsync(),
+      '@nx/js/typescript',
+      createNodesV2,
+      {
+        typecheck: [
+          { targetName: 'typecheck' },
+          { targetName: 'tsc:typecheck' },
+          { targetName: 'tsc-typecheck' },
+        ],
+        build: [
+          {
+            targetName: 'build',
+            configName: 'tsconfig.lib.json',
+            buildDepsName: 'build-deps',
+            watchDepsName: 'watch-deps',
+          },
+          {
+            targetName: 'tsc:build',
+            configName: 'tsconfig.lib.json',
+            buildDepsName: 'tsc:build-deps',
+            watchDepsName: 'tsc:watch-deps',
+          },
+          {
+            targetName: 'tsc-build',
+            configName: 'tsconfig.lib.json',
+            buildDepsName: 'tsc-build-deps',
+            watchDepsName: 'tsc-watch-deps',
+          },
+        ],
+      },
+      schema.updatePackageScripts
+    );
+  }
+
+  if (schema.addTsConfigBase && !getRootTsConfigFileName(tree)) {
+    if (schema.addTsPlugin) {
+      const platform = schema.platform ?? 'node';
+      const customCondition = getCustomConditionName(tree);
+      generateFiles(tree, join(__dirname, './files/ts-solution'), '.', {
+        platform,
+        customCondition,
+        tmpl: '',
+      });
+    } else {
+      generateFiles(tree, join(__dirname, './files/non-ts-solution'), '.', {
+        fileName: schema.tsConfigName ?? 'tsconfig.base.json',
+        moduleResolution: getTsConfigBaseOptions(tree).moduleResolution,
+      });
     }
   }
 
-  // https://prettier.io/docs/en/configuration.html
-  const prettierrcNameOptions = [
-    '.prettierrc',
-    '.prettierrc.json',
-    '.prettierrc.yml',
-    '.prettierrc.yaml',
-    '.prettierrc.json5',
-    '.prettierrc.js',
-    '.prettierrc.cjs',
-    '.prettierrc.mjs',
-    '.prettierrc.toml',
-    'prettier.config.js',
-    'prettier.config.cjs',
-    'prettier.config.mjs',
-  ];
+  const devDependencies: Record<string, string> = {
+    '@nx/js': nxVersion,
+    // Required by SWC-compiled output (decorators -> @swc/helpers/_/_ts_decorate
+    // imports). The default @nx/jest setup transforms with @swc/jest, so any
+    // workspace using decorators (NestJS, Angular, etc.) needs @swc/helpers
+    // resolvable at test time. Cheap to ship and avoids per-generator install.
+    '@swc/helpers': swcHelpersVersion,
+  };
+  // @swc-node/register and @swc/core are no longer installed by init - native
+  // Node.js type stripping handles .ts config loading on Node 23+ (or 22.6+
+  // with --experimental-strip-types). loadTsFile registers swc/ts-node lazily
+  // when a config uses syntax native strip can't handle.
 
-  if (prettierrcNameOptions.every((name) => !tree.exists(name))) {
-    writeJson(tree, '.prettierrc', {
-      singleQuote: true,
-    });
+  if (!schema.js) {
+    devDependencies['typescript'] = typescriptVersion;
   }
 
-  if (!tree.exists(`.prettierignore`)) {
-    tree.write(
-      '.prettierignore',
-      stripIndents`
-        # Add files here to ignore them from prettier formatting
-        /dist
-        /coverage
-        /.nx/cache
-        /.nx/workspace-data
-      `
+  // One table drives both halves of formatter setup - writing the config and
+  // making the package resolvable further down. They were separate `if` chains
+  // over the same union, forty lines apart, so a third formatter meant finding
+  // both.
+  const formatterSetup = getFormatterSetup(schema.formatter);
+
+  if (formatterSetup) {
+    tasks.push(
+      formatterSetup.setUp(tree, { skipPackageJson: schema.skipPackageJson })
     );
   }
-  if (tree.exists('.vscode/extensions.json')) {
-    updateJson(tree, '.vscode/extensions.json', (json) => {
-      json.recommendations ??= [];
-      const extension = 'esbenp.prettier-vscode';
-      if (!json.recommendations.includes(extension)) {
-        json.recommendations.push(extension);
-      }
-      return json;
-    });
+
+  const rootTsConfigFileName = getRootTsConfigFileName(tree);
+  // If the root tsconfig file uses `importHelpers` then we must install tslib
+  // in order to run tsc for build and typecheck.
+  if (rootTsConfigFileName) {
+    const rootTsConfig = readJson(tree, rootTsConfigFileName);
+    if (rootTsConfig.compilerOptions?.importHelpers) {
+      devDependencies['tslib'] = tsLibVersion;
+    }
   }
 
   const installTask = !schema.skipPackageJson
@@ -145,21 +165,31 @@ export async function initGenerator(
         {},
         devDependencies,
         undefined,
-        schema.keepExistingVersions
+        schema.keepExistingVersions ?? true
       )
     : () => {};
   tasks.push(installTask);
 
-  ensurePackage('prettier', prettierVersion);
+  // `installTask` is queued, not run, so the formatter just added to
+  // package.json is not on disk yet; ensurePackage installs it out of band.
+  // Not gated on `skipFormat` - callers that pass it format later in this same
+  // process.
+  const isDryRun =
+    !!process.env.NX_DRY_RUN && process.env.NX_DRY_RUN !== 'false';
+  if (
+    formatterSetup &&
+    !schema.skipPackageJson &&
+    !isDryRun &&
+    process.env.NX_SKIP_FORMAT !== 'true'
+  ) {
+    ensurePackage(schema.formatter, formatterSetup.version);
+  }
+
   if (!schema.skipFormat) {
     await formatFiles(tree);
   }
 
-  return async () => {
-    for (const task of tasks) {
-      await task();
-    }
-  };
+  return runTasksInSerial(...tasks);
 }
 
 export default initGenerator;

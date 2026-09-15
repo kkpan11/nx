@@ -1,7 +1,5 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type { ProjectGraphClientResponse } from 'nx/src/command-line/graph/graph';
-/* eslint-enable @nx/enforce-module-boundaries */
 import { useRef } from 'react';
 import { AppConfig } from './app-config';
 

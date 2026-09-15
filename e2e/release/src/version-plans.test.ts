@@ -1,5 +1,10 @@
-import { NxJsonConfiguration } from '@nx/devkit';
 import {
+  getDependencyVersionFromPackageJson,
+  NxJsonConfiguration,
+  workspaceRoot,
+} from '@nx/devkit';
+import {
+  normalizePerformanceReport,
   cleanupProject,
   exists,
   newProject,
@@ -10,14 +15,14 @@ import {
   tmpProjPath,
   uniq,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { ensureDir, readdirSync, writeFile } from 'fs-extra';
 import { join } from 'path';
 
 expect.addSnapshotSerializer({
   serialize(str: string) {
     return (
-      str
+      normalizePerformanceReport(str)
         // Remove all output unique to specific projects to ensure deterministic snapshots
         .replaceAll(/my-pkg-\d+/g, '{project-name}')
         .replaceAll(
@@ -30,7 +35,7 @@ expect.addSnapshotSerializer({
         .replaceAll(/\d*B package\.json/g, 'XXXB package.json')
         .replaceAll(/size:\s*\d*\s?B/g, 'size: XXXB')
         .replaceAll(/\d*\.\d*\s?kB/g, 'XXX.XXX kb')
-        .replaceAll(/[a-fA-F0-9]{7}/g, '{COMMIT_SHA}')
+        .replaceAll(/\b[a-fA-F0-9]{7}\b/g, '{COMMIT_SHA}')
         .replaceAll(/Test @[\w\d]+/g, 'Test @{COMMIT_AUTHOR}')
         // Normalize the version title date.
         .replaceAll(/\(\d{4}-\d{2}-\d{2}\)/g, '(YYYY-MM-DD)')
@@ -54,7 +59,6 @@ describe('nx release version plans', () => {
 
   beforeEach(async () => {
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     });
 
@@ -73,13 +77,17 @@ describe('nx release version plans', () => {
     pkg5 = uniq('my-pkg-5');
     runCLI(`generate @nx/workspace:npm-package ${pkg5}`);
 
+    // Normalize git committer information so it is deterministic in snapshots
+    await runCommandAsync(`git config user.email "test@test.com"`);
+    await runCommandAsync(`git config user.name "Test"`);
+
     await runCommandAsync(`git add .`);
     await runCommandAsync(`git commit -m "chore: initial commit"`);
     await runCommandAsync(`git tag -a v0.0.0 -m "v0.0.0"`);
     await runCommandAsync(`git tag -a ${pkg3}@0.0.0 -m "${pkg3}@0.0.0"`);
     await runCommandAsync(`git tag -a ${pkg4}@0.0.0 -m "${pkg4}@0.0.0"`);
     await runCommandAsync(`git tag -a ${pkg5}@0.0.0 -m "${pkg5}@0.0.0"`);
-  }, 60000);
+  });
 
   afterEach(() => cleanupProject());
 
@@ -89,18 +97,17 @@ describe('nx release version plans', () => {
         groups: {
           'fixed-group': {
             projects: [pkg1, pkg2],
-            releaseTagPattern: 'v{version}',
+            releaseTag: { pattern: 'v{version}' },
           },
           'independent-group': {
             projects: [pkg3, pkg4, pkg5],
             projectsRelationship: 'independent',
-            releaseTagPattern: '{projectName}@{version}',
+            releaseTag: { pattern: '{projectName}@{version}' },
           },
         },
         version: {
-          generatorOptions: {
-            specifierSource: 'version-plans',
-          },
+          specifierSource: 'version-plans',
+          adjustSemverBumpsForZeroMajorVersion: false,
         },
         changelog: {
           projectChangelogs: true,
@@ -111,10 +118,9 @@ describe('nx release version plans', () => {
     });
 
     const versionPlansDir = tmpProjPath('.nx/version-plans');
-    await ensureDir(versionPlansDir);
 
     runCLI(
-      'release plan minor -g fixed-group -m "feat: Update the fixed packages with a minor release." --verbose',
+      'release plan minor -g fixed-group -m "Update the fixed packages with a minor release." --verbose --only-touched=false',
       {
         silenceError: true,
       }
@@ -128,7 +134,9 @@ ${pkg4}: preminor
 ${pkg5}: prerelease
 ---
 
-feat: Update the independent packages with a patch, preminor, and prerelease.
+Update the independent packages with a patch, preminor, and prerelease.
+
+Here is another line in the message.
 `
     );
 
@@ -137,25 +145,33 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
       `git commit -m "chore: add version plans for fixed and independent groups"`
     );
 
-    const result = runCLI('release --verbose', {
+    const result = runCLI('release --verbose --skip-publish', {
       silenceError: true,
     });
 
-    expect(result).toContain(
-      `${pkg1} 📄 Resolved the specifier as "minor" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "minor", read from version plan \\.nx\\/version-plans\\/version-plan-\\d+\\.md, to get new version 0\\.1\\.0`
+      )
     );
     // pkg2 uses the previously resolved specifier from pkg1
     expect(result).toContain(
-      `${pkg2} ✍️  New version 0.1.0 written to ${pkg2}/package.json`
+      `${pkg2} ✍️  New version 0.1.0 written to manifest: ${pkg2}/package.json`
     );
-    expect(result).toContain(
-      `${pkg3} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg3} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.0\\.1`
+      )
     );
-    expect(result).toContain(
-      `${pkg4} 📄 Resolved the specifier as "preminor" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg4} ❓ Applied semver relative bump "preminor", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.1\\.0-0`
+      )
     );
-    expect(result).toContain(
-      `${pkg5} 📄 Resolved the specifier as "prerelease" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg5} ❓ Applied semver relative bump "prerelease", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.0\\.1-0`
+      )
     );
 
     // replace the date with a placeholder to make the snapshot deterministic
@@ -170,10 +186,13 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the fixed packages with a minor release.`
++ - Update the fixed packages with a minor release.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(resultWithoutDate).toContain(
       `NX   Generating an entry in ${pkg2}/CHANGELOG.md for v0.1.0
@@ -181,10 +200,13 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the fixed packages with a minor release.`
++ - Update the fixed packages with a minor release.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(resultWithoutDate).toContain(
       `NX   Generating an entry in ${pkg3}/CHANGELOG.md for ${pkg3}@0.0.1
@@ -192,10 +214,15 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
 
 + ## 0.0.1 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update the independent packages with a patch, preminor, and prerelease.
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++   Here is another line in the message.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(resultWithoutDate).toContain(
@@ -204,10 +231,15 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
 
 + ## 0.1.0-0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++ - Update the independent packages with a patch, preminor, and prerelease.
++
++   Here is another line in the message.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(resultWithoutDate).toContain(
@@ -216,10 +248,15 @@ feat: Update the independent packages with a patch, preminor, and prerelease.
 
 + ## 0.0.1-0 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update the independent packages with a patch, preminor, and prerelease.
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++   Here is another line in the message.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     await writeFile(
@@ -229,7 +266,7 @@ ${pkg1}: minor
 ${pkg3}: patch
 ---
 
-fix: Update packages in both groups with a bug fix
+Update packages in both groups with a mix #1
 `
     );
     await writeFile(
@@ -240,7 +277,7 @@ ${pkg4}: preminor
 ${pkg5}: patch
 ---
 
-feat: Update packages in both groups with a feat
+Update packages in both groups with a mix #2
 `
     );
 
@@ -258,21 +295,29 @@ feat: Update packages in both groups with a feat
       silenceError: true,
     });
 
-    expect(result2).toContain(
-      `${pkg1} 📄 Resolved the specifier as "minor" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "minor", read from version plan \\.nx\\/version-plans\\/bump-mixed1\\.md, to get new version 0\\.2\\.0`
+      )
     );
     // pkg2 uses the previously resolved specifier from pkg1
     expect(result2).toContain(
-      `${pkg2} ✍️  New version 0.2.0 written to ${pkg2}/package.json`
+      `${pkg2} ✍️  New version 0.2.0 written to manifest: ${pkg2}/package.json`
     );
-    expect(result2).toContain(
-      `${pkg3} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg3} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-mixed1\\.md, to get new version 0\\.0\\.2`
+      )
     );
-    expect(result2).toContain(
-      `${pkg4} 📄 Resolved the specifier as "preminor" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg4} ❓ Applied semver relative bump "preminor", read from version plan \\.nx\\/version-plans\\/bump-mixed2\\.md, to get new version 0\\.2\\.0-0`
+      )
     );
-    expect(result2).toContain(
-      `${pkg5} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg5} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-mixed2\\.md, to get new version 0\\.0\\.1`
+      )
     );
 
     // replace the date with a placeholder to make the snapshot deterministic
@@ -288,15 +333,17 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update packages in both groups with a feat
-+
++ - Update packages in both groups with a mix #1
 +
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix`
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(result2WithoutDate).toContain(
       `NX   Generating an entry in ${pkg2}/CHANGELOG.md for v0.2.0
@@ -305,15 +352,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0 (YYYY-MM-DD)
 +
-+
-+ ### 🚀 Features
-+
-+ - Update packages in both groups with a feat
-+
-+
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test
 `
     );
     expect(result2WithoutDate).toContain(
@@ -323,10 +368,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.0.2 (YYYY-MM-DD)
 +
-+
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix`
++ - Update packages in both groups with a mix #1
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(result2WithoutDate).toContain(
@@ -336,10 +384,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0-0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update packages in both groups with a feat`
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(result2WithoutDate).toContain(
@@ -349,10 +400,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.0.1 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update packages in both groups with a mix #2
 +
-+ - Update packages in both groups with a feat`
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(exists(join(versionPlansDir, 'bump-mixed1.md'))).toBeFalsy();
@@ -364,18 +418,17 @@ feat: Update packages in both groups with a feat
         groups: {
           'fixed-group': {
             projects: [pkg1, pkg2],
-            releaseTagPattern: 'v{version}',
+            releaseTag: { pattern: 'v{version}' },
           },
           'independent-group': {
             projects: [pkg3, pkg4, pkg5],
             projectsRelationship: 'independent',
-            releaseTagPattern: '{projectName}@{version}',
+            releaseTag: { pattern: '{projectName}@{version}' },
           },
         },
         version: {
-          generatorOptions: {
-            specifierSource: 'version-plans',
-          },
+          specifierSource: 'version-plans',
+          adjustSemverBumpsForZeroMajorVersion: false,
         },
         changelog: {
           projectChangelogs: true,
@@ -394,7 +447,7 @@ feat: Update packages in both groups with a feat
 fixed-group: minor
 ---
 
-feat: Update the fixed packages with a minor release.
+Update the fixed packages with a minor release.
 `
     );
 
@@ -406,14 +459,20 @@ ${pkg4}: preminor
 ${pkg5}: prerelease
 ---
 
-feat: Update the independent packages with a patch, preminor, and prerelease.
+Update the independent packages with a patch, preminor, and prerelease.
 `
     );
 
     expect(exists(join(versionPlansDir, 'bump-fixed.md'))).toBe(true);
     expect(exists(join(versionPlansDir, 'bump-independent.md'))).toBe(true);
 
-    packageInstall('yargs', null, 'latest', 'dev');
+    // Reference the same version of yargs as nx uses to avoid compatibility issues
+    const yargsVersion = getDependencyVersionFromPackageJson(
+      'yargs',
+      workspaceRoot,
+      join(workspaceRoot, 'packages/nx/package.json')
+    );
+    packageInstall('yargs', null, yargsVersion, 'dev');
 
     await writeFile(
       tmpProjPath('release.js'),
@@ -443,25 +502,31 @@ const yargs = require('yargs');
     })
     .parseAsync();
 
-  const { workspaceVersion, projectsVersionData } = await releaseVersion({
+  const { workspaceVersion, projectsVersionData, releaseGraph } = await releaseVersion({
     specifier: options.version,
     dryRun: options.dryRun,
     verbose: options.verbose,
   });
 
   await releaseChangelog({
+    releaseGraph,
     versionData: projectsVersionData,
     version: workspaceVersion,
     dryRun: options.dryRun,
     verbose: options.verbose,
   });
 
-  // The returned number value from releasePublish will be zero if all projects are published successfully, non-zero if not
-  const publishStatus = await releasePublish({
+  const publishProjectsResult = await releasePublish({
+    releaseGraph,
     dryRun: options.dryRun,
     verbose: options.verbose,
   });
-  process.exit(publishStatus);
+  // Derive an overall exit code from the publish projects result
+  process.exit(
+    Object.values(publishProjectsResult).every((result) => result.code === 0)
+      ? 0
+      : 1
+  );
 })();
 `
     );
@@ -478,21 +543,29 @@ const yargs = require('yargs');
       failOnError: false,
     });
 
-    expect(result).toContain(
-      `${pkg1} 📄 Resolved the specifier as "minor" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "minor", read from version plan \\.nx\\/version-plans\\/bump-fixed\\.md, to get new version 0\\.1\\.0`
+      )
     );
     // pkg2 uses the previously resolved specifier from pkg1
     expect(result).toContain(
-      `${pkg2} ✍️  New version 0.1.0 written to ${pkg2}/package.json`
+      `${pkg2} ✍️  New version 0.1.0 written to manifest: ${pkg2}/package.json`
     );
-    expect(result).toContain(
-      `${pkg3} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg3} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.0\\.1`
+      )
     );
-    expect(result).toContain(
-      `${pkg4} 📄 Resolved the specifier as "preminor" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg4} ❓ Applied semver relative bump "preminor", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.1\\.0-0`
+      )
     );
-    expect(result).toContain(
-      `${pkg5} 📄 Resolved the specifier as "prerelease" using version plans.`
+    expect(result).toMatch(
+      new RegExp(
+        `${pkg5} ❓ Applied semver relative bump "prerelease", read from version plan \\.nx\\/version-plans\\/bump-independent\\.md, to get new version 0\\.0\\.1-0`
+      )
     );
 
     // replace the date with a placeholder to make the snapshot deterministic
@@ -507,10 +580,13 @@ const yargs = require('yargs');
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the fixed packages with a minor release.`
++ - Update the fixed packages with a minor release.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(resultWithoutDate).toContain(
       `NX   Generating an entry in ${pkg2}/CHANGELOG.md for v0.1.0
@@ -518,10 +594,13 @@ const yargs = require('yargs');
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the fixed packages with a minor release.`
++ - Update the fixed packages with a minor release.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(resultWithoutDate).toContain(
       `NX   Generating an entry in ${pkg3}/CHANGELOG.md for ${pkg3}@0.0.1
@@ -529,10 +608,13 @@ const yargs = require('yargs');
 
 + ## 0.0.1 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update the independent packages with a patch, preminor, and prerelease.
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(resultWithoutDate).toContain(
@@ -541,10 +623,13 @@ const yargs = require('yargs');
 
 + ## 0.1.0-0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++ - Update the independent packages with a patch, preminor, and prerelease.
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(resultWithoutDate).toContain(
@@ -553,10 +638,13 @@ const yargs = require('yargs');
 
 + ## 0.0.1-0 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update the independent packages with a patch, preminor, and prerelease.
 +
-+ - Update the independent packages with a patch, preminor, and prerelease.`
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(exists(join(versionPlansDir, 'bump-fixed.md'))).toBeFalsy();
@@ -569,8 +657,8 @@ ${pkg1}: minor
 ${pkg3}: patch
 ---
 
-fix: Update packages in both groups with a bug fix
-`
+Update packages in both groups with a mix #1
+  `
     );
     await writeFile(
       join(versionPlansDir, 'bump-mixed2.md'),
@@ -580,8 +668,8 @@ ${pkg4}: preminor
 ${pkg5}: patch
 ---
 
-feat: Update packages in both groups with a feat
-`
+Update packages in both groups with a mix #2
+  `
     );
 
     await runCommandAsync(`git add ${join(versionPlansDir, 'bump-mixed1.md')}`);
@@ -594,25 +682,33 @@ feat: Update packages in both groups with a feat
     // dry-run should not remove the version plan
     expect(exists(join(versionPlansDir, 'bump-mixed1.md'))).toBeTruthy();
 
-    const result2 = runCLI('release --verbose', {
+    const result2 = runCLI('release --verbose --skip-publish', {
       silenceError: true,
     });
 
-    expect(result2).toContain(
-      `${pkg1} 📄 Resolved the specifier as "minor" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "minor", read from version plan \\.nx\\/version-plans\\/bump-mixed1\\.md, to get new version 0\\.2\\.0`
+      )
     );
     // pkg2 uses the previously resolved specifier from pkg1
     expect(result2).toContain(
-      `${pkg2} ✍️  New version 0.2.0 written to ${pkg2}/package.json`
+      `${pkg2} ✍️  New version 0.2.0 written to manifest: ${pkg2}/package.json`
     );
-    expect(result2).toContain(
-      `${pkg3} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg3} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-mixed1\\.md, to get new version 0\\.0\\.2`
+      )
     );
-    expect(result2).toContain(
-      `${pkg4} 📄 Resolved the specifier as "preminor" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg4} ❓ Applied semver relative bump "preminor", read from version plan \\.nx\\/version-plans\\/bump-mixed2\\.md, to get new version 0\\.2\\.0-0`
+      )
     );
-    expect(result2).toContain(
-      `${pkg5} 📄 Resolved the specifier as "patch" using version plans.`
+    expect(result2).toMatch(
+      new RegExp(
+        `${pkg5} ❓ Applied semver relative bump "patch", read from version plan \\.nx\\/version-plans\\/bump-mixed2\\.md, to get new version 0\\.0\\.1`
+      )
     );
 
     // replace the date with a placeholder to make the snapshot deterministic
@@ -628,15 +724,17 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update packages in both groups with a feat
-+
++ - Update packages in both groups with a mix #1
 +
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix`
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test`
     );
     expect(result2WithoutDate).toContain(
       `NX   Generating an entry in ${pkg2}/CHANGELOG.md for v0.2.0
@@ -645,15 +743,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0 (YYYY-MM-DD)
 +
-+
-+ ### 🚀 Features
-+
-+ - Update packages in both groups with a feat
-+
-+
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test
 `
     );
     expect(result2WithoutDate).toContain(
@@ -663,10 +759,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.0.2 (YYYY-MM-DD)
 +
-+
 + ### 🩹 Fixes
 +
-+ - Update packages in both groups with a bug fix`
++ - Update packages in both groups with a mix #1
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(result2WithoutDate).toContain(
@@ -676,10 +775,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.2.0-0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
-+ - Update packages in both groups with a feat`
++ - Update packages in both groups with a mix #2
++
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(result2WithoutDate).toContain(
@@ -689,10 +791,13 @@ feat: Update packages in both groups with a feat
 
 + ## 0.0.1 (YYYY-MM-DD)
 +
++ ### 🩹 Fixes
 +
-+ ### 🚀 Features
++ - Update packages in both groups with a mix #2
 +
-+ - Update packages in both groups with a feat`
++ ### ❤️ Thank You
++
++ - Test`
     );
 
     expect(exists(join(versionPlansDir, 'bump-mixed1.md'))).toBeFalsy();
@@ -702,7 +807,10 @@ feat: Update packages in both groups with a feat
     updateJson<NxJsonConfiguration>('nx.json', (nxJson) => {
       nxJson.release = {
         projects: [pkg1, pkg2],
-        releaseTagPattern: 'v{version}',
+        releaseTag: { pattern: 'v{version}' },
+        version: {
+          adjustSemverBumpsForZeroMajorVersion: false,
+        },
         changelog: {
           projectChangelogs: true,
         },
@@ -715,7 +823,7 @@ feat: Update packages in both groups with a feat
     await ensureDir(versionPlansDir);
 
     runCLI(
-      'release plan minor -m "feat: Update the fixed packages with a minor release." --verbose',
+      'release plan minor -m "Update the fixed packages with a minor release." --verbose --only-touched=false',
       {
         silenceError: true,
       }
@@ -727,12 +835,14 @@ feat: Update packages in both groups with a feat
       silenceError: true,
     });
 
-    expect(versionResult).toContain(
-      `${pkg1} 📄 Resolved the specifier as "minor" using version plans.`
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "minor", read from version plan \\.nx\\/version-plans\\/version-plan-\\d+\\.md, to get new version 0\\.1\\.0`
+      )
     );
     // pkg2 uses the previously resolved specifier from pkg1
     expect(versionResult).toContain(
-      `${pkg2} ✍️  New version 0.1.0 written to ${pkg2}/package.json`
+      `${pkg2} ✍️  New version 0.1.0 written to manifest: ${pkg2}/package.json`
     );
 
     const changelogResult = runCLI('release changelog 0.1.0 --verbose', {
@@ -750,7 +860,6 @@ feat: Update packages in both groups with a feat
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
 + - Update the fixed packages with a minor release.`
@@ -761,12 +870,108 @@ feat: Update packages in both groups with a feat
 
 + ## 0.1.0 (YYYY-MM-DD)
 +
-+
 + ### 🚀 Features
 +
 + - Update the fixed packages with a minor release.`
     );
 
     expect(readdirSync(versionPlansDir)).toEqual([]);
+  });
+
+  it('version command should bypass version plans when a specifier is passed', async () => {
+    updateJson<NxJsonConfiguration>('nx.json', (nxJson) => {
+      nxJson.release = {
+        groups: {
+          'fixed-group': {
+            projects: [pkg1, pkg2],
+            releaseTag: { pattern: 'v{version}' },
+          },
+          'independent-group': {
+            projects: [pkg3, pkg4, pkg5],
+            projectsRelationship: 'independent',
+            releaseTag: { pattern: '{projectName}@{version}' },
+          },
+        },
+        version: {
+          specifierSource: 'version-plans',
+          adjustSemverBumpsForZeroMajorVersion: false,
+        },
+        changelog: {
+          projectChangelogs: true,
+        },
+        versionPlans: true,
+      };
+      return nxJson;
+    });
+
+    runCLI(
+      'release plan minor -g fixed-group -m "Update the fixed packages with another minor release." --verbose --only-touched=false',
+      {
+        silenceError: true,
+      }
+    );
+
+    runCLI(
+      'release plan minor -g independent-group -m "Update the independent packages with another minor release." --verbose --only-touched=false',
+      {
+        silenceError: true,
+      }
+    );
+
+    const versionPlansDir = tmpProjPath('.nx/version-plans');
+    await runCommandAsync(`git add ${versionPlansDir}`);
+    await runCommandAsync(
+      `git commit -m "chore: add version plans for fixed and independent groups again"`
+    );
+
+    const releaseResult = runCLI('release major --verbose --skip-publish', {
+      silenceError: true,
+    });
+
+    expect(releaseResult).toContain(
+      `NX   A specifier option cannot be provided when using version plans.`
+    );
+    expect(releaseResult).toContain(
+      `To override this behavior, use the Nx Release programmatic API directly (https://nx.dev/features/manage-releases#using-the-programmatic-api-for-nx-release).`
+    );
+
+    const versionResult = runCLI('release version major --verbose', {
+      silenceError: true,
+    });
+
+    expect(versionResult).toContain(
+      'Skipping version plan discovery as a specifier was provided'
+    );
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg1} ❓ Applied semver relative bump "major", from the given specifier, to get new version 1\\.0\\.0`
+      )
+    );
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg2} ❓ Applied version 1.0.0 directly, because the project is a member of a fixed release group containing ${pkg1}`
+      )
+    );
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg3} ❓ Applied semver relative bump "major", from the given specifier, to get new version 1\\.0\\.0`
+      )
+    );
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg4} ❓ Applied semver relative bump "major", from the given specifier, to get new version 1\\.0\\.0`
+      )
+    );
+    expect(versionResult).toMatch(
+      new RegExp(
+        `${pkg5} ❓ Applied semver relative bump "major", from the given specifier, to get new version 1\\.0\\.0`
+      )
+    );
+
+    expect(versionResult).toContain(
+      `git add ${pkg1}/package.json ${pkg2}/package.json ${pkg3}/package.json ${pkg4}/package.json ${pkg5}/package.json`
+    );
+
+    expect(readdirSync(versionPlansDir).length).toEqual(2);
   });
 });

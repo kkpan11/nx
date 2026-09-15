@@ -1,10 +1,10 @@
+use ignore::WalkBuilder;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
-use ignore::{WalkBuilder};
 
 use crate::native::glob::build_glob_set;
 
-use crate::native::utils::{get_mod_time, Normalize};
+use crate::native::utils::{Normalize, get_mod_time, git::parent_gitignore_files};
 use walkdir::WalkDir;
 
 #[derive(PartialEq, Debug, Ord, PartialOrd, Eq, Clone)]
@@ -27,13 +27,10 @@ where
 {
     let base_dir: PathBuf = directory.as_ref().into();
 
-    let mut base_ignores: Vec<String> = vec![
-        "**/node_modules".into(),
-        "**/.git".into(),
-        "**/.nx/cache".into(),
-        "**/.nx/workspace-data".into(),
-        "**/.yarn/cache".into(),
-    ];
+    let mut base_ignores: Vec<String> = HARDCODED_IGNORE_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
 
     if let Some(additional_ignores) = ignores {
         base_ignores.extend(additional_ignores.iter().map(|s| format!("**/{}", s)));
@@ -49,20 +46,24 @@ where
             !ignore_glob_set.is_match(path.as_ref())
         })
         .filter_map(move |entry| {
-            entry
-                .ok()
-                .and_then(|e| e.path().strip_prefix(&base_dir).ok().map(|p| p.to_owned()))
+            entry.ok().and_then(|e| {
+                e.path()
+                    .strip_prefix(&base_dir)
+                    .ok()
+                    .filter(|p| !p.to_string_lossy().is_empty())
+                    .map(|p| p.to_owned())
+            })
         })
 }
 
 /// Walk the directory and ignore files from .gitignore and .nxignore
 #[cfg(target_arch = "wasm32")]
-pub fn nx_walker<P>(directory: P) -> impl Iterator<Item = NxFile>
+pub fn nx_walker<P>(directory: P, use_ignores: bool) -> impl Iterator<Item = NxFile>
 where
     P: AsRef<Path>,
 {
     let directory: PathBuf = directory.as_ref().into();
-    let walker = create_walker(&directory);
+    let walker = create_walker(&directory, use_ignores);
 
     let entries = walker.build();
 
@@ -83,6 +84,10 @@ where
             return None;
         };
 
+        if !is_hashable_file(&metadata.file_type()) {
+            return None;
+        }
+
         Some(NxFile {
             full_path: String::from(dir_entry.path().to_string_lossy()),
             normalized_path: file_path.to_normalized_string(),
@@ -93,7 +98,7 @@ where
 
 /// Walk the directory and ignore files from .gitignore and .nxignore
 #[cfg(not(target_arch = "wasm32"))]
-pub fn nx_walker<P>(directory: P) -> impl Iterator<Item = NxFile>
+pub fn nx_walker<P>(directory: P, use_ignores: bool) -> impl Iterator<Item = NxFile>
 where
     P: AsRef<Path>,
 {
@@ -104,7 +109,7 @@ where
     use tracing::trace;
 
     let directory = directory.as_ref();
-    let mut walker = create_walker(directory);
+    let mut walker = create_walker(directory, use_ignores);
 
     let cpus = available_parallelism().map_or(2, |n| n.get()) - 1;
 
@@ -124,7 +129,7 @@ where
 
             if dir_entry.file_type().is_some_and(|d| d.is_dir()) {
                 return Continue;
-            }
+            };
 
             let Ok(file_path) = dir_entry.path().strip_prefix(directory) else {
                 return Continue;
@@ -134,12 +139,17 @@ where
                 return Continue;
             };
 
+            if !is_hashable_file(&metadata.file_type()) {
+                trace!(path = ?dir_entry.path(), "skipping non-regular file");
+                return Continue;
+            }
+
             tx.send(NxFile {
                 full_path: String::from(dir_entry.path().to_string_lossy()),
                 normalized_path: file_path.to_normalized_string(),
                 mod_time: get_mod_time(&metadata),
             })
-                .ok();
+            .ok();
 
             Continue
         })
@@ -151,25 +161,74 @@ where
     receiver_thread.join().unwrap()
 }
 
-fn create_walker<P>(directory: P) -> WalkBuilder
+/// Returns true when the entry should be hashed as a workspace file.
+/// Excludes anything that is not a regular file or a symlink (e.g. named
+/// pipes/FIFOs, sockets, block/char devices) because `std::fs::read` can
+/// block indefinitely on such paths (FIFOs wait for a writer).
+fn is_hashable_file(file_type: &std::fs::FileType) -> bool {
+    file_type.is_file() || file_type.is_symlink()
+}
+
+/// Hardcoded ignore patterns used by both the walker and the watcher.
+/// These are directories that should never be walked or watched.
+pub(crate) const HARDCODED_IGNORE_PATTERNS: &[&str] = &[
+    "**/node_modules",
+    "**/.git",
+    "**/.nx/cache",
+    "**/.nx/workspace-data",
+    "**/.yarn/cache",
+];
+
+/// The same list, for JavaScript callers that walk a tree rather than the
+/// filesystem - `visitNotIgnoredFiles` - so both sides apply one baseline
+/// instead of maintaining a second copy that drifts.
+///
+/// The patterns are gitignore-shaped, so they read the same to the `ignore`
+/// crate here and the `ignore` npm package there.
+#[napi]
+pub fn get_hardcoded_ignore_patterns() -> Vec<String> {
+    HARDCODED_IGNORE_PATTERNS
+        .iter()
+        .map(|pattern| pattern.to_string())
+        .collect()
+}
+
+pub(crate) fn create_walker<P>(directory: P, use_ignores: bool) -> WalkBuilder
 where
-    P: AsRef<Path>
+    P: AsRef<Path>,
 {
     let directory: PathBuf = directory.as_ref().into();
 
-    let ignore_glob_set = build_glob_set(&[
-        "**/node_modules",
-        "**/.git",
-        "**/.nx/cache",
-        "**/.nx/workspace-data",
-        "**/.yarn/cache",
-    ])
-        .expect("These static ignores always build");
+    let ignore_glob_set =
+        build_glob_set(HARDCODED_IGNORE_PATTERNS).expect("These static ignores always build");
 
     let mut walker = WalkBuilder::new(&directory);
     walker.require_git(false);
     walker.hidden(false);
-    walker.add_custom_ignore_filename(".nxignore");
+
+    // `.ignore` is a ripgrep convention the ignore crate enables by default.
+    // Nx never chose it, and the watcher does not read it, so honouring it here
+    // would drop files the watcher still admits.
+    walker.ignore(false);
+
+    if use_ignores {
+        // Handle parent .gitignore files based on git repository boundaries
+        if let Some(gitignore_paths) = parent_gitignore_files(&directory) {
+            // Workspace is git root or nested in git repo - use manual parent traversal
+            walker.parents(false);
+            for gitignore_path in gitignore_paths {
+                walker.add_ignore(gitignore_path);
+            }
+        } else {
+            // No git repo found - use automatic parent traversal for backwards compatibility
+            walker.parents(true);
+        }
+
+        walker.add_custom_ignore_filename(".nxignore");
+    } else {
+        // Don't filter out ignored files
+        walker.standard_filters(false);
+    }
 
     // We should make sure to always ignore node_modules and the .git folder
     walker.filter_entry(move |entry| {
@@ -183,8 +242,8 @@ where
 mod test {
     use std::{assert_eq, vec};
 
-    use assert_fs::prelude::*;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
 
     use super::*;
 
@@ -210,12 +269,12 @@ mod test {
     #[test]
     fn it_walks_a_directory() {
         // handle empty workspaces
-        let content = nx_walker("/does/not/exist").collect::<Vec<_>>();
+        let content = nx_walker("/does/not/exist", true).collect::<Vec<_>>();
         assert!(content.is_empty());
 
         let temp_dir = setup_fs();
 
-        let mut content = nx_walker(&temp_dir).collect::<Vec<_>>();
+        let mut content = nx_walker(&temp_dir, true).collect::<Vec<_>>();
         content.sort();
         let content = content
             .into_iter()
@@ -282,7 +341,7 @@ nested/child-two/
             )
             .unwrap();
 
-        let mut file_names = nx_walker(temp_dir)
+        let mut file_names = nx_walker(temp_dir, true)
             .map(
                 |NxFile {
                      normalized_path: relative_path,
@@ -303,6 +362,210 @@ nested/child-two/
                 "v1/packages/pkg-a/pkg-a.txt",
                 "v1/packages/pkg-b/pkg-b.txt"
             )
+        );
+    }
+
+    #[test]
+    fn ignores_parent_gitignore_when_workspace_is_git_root() {
+        let parent_temp = assert_fs::TempDir::new().unwrap();
+        parent_temp.child(".gitignore").write_str("*").unwrap();
+        parent_temp.child("workspace/.git").touch().unwrap();
+        parent_temp
+            .child("workspace/file1.txt")
+            .write_str("test")
+            .unwrap();
+        parent_temp
+            .child("workspace/project.json")
+            .write_str("test")
+            .unwrap();
+
+        let workspace_path = parent_temp.path().join("workspace");
+        let mut files: Vec<_> = nx_walker(&workspace_path, true)
+            .map(|f| f.normalized_path)
+            .collect();
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec!["file1.txt".to_string(), "project.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn respects_gitignore_within_git_repo_but_not_above() {
+        let temp_dir = assert_fs::TempDir::new().unwrap();
+
+        // Create a .gitignore file above the git repository (should be ignored)
+        temp_dir
+            .child(".gitignore")
+            .write_str("ignored_by_parent.txt")
+            .unwrap();
+
+        // Create the git repository root
+        temp_dir.child("repo/.git").touch().unwrap();
+
+        // Create a .gitignore file within the git repository (should be respected)
+        temp_dir
+            .child("repo/.gitignore")
+            .write_str("ignored_by_repo.txt")
+            .unwrap();
+
+        // Create test files
+        temp_dir
+            .child("repo/workspace/file1.txt")
+            .write_str("test")
+            .unwrap();
+        temp_dir
+            .child("repo/workspace/project.json")
+            .write_str("test")
+            .unwrap();
+        temp_dir
+            .child("repo/workspace/ignored_by_parent.txt")
+            .write_str("test")
+            .unwrap();
+        temp_dir
+            .child("repo/workspace/ignored_by_repo.txt")
+            .write_str("test")
+            .unwrap();
+
+        let workspace_path = temp_dir.path().join("repo/workspace");
+        let mut files: Vec<_> = nx_walker(&workspace_path, true)
+            .map(|f| f.normalized_path)
+            .collect();
+        files.sort();
+
+        // Should include ignored_by_parent.txt (parent .gitignore is ignored)
+        // Should exclude ignored_by_repo.txt (repo .gitignore is respected)
+        assert_eq!(
+            files,
+            vec![
+                "file1.txt".to_string(),
+                "ignored_by_parent.txt".to_string(),
+                "project.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn respects_parent_gitignore_when_no_git_repo_found() {
+        let parent_temp = assert_fs::TempDir::new().unwrap();
+        parent_temp.child(".gitignore").write_str("*").unwrap();
+        parent_temp
+            .child("workspace/file1.txt")
+            .write_str("test")
+            .unwrap();
+        parent_temp
+            .child("workspace/project.json")
+            .write_str("test")
+            .unwrap();
+
+        let workspace_path = parent_temp.path().join("workspace");
+        let mut files: Vec<_> = nx_walker(&workspace_path, true)
+            .map(|f| f.normalized_path)
+            .collect();
+        files.sort();
+
+        // All files should be ignored by parent .gitignore since no git repo was found
+        assert!(files.is_empty());
+    }
+
+    // FIFOs only exist on unix-like systems. This is the primary hazard the
+    // `is_hashable_file` filter has to guard against: opening a FIFO and
+    // calling `std::fs::read` on it blocks the reader indefinitely waiting
+    // for a writer.
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn skips_named_pipes() {
+        use nix::sys::stat::Mode;
+        use nix::unistd::mkfifo;
+
+        let temp_dir = setup_fs();
+        let fifo_path = temp_dir.path().join("a-named-pipe");
+        mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).expect("mkfifo");
+
+        let mut files: Vec<_> = nx_walker(temp_dir.path(), true)
+            .map(|f| f.normalized_path)
+            .collect();
+        files.sort();
+
+        assert!(
+            !files.iter().any(|f| f == "a-named-pipe"),
+            "FIFO should be skipped, got: {:?}",
+            files
+        );
+    }
+
+    // Unix sockets are another non-regular file type the walker should
+    // skip. Reading from one wouldn't block the way a FIFO does, but the
+    // contents aren't meaningful for hashing either.
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn skips_unix_sockets() {
+        use std::os::unix::net::UnixListener;
+
+        let temp_dir = setup_fs();
+        let socket_path = temp_dir.path().join("a-unix-socket");
+        let _listener = UnixListener::bind(&socket_path).expect("bind unix socket");
+
+        let mut files: Vec<_> = nx_walker(temp_dir.path(), true)
+            .map(|f| f.normalized_path)
+            .collect();
+        files.sort();
+
+        assert!(
+            !files.iter().any(|f| f == "a-unix-socket"),
+            "unix socket should be skipped, got: {:?}",
+            files
+        );
+    }
+
+    // `.ignore` is a ripgrep convention the ignore crate turns on by default.
+    // Nx never chose it and the watch filterer does not read it, so the walk
+    // must not either.
+    #[test]
+    fn does_not_honour_dot_ignore() {
+        let temp_dir = setup_fs();
+        temp_dir.child(".ignore").write_str("foo.txt\n").unwrap();
+
+        let files: Vec<_> = nx_walker(temp_dir.path(), true)
+            .map(|f| f.normalized_path)
+            .collect();
+
+        assert!(
+            files.iter().any(|f| f == "foo.txt"),
+            "a .ignore entry should not exclude foo.txt, got: {:?}",
+            files
+        );
+    }
+
+    // The reference semantics the watch filterer's rank-before-depth sort
+    // mirrors: the ignore crate keeps the deepest match per class and then
+    // prefers the higher class, so a .nxignore wins over a .gitignore that
+    // sits deeper.
+    #[test]
+    fn nxignore_outranks_a_deeper_gitignore_negation() {
+        let temp_dir = setup_fs();
+        temp_dir
+            .child("pkg/.nxignore")
+            .write_str("keep.tmp\n")
+            .unwrap();
+        temp_dir
+            .child("pkg/deep/.gitignore")
+            .write_str("!keep.tmp\n")
+            .unwrap();
+        temp_dir
+            .child("pkg/deep/keep.tmp")
+            .write_str("data")
+            .unwrap();
+
+        let files: Vec<_> = nx_walker(temp_dir.path(), true)
+            .map(|f| f.normalized_path)
+            .collect();
+
+        assert!(
+            !files.iter().any(|f| f == "pkg/deep/keep.tmp"),
+            "the shallower .nxignore should outrank the deeper .gitignore negation, got: {:?}",
+            files
         );
     }
 }

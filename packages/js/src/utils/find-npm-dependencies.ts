@@ -1,5 +1,4 @@
-import { join, relative } from 'path';
-import { readNxJson } from 'nx/src/config/configuration';
+import { isAbsolute, join, relative } from 'path';
 import {
   joinPathFragments,
   normalizePath,
@@ -8,13 +7,14 @@ import {
   type ProjectGraphProjectNode,
   readJsonFile,
 } from '@nx/devkit';
-import { fileExists } from 'nx/src/utils/fileutils';
-import { fileDataDepTarget } from 'nx/src/config/project-graph';
-import { readTsConfig } from './typescript/ts-config';
+import { getRootTsConfigPath, readTsConfig } from './typescript/ts-config';
 import {
+  readNxJsonFromDisk as readNxJson,
+  fileExists,
+  fileDataDepTarget,
   filterUsingGlobPatterns,
   getTargetInputs,
-} from 'nx/src/hasher/task-hasher';
+} from '@nx/devkit/internal';
 
 /**
  * Finds all npm dependencies and their expected versions for a given project.
@@ -29,6 +29,7 @@ export function findNpmDependencies(
     includeTransitiveDependencies?: boolean;
     ignoredFiles?: string[];
     useLocalPathsForWorkspaceDependencies?: boolean;
+    runtimeHelpers?: string[];
   } = {}
 ): Record<string, string> {
   let seen: null | Set<string> = null;
@@ -61,6 +62,7 @@ export function findNpmDependencies(
       currentProject,
       projectGraph,
       buildTarget,
+      options.runtimeHelpers,
       collectedDeps
     );
 
@@ -194,8 +196,23 @@ function collectHelperDependencies(
   sourceProject: ProjectGraphProjectNode,
   projectGraph: ProjectGraph,
   buildTarget: string,
+  runtimeHelpers: string[] | undefined,
   npmDeps: Record<string, string>
 ): void {
+  if (runtimeHelpers?.length > 0) {
+    for (const helper of runtimeHelpers) {
+      if (
+        !npmDeps[helper] &&
+        projectGraph.externalNodes[`npm:${helper}`]?.type === 'npm'
+      ) {
+        npmDeps[helper] =
+          projectGraph.externalNodes[`npm:${helper}`].data.version;
+      }
+    }
+
+    return;
+  }
+
   const target = sourceProject.data.targets[buildTarget];
   if (!target) return;
 
@@ -223,4 +240,52 @@ function collectHelperDependencies(
         projectGraph.externalNodes['npm:@swc/helpers'].data.version;
     }
   }
+
+  // For inferred targets or manually added run-commands, check if user is using `tsc` in build target.
+  if (
+    target.executor === 'nx:run-commands' &&
+    /\b(tsc|tsgo)\b/.test(target.options.command)
+  ) {
+    const tsConfigPath = resolveTsConfigForRunCommandsTarget(
+      workspaceRoot,
+      sourceProject,
+      target.options
+    );
+    if (tsConfigPath) {
+      const tsConfig = readTsConfig(tsConfigPath);
+      if (
+        tsConfig?.options['importHelpers'] &&
+        projectGraph.externalNodes['npm:tslib']?.type === 'npm'
+      ) {
+        npmDeps['tslib'] = projectGraph.externalNodes['npm:tslib'].data.version;
+      }
+    }
+  }
+}
+
+function resolveTsConfigForRunCommandsTarget(
+  workspaceRoot: string,
+  sourceProject: ProjectGraphProjectNode,
+  targetOptions: { command: string; cwd?: string }
+): string | null {
+  const commandTsConfig = extractTsConfigFromCommand(targetOptions.command);
+  if (commandTsConfig) {
+    const cwd = targetOptions.cwd ?? sourceProject.data.root;
+    const cwdAbsolute = isAbsolute(cwd) ? cwd : join(workspaceRoot, cwd);
+    const resolved = isAbsolute(commandTsConfig)
+      ? commandTsConfig
+      : join(cwdAbsolute, commandTsConfig);
+    if (fileExists(resolved)) return resolved;
+  }
+
+  // Preserves prior behavior when the tsconfig can't be determined from the command.
+  return getRootTsConfigPath();
+}
+
+// Matches the `<compiler> --build <configName>` shape emitted by the
+// `@nx/js/typescript` plugin. Other shapes fall through to the workspace root
+// tsconfig in the caller.
+function extractTsConfigFromCommand(command: string): string | null {
+  const match = command.match(/(?:^|\s)--build\s+([^\s-]\S*)/);
+  return match ? match[1] : null;
 }

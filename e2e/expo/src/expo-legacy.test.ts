@@ -1,12 +1,12 @@
 import {
   checkFilesExist,
   cleanupProject,
-  expectTestsPass,
   getPackageManagerCommand,
   killPorts,
   newProject,
   promisifiedTreeKill,
   readJson,
+  reservePort,
   runCLI,
   runCLIAsync,
   runCommand,
@@ -15,18 +15,33 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { ChildProcess } from 'child_process';
 import { join } from 'path';
+import { setupExpoEnv } from './setup';
 
 describe('@nx/expo (legacy)', () => {
   let proj: string;
   let appName = uniq('my-app');
   let libName = uniq('lib');
   let originalEnv: string;
+  let restoreExpoEnv: () => void;
 
   beforeAll(() => {
-    proj = newProject({ packages: ['@nx/expo'] });
+    restoreExpoEnv = setupExpoEnv();
+
+    proj = newProject({
+      packages: [
+        '@nx/cypress',
+        '@nx/expo',
+        '@nx/jest',
+        '@nx/playwright',
+        '@nx/react',
+        '@nx/rollup',
+        '@nx/storybook',
+        '@nx/web',
+      ],
+    });
     // we create empty preset above which skips creation of `production` named input
 
     originalEnv = process.env.NX_ADD_PLUGINS;
@@ -41,14 +56,18 @@ describe('@nx/expo (legacy)', () => {
       return nxJson;
     });
     runCLI(
-      `generate @nx/expo:application ${appName} --e2eTestRunner=cypress --no-interactive`
+      `generate @nx/expo:application apps/${appName} --e2eTestRunner=cypress --no-interactive --unitTestRunner=jest --linter=eslint`
     );
     runCLI(
-      `generate @nx/expo:library ${libName} --buildable --publishable --importPath=${proj}/${libName}`
+      `generate @nx/expo:library libs/${libName} --buildable --publishable --importPath=${proj}/${libName} --unitTestRunner=jest --linter=eslint`
     );
+
+    // Build first to speed up static-serve
+    runCLI(`export ${appName}`);
   });
   afterAll(() => {
     process.env.NX_ADD_PLUGINS = originalEnv;
+    restoreExpoEnv();
     cleanupProject();
   });
 
@@ -56,7 +75,7 @@ describe('@nx/expo (legacy)', () => {
     const componentName = uniq('Component');
 
     runCLI(
-      `generate @nx/expo:component ${componentName} --project=${libName} --export --no-interactive`
+      `generate @nx/expo:component libs/${libName}/src/${componentName} --name ${componentName} --export --no-interactive`
     );
 
     updateFile(`apps/${appName}/src/app/App.tsx`, (content) => {
@@ -64,8 +83,8 @@ describe('@nx/expo (legacy)', () => {
       return updated;
     });
 
-    expectTestsPass(await runCLIAsync(`test ${appName}`));
-    expectTestsPass(await runCLIAsync(`test ${libName}`));
+    expect(() => runCLI(`test ${appName}`)).not.toThrow();
+    expect(() => runCLI(`test ${libName}`)).not.toThrow();
 
     const appLintResults = await runCLIAsync(`lint ${appName}`);
     expect(appLintResults.combinedOutput).toContain(
@@ -80,7 +99,7 @@ describe('@nx/expo (legacy)', () => {
 
   it('should serve with metro', async () => {
     let process: ChildProcess;
-    const port = 8081;
+    const port = await reservePort();
 
     try {
       process = await runCommandUntil(
@@ -107,7 +126,9 @@ describe('@nx/expo (legacy)', () => {
     }
   });
 
-  it('should export', async () => {
+  // Currently skipping this due to a change in `@expo/cli`, see
+  // https://github.com/expo/expo/issues/37357
+  it.skip('should export', async () => {
     const exportResults = await runCLIAsync(
       `export ${appName} --no-interactive`
     );
@@ -147,14 +168,14 @@ describe('@nx/expo (legacy)', () => {
   it('should install', async () => {
     // run install command
     let installResults = await runCLIAsync(
-      `install ${appName} --no-interactive`
+      `install ${appName} --no-interactive --force`
     );
     expect(installResults.combinedOutput).toContain(
       'Successfully ran target install'
     );
 
     installResults = await runCLIAsync(
-      `install ${appName} --packages=@react-native-async-storage/async-storage,react-native-image-picker --no-interactive`
+      `install ${appName} --force --packages=@react-native-async-storage/async-storage,react-native-image-picker --no-interactive`
     );
     expect(installResults.combinedOutput).toContain(
       'Successfully ran target install'
@@ -169,16 +190,17 @@ describe('@nx/expo (legacy)', () => {
   });
 
   it('should start', async () => {
+    const port = await reservePort();
     // run start command
     const startProcess = await runCommandUntil(
-      `start ${appName} -- --port=8081`,
-      (output) => output.includes(`http://localhost:8081`)
+      `start ${appName} -- --port=${port}`,
+      (output) => output.includes(`http://localhost:${port}`)
     );
 
     // port and process cleanup
     try {
       await promisifiedTreeKill(startProcess.pid, 'SIGKILL');
-      await killPorts(8081);
+      await killPorts(port);
     } catch (err) {
       expect(err).toBeFalsy();
     }
@@ -195,9 +217,7 @@ describe('@nx/expo (legacy)', () => {
   it('should tsc app', async () => {
     expect(() => {
       const pmc = getPackageManagerCommand();
-      runCommand(
-        `${pmc.runUninstalledPackage} tsc -p apps/${appName}/tsconfig.app.json`
-      );
+      runCommand(`${pmc.exec} tsc -p apps/${appName}/tsconfig.app.json`);
       checkFilesExist(
         `dist/out-tsc/apps/${appName}/src/app/App.js`,
         `dist/out-tsc/apps/${appName}/src/app/App.d.ts`,
@@ -212,7 +232,7 @@ describe('@nx/expo (legacy)', () => {
     const libName = uniq('@my-org/lib1');
 
     runCLI(
-      `generate @nx/expo:application ${appName} --project-name-and-root-format=as-provided --no-interactive`
+      `generate @nx/expo:application ${appName} --no-interactive --unitTestRunner=jest --linter=eslint`
     );
 
     // check files are generated without the layout directory ("apps/") and
@@ -224,15 +244,8 @@ describe('@nx/expo (legacy)', () => {
       `Successfully ran target test for project ${appName}`
     );
 
-    // assert scoped project names are not supported when --project-name-and-root-format=derived
-    expect(() =>
-      runCLI(
-        `generate @nx/expo:library ${libName} --buildable --project-name-and-root-format=derived`
-      )
-    ).toThrow();
-
     runCLI(
-      `generate @nx/expo:library ${libName} --buildable --project-name-and-root-format=as-provided`
+      `generate @nx/expo:library ${libName} --buildable --unitTestRunner=jest --linter=eslint`
     );
 
     // check files are generated without the layout directory ("libs/") and
@@ -256,7 +269,7 @@ describe('@nx/expo (legacy)', () => {
   });
 
   it('should run e2e for cypress', async () => {
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       const results = runCLI(`e2e ${appName}-e2e`);
       expect(results).toContain('Successfully ran target e2e');
 
@@ -270,7 +283,7 @@ describe('@nx/expo (legacy)', () => {
   });
 
   it('should run e2e for cypress with configuration ci', async () => {
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       const results = runCLI(`e2e ${appName}-e2e --configuration=ci`);
       expect(results).toContain('Successfully ran target e2e');
 
@@ -286,9 +299,13 @@ describe('@nx/expo (legacy)', () => {
   it('should run e2e for playwright', async () => {
     const appName2 = uniq('my-app');
     runCLI(
-      `generate @nx/expo:application ${appName2} --e2eTestRunner=playwright --no-interactive`
+      `generate @nx/expo:application ${appName2} --e2eTestRunner=playwright --no-interactive --unitTestRunner=jest --linter=eslint`
     );
-    if (runE2ETests()) {
+
+    // Build first to speed up static-serve
+    runCLI(`export ${appName2}`);
+
+    if (await runE2ETests()) {
       const results = runCLI(`e2e ${appName2}-e2e`, { verbose: true });
       expect(results).toContain('Successfully ran target e2e');
 

@@ -1,20 +1,29 @@
-import { Tree, readNxJson } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
+import { readNxJson, Tree } from '@nx/devkit';
+import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+} from '@nx/devkit/internal';
 import { Schema } from '../schema';
+import { normalizeLinterOption, isUsingTsSolutionSetup } from '@nx/js/internal';
+import type { LinterType } from '@nx/js';
 
-export interface NormalizedSchema extends Schema {
-  name: string;
+export interface NormalizedSchema extends Omit<Schema, 'name'> {
+  // `normalizeOptions` always resolves this, so it is no longer optional.
+  linter: LinterType;
   fileName: string;
+  projectName: string;
   projectRoot: string;
+  importPath: string;
   routePath: string;
   parsedTags: string[];
-  appMain: string;
+  isUsingTsSolutionConfig: boolean;
 }
 
 export async function normalizeOptions(
   host: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
+  await ensureRootProjectName(options, 'library');
   const {
     projectName,
     names: projectNames,
@@ -25,8 +34,6 @@ export async function normalizeOptions(
     projectType: 'library',
     directory: options.directory,
     importPath: options.importPath,
-    projectNameAndRootFormat: options.projectNameAndRootFormat,
-    callingGenerator: '@nx/expo:library',
   });
   const nxJson = readNxJson(host);
   const addPluginDefault =
@@ -37,17 +44,26 @@ export async function normalizeOptions(
   const parsedTags = options.tags
     ? options.tags.split(',').map((s) => s.trim())
     : [];
-  const appMain = options.js ? 'src/index.js' : 'src/index.ts';
+
+  const isUsingTsSolutionConfig = isUsingTsSolutionSetup(host);
+  const useProjectJson = options.useProjectJson ?? !isUsingTsSolutionConfig;
 
   const normalized: NormalizedSchema = {
     ...options,
+    // Resolved in the literal so the type guarantees it: `undefined` is falsy,
+    // so the ESLint arm would still run while the `=== 'eslint'` tsconfig
+    // excludes below are skipped.
+    linter: await normalizeLinterOption(host, options.linter),
     fileName: projectName,
     routePath: `/${projectNames.projectSimpleName}`,
-    name: projectName,
+    projectName:
+      isUsingTsSolutionConfig && !options.name ? importPath : projectName,
     projectRoot,
     parsedTags,
     importPath,
-    appMain,
+    isUsingTsSolutionConfig,
+    useProjectJson,
+    unitTestRunner: options.unitTestRunner ?? 'none',
   };
 
   return normalized;

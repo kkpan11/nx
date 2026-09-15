@@ -6,15 +6,17 @@ import {
   runCLI,
   uniq,
   updateFile,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('angular.json v1 config', () => {
   const app1 = uniq('app1');
 
   beforeAll(() => {
-    newProject({ packages: ['@nx/angular'] });
+    newProject({
+      packages: ['@nx/angular', '@nx/webpack', '@nx/jest', '@nx/playwright'],
+    });
     runCLI(
-      `generate @nx/angular:app ${app1} --project-name-and-root-format=as-provided --no-interactive`
+      `generate @nx/angular:app ${app1} --bundler=webpack --unit-test-runner=jest --no-interactive`
     );
     // reset workspace to use v1 config
     updateFile(`angular.json`, angularV1Json(app1));
@@ -33,9 +35,7 @@ describe('angular.json v1 config', () => {
   it('should generate new app with project.json and keep the existing in angular.json', async () => {
     // create new app
     const app2 = uniq('app2');
-    runCLI(
-      `generate @nx/angular:app ${app2} --project-name-and-root-format=as-provided --no-interactive`
-    );
+    runCLI(`generate @nx/angular:app ${app2} --no-interactive`);
 
     // should generate project.json for new projects
     checkFilesExist(`${app2}/project.json`);
@@ -68,7 +68,6 @@ const angularV1Json = (appName: string) => `{
             "outputPath": "dist${appName}",
             "index": "${appName}/src/index.html",
             "main": "${appName}/src/main.ts",
-            "polyfills": ["zone.js"],
             "tsConfig": "${appName}/tsconfig.app.json",
             "assets": ["${appName}/src/favicon.ico", "${appName}/src/assets"],
             "styles": ["${appName}/src/styles.css"],
@@ -84,8 +83,8 @@ const angularV1Json = (appName: string) => `{
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "2kb",
-                  "maximumError": "4kb"
+                  "maximumWarning": "4kb",
+                  "maximumError": "8kb"
                 }
               ],
               "outputHashing": "all"
@@ -126,7 +125,7 @@ const angularV1Json = (appName: string) => `{
           "builder": "@nx/jest:jest",
           "outputs": ["{workspaceRoot}/coverage${appName}"],
           "options": {
-            "jestConfig": "${appName}/jest.config.ts",
+            "jestConfig": "${appName}/jest.config.cts",
             "passWithNoTests": true
           }
         }
@@ -139,16 +138,9 @@ const angularV1Json = (appName: string) => `{
       "projectType": "application",
       "architect": {
         "e2e": {
-          "builder": "@nx/cypress:cypress",
+          "builder": "@nx/playwright:playwright",
           "options": {
-            "cypressConfig": "${appName}-e2e/cypress.json",
-            "devServerTarget": "${appName}:serve:development",
-            "testingType": "e2e"
-          },
-          "configurations": {
-            "production": {
-              "devServerTarget": "${appName}:serve:production"
-            }
+            "config": "${appName}-e2e/playwright.config.js"
           }
         },
         "lint": {

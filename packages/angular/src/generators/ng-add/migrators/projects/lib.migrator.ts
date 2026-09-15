@@ -1,5 +1,8 @@
-import { joinPathFragments, Tree } from '@nx/devkit';
-import { updateProjectConfiguration } from '@nx/devkit';
+import {
+  joinPathFragments,
+  Tree,
+  updateProjectConfiguration,
+} from '@nx/devkit';
 import type { GeneratorOptions } from '../../schema';
 import type {
   Logger,
@@ -10,6 +13,7 @@ import type {
 import { convertToNxProject } from '../../utilities';
 import type { BuilderMigratorClassType } from '../builders';
 import {
+  AngularBuildUnitTestMigrator,
   AngularDevkitKarmaMigrator,
   AngularDevkitNgPackagrMigrator,
   AngularEslintLintMigrator,
@@ -18,6 +22,7 @@ import { ProjectMigrator } from './project.migrator';
 
 const supportedBuilderMigrators: BuilderMigratorClassType[] = [
   AngularDevkitNgPackagrMigrator,
+  AngularBuildUnitTestMigrator,
   AngularDevkitKarmaMigrator,
   AngularEslintLintMigrator,
 ];

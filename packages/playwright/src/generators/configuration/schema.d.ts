@@ -1,17 +1,21 @@
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface ConfigurationGeneratorSchema {
   project: string;
   /**
    * this is relative to the projectRoot
    **/
-  directory: string;
-  js: boolean; // default is false
-  skipFormat: boolean;
-  skipPackageJson: boolean;
+  directory?: string;
+  js?: boolean; // default is false
+  skipFormat?: boolean;
+  skipPackageJson?: boolean;
   skipInstall?: boolean;
-  linter: Linter;
-  setParserOptionsProject: boolean; // default is false
+  linter?: LinterType;
+  enableTypedLinting?: boolean; // default is false
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
+  setParserOptionsProject?: boolean; // default is false
   /**
    * command to give playwright to run the web server
    * @example: "npx nx serve my-fe-app"
@@ -24,4 +28,10 @@ export interface ConfigurationGeneratorSchema {
   webServerAddress?: string;
   rootProject?: boolean;
   addPlugin?: boolean;
+}
+
+export interface NormalizedGeneratorOptions extends ConfigurationGeneratorSchema {
+  addPlugin: boolean;
+  directory: string;
+  linter: LinterType;
 }

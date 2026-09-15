@@ -1,27 +1,31 @@
 import {
+  addDependenciesToPackageJson,
   ensurePackage,
   formatFiles,
   generateFiles,
   joinPathFragments,
   readProjectConfiguration,
-  Tree,
+  runTasksInSerial,
+  type GeneratorCallback,
+  type Tree,
 } from '@nx/devkit';
+import { assertCypressComponentTestingSupport } from '../../utils/assert-cypress-component-testing-support';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
 import { nxVersion } from '../../utils/versions';
 import {
   getArgsDefaultValue,
   getComponentProps,
 } from '../utils/storybook-ast/storybook-inputs';
-import { ComponentTestSchema } from './schema';
+import { versions } from '../utils/version-utils';
+import type { ComponentTestSchema } from './schema';
 
 export async function componentTestGenerator(
   tree: Tree,
   options: ComponentTestSchema
 ) {
+  assertSupportedAngularVersion(tree);
   ensurePackage('@nx/cypress', nxVersion);
-  const { assertMinimumCypressVersion } = <
-    typeof import('@nx/cypress/src/utils/cypress-version')
-  >require('@nx/cypress/src/utils/cypress-version');
-  assertMinimumCypressVersion(10);
+  assertCypressComponentTestingSupport(tree);
   const { root } = readProjectConfiguration(tree, options.project);
   const componentDirPath = joinPathFragments(root, options.componentDir);
   const componentFilePath = joinPathFragments(
@@ -55,9 +59,27 @@ export async function componentTestGenerator(
     );
   }
 
+  const tasks: GeneratorCallback[] = [];
+  if (!options.skipPackageJson) {
+    // Cypress CT still requires @angular/platform-browser-dynamic
+    tasks.push(
+      addDependenciesToPackageJson(
+        tree,
+        {},
+        {
+          '@angular/platform-browser-dynamic': versions(tree).angularVersion,
+        },
+        undefined,
+        true
+      )
+    );
+  }
+
   if (!options.skipFormat) {
     await formatFiles(tree);
   }
+
+  return runTasksInSerial(...tasks);
 }
 
 export default componentTestGenerator;

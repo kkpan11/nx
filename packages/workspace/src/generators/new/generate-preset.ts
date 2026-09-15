@@ -12,8 +12,9 @@ import {
 import { getNpmPackageVersion } from '../utils/get-npm-package-version';
 import { NormalizedSchema } from './new';
 import { join } from 'path';
-import * as yargsParser from 'yargs-parser';
-import { spawn, SpawnOptions } from 'child_process';
+import yargsParser from 'yargs-parser';
+import { fork, ForkOptions } from 'child_process';
+import { getNxRequirePaths } from '@nx/devkit/internal';
 
 export function addPresetDependencies(host: Tree, options: NormalizedSchema) {
   const { dependencies, dev } = getPresetDependencies(options);
@@ -21,7 +22,8 @@ export function addPresetDependencies(host: Tree, options: NormalizedSchema) {
     host,
     dependencies,
     dev,
-    join(options.directory, 'package.json')
+    join(options.directory, 'package.json'),
+    true
   );
 }
 
@@ -32,24 +34,34 @@ export function generatePreset(host: Tree, opts: NormalizedSchema) {
       interactive: true,
     },
   });
-  const spawnOptions: SpawnOptions = {
+
+  const newWorkspaceRoot = join(host.root, opts.directory);
+  const forkOptions: ForkOptions = {
     stdio: 'inherit',
-    shell: true,
-    cwd: join(host.root, opts.directory),
+    cwd: newWorkspaceRoot,
   };
   const pmc = getPackageManagerCommand();
-  const executable = `${pmc.exec} nx`;
+  const nxInstallationPaths = getNxRequirePaths(newWorkspaceRoot);
+  const nxBinForNewWorkspaceRoot = require.resolve('nx/bin/nx', {
+    paths: nxInstallationPaths,
+  });
   const args = getPresetArgs(opts);
 
   return new Promise<void>((resolve, reject) => {
-    spawn(executable, args, spawnOptions).on('close', (code: number) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        const message = 'Workspace creation failed, see above.';
-        reject(new Error(message));
+    // This needs to be `fork` instead of `spawn` because `spawn` is failing on Windows with pnpm + yarn
+    // The root cause is unclear. Spawn causes the `@nx/workspace:preset` generator to be called twice
+    // and the second time it fails with `Project {projectName} already exists.`
+    fork(nxBinForNewWorkspaceRoot, args, forkOptions).on(
+      'close',
+      (code: number) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          const message = 'Workspace creation failed, see above.';
+          reject(new Error(message));
+        }
       }
-    });
+    );
   });
 
   function getPresetArgs(options: NormalizedSchema) {
@@ -77,40 +89,79 @@ export function generatePreset(host: Tree, opts: NormalizedSchema) {
         : null,
       parsedArgs.interactive ? '--interactive=true' : '--interactive=false',
       opts.routing !== undefined ? `--routing=${opts.routing}` : null,
+      opts.useReactRouter !== undefined
+        ? `--useReactRouter=${opts.useReactRouter}`
+        : null,
+      opts.unitTestRunner !== undefined
+        ? `--unitTestRunner=${opts.unitTestRunner}`
+        : null,
       opts.e2eTestRunner !== undefined
         ? `--e2eTestRunner=${opts.e2eTestRunner}`
         : null,
       opts.ssr ? `--ssr` : null,
       opts.prefix !== undefined ? `--prefix=${opts.prefix}` : null,
+      opts.zoneless
+        ? `--zoneless`
+        : opts.zoneless === false
+          ? `--no-zoneless`
+          : null,
+      opts.nxCloudToken ? `--nxCloudToken=${opts.nxCloudToken}` : null,
+      opts.formatter ? `--formatter=${opts.formatter}` : null,
+      opts.skipInstall ? `--skipInstall` : null,
+      opts.workspaces !== false ? `--workspaces` : `--no-workspaces`,
+      opts.useProjectJson ? `--useProjectJson` : null,
     ].filter((e) => !!e);
   }
 }
 
+// `typescript` is pinned here rather than left to `@nx/js:init` so it lands in
+// package.json before the first install. Otherwise npm resolves tsquery's
+// `typescript: >3.0.0` peer to 7.x, whose entry point dropped the compiler API.
 function getPresetDependencies({
   preset,
   presetVersion,
   bundler,
   e2eTestRunner,
+  js,
 }: NormalizedSchema) {
   switch (preset) {
+    // These generate no project, so `@nx/js:init` never runs to add typescript
+    // and pinning it here would be net-new. The preset generator itself does
+    // run - it sets up the chosen formatter.
     case Preset.Apps:
     case Preset.NPM:
+      return { dependencies: {}, dev: { '@nx/js': nxVersion } };
+
     case Preset.TS:
     case Preset.TsStandalone:
-      return { dependencies: {}, dev: { '@nx/js': nxVersion } };
+      return {
+        dependencies: {},
+        dev: {
+          '@nx/js': nxVersion,
+          // ts-standalone prompts for JS vs TS; mirror `@nx/js:init`, which
+          // skips typescript when `js` is set.
+          typescript: js ? undefined : typescriptVersion,
+        },
+      };
 
     case Preset.AngularMonorepo:
     case Preset.AngularStandalone:
       return {
-        dependencies: { '@nx/angular': nxVersion },
+        dependencies: {},
         dev: {
           '@angular-devkit/core': angularCliVersion,
+          '@nx/angular': nxVersion,
+          '@nx/rspack': bundler === 'rspack' ? nxVersion : undefined,
+          '@nx/angular-rspack': bundler === 'rspack' ? nxVersion : undefined,
           typescript: typescriptVersion,
         },
       };
 
     case Preset.Express:
-      return { dependencies: {}, dev: { '@nx/express': nxVersion } };
+      return {
+        dependencies: {},
+        dev: { '@nx/express': nxVersion, typescript: typescriptVersion },
+      };
 
     case Preset.Nest:
       return {
@@ -120,11 +171,10 @@ function getPresetDependencies({
 
     case Preset.NextJs:
     case Preset.NextJsStandalone:
-      return { dependencies: { '@nx/next': nxVersion }, dev: {} };
-
-    case Preset.RemixStandalone:
-    case Preset.RemixMonorepo:
-      return { dependencies: { '@nx/remix': nxVersion }, dev: {} };
+      return {
+        dependencies: { '@nx/next': nxVersion },
+        dev: { typescript: typescriptVersion },
+      };
 
     case Preset.VueMonorepo:
     case Preset.VueStandalone:
@@ -136,6 +186,7 @@ function getPresetDependencies({
           '@nx/playwright':
             e2eTestRunner === 'playwright' ? nxVersion : undefined,
           '@nx/vite': nxVersion,
+          typescript: typescriptVersion,
         },
       };
 
@@ -148,6 +199,7 @@ function getPresetDependencies({
           '@nx/cypress': e2eTestRunner === 'cypress' ? nxVersion : undefined,
           '@nx/playwright':
             e2eTestRunner === 'playwright' ? nxVersion : undefined,
+          typescript: typescriptVersion,
         },
       };
 
@@ -157,18 +209,27 @@ function getPresetDependencies({
         dependencies: {},
         dev: {
           '@nx/react': nxVersion,
-          '@nx/cypress': e2eTestRunner !== 'none' ? nxVersion : undefined,
+          '@nx/cypress': e2eTestRunner === 'cypress' ? nxVersion : undefined,
+          '@nx/playwright':
+            e2eTestRunner === 'playwright' ? nxVersion : undefined,
           '@nx/jest': bundler !== 'vite' ? nxVersion : undefined,
           '@nx/vite': bundler === 'vite' ? nxVersion : undefined,
           '@nx/webpack': bundler === 'webpack' ? nxVersion : undefined,
+          typescript: typescriptVersion,
         },
       };
 
     case Preset.ReactNative:
-      return { dependencies: {}, dev: { '@nx/react-native': nxVersion } };
+      return {
+        dependencies: {},
+        dev: { '@nx/react-native': nxVersion, typescript: typescriptVersion },
+      };
 
     case Preset.Expo:
-      return { dependencies: {}, dev: { '@nx/expo': nxVersion } };
+      return {
+        dependencies: {},
+        dev: { '@nx/expo': nxVersion, typescript: typescriptVersion },
+      };
 
     case Preset.WebComponents:
       return {
@@ -183,6 +244,7 @@ function getPresetDependencies({
         dev: {
           '@nx/node': nxVersion,
           '@nx/webpack': bundler === 'webpack' ? nxVersion : undefined,
+          typescript: typescriptVersion,
         },
       };
 

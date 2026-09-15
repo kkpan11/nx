@@ -37,13 +37,51 @@ module.exports = function (api: any, options: NxWebBabelPresetOptions = {}) {
 
   // Determine settings  for `@babel//babel-plugin-transform-class-properties`,
   // so that we can sync the `loose` option with `@babel/preset-env`.
-  // TODO(v20): Remove classProperties since it's no longer needed, now that the class props transform is in preset-env.
+  // TODO(v21): Remove classProperties since it's no longer needed, now that the class props transform is in preset-env.
   const loose = options.classProperties?.loose ?? options.loose ?? true;
   if (options.classProperties) {
     logger.warn(
       `Use =\`loose\` option instead of \`classProperties.loose\`. The \`classProperties\` option will be removed in Nx 20`
     );
   }
+
+  const plugins = [
+    !isNxPackage
+      ? [
+          require.resolve('@babel/plugin-transform-runtime'),
+          {
+            corejs: false,
+            helpers: true,
+            regenerator: true,
+            useESModules: isModern,
+            absoluteRuntime: dirname(
+              require.resolve('@babel/runtime/package.json')
+            ),
+          },
+        ]
+      : null,
+    require.resolve('babel-plugin-macros'),
+    emitDecoratorMetadata
+      ? require.resolve('babel-plugin-transform-typescript-metadata')
+      : undefined,
+    // Must use legacy decorators to remain compatible with TypeScript.
+    [
+      require.resolve('@babel/plugin-proposal-decorators'),
+      options.decorators ?? { legacy: true },
+    ],
+    [require.resolve('@babel/plugin-transform-class-properties'), { loose }],
+    // class-properties runs babel's shared class-features plugin, which hard-errors
+    // on private methods and static blocks unless their transforms are loaded too.
+    // This bites when an ESM-only dep using that syntax is transformed (un-ignored
+    // via transformIgnorePatterns). private-property-in-object completes babel's
+    // loose-consistency trio so `loose` stays uniform across the class-features transforms.
+    [require.resolve('@babel/plugin-transform-private-methods'), { loose }],
+    [
+      require.resolve('@babel/plugin-transform-private-property-in-object'),
+      { loose },
+    ],
+    require.resolve('@babel/plugin-transform-class-static-block'),
+  ].filter(Boolean);
 
   return {
     presets: [
@@ -64,32 +102,7 @@ module.exports = function (api: any, options: NxWebBabelPresetOptions = {}) {
         },
       ],
     ],
-    plugins: [
-      !isNxPackage
-        ? [
-            require.resolve('@babel/plugin-transform-runtime'),
-            {
-              corejs: false,
-              helpers: true,
-              regenerator: true,
-              useESModules: isModern,
-              absoluteRuntime: dirname(
-                require.resolve('@babel/runtime/package.json')
-              ),
-            },
-          ]
-        : null,
-      require.resolve('babel-plugin-macros'),
-      emitDecoratorMetadata
-        ? require.resolve('babel-plugin-transform-typescript-metadata')
-        : undefined,
-      // Must use legacy decorators to remain compatible with TypeScript.
-      [
-        require.resolve('@babel/plugin-proposal-decorators'),
-        options.decorators ?? { legacy: true },
-      ],
-      [require.resolve('@babel/plugin-transform-class-properties'), { loose }],
-    ].filter(Boolean),
+    plugins,
     overrides: [
       // Convert `const enum` to `enum`. The former cannot be supported by babel
       // but at least we can get it to not error out.

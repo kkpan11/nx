@@ -1,5 +1,6 @@
-import { addE2e as addE2eReact } from '@nx/react/src/generators/application/lib/add-e2e';
-import { GeneratorCallback, Tree, ensurePackage } from '@nx/devkit';
+import { addE2e as addE2eReact } from '@nx/react/internal';
+import { GeneratorCallback, Tree, ensurePackage, names } from '@nx/devkit';
+import { isTypedLintingEnabled } from '@nx/eslint/internal';
 
 import { nxVersion } from '../../../utils/versions';
 
@@ -15,18 +16,18 @@ export async function addE2e(
         ...options,
         e2eTestRunner: 'cypress',
         style: 'none',
-        styledModule: null,
         hasStyles: false,
         unitTestRunner: 'none',
+        names: names(options.name),
       });
     case 'playwright':
       return addE2eReact(host, {
         ...options,
         e2eTestRunner: 'playwright',
         style: 'none',
-        styledModule: null,
         hasStyles: false,
         unitTestRunner: 'none',
+        names: names(options.name),
       });
     case 'detox':
       const { detoxApplicationGenerator } = ensurePackage<
@@ -36,12 +37,11 @@ export async function addE2e(
         ...options,
         e2eName: options.e2eProjectName,
         e2eDirectory: options.e2eProjectRoot,
-        projectNameAndRootFormat: 'as-provided',
         appProject: options.projectName,
         appDisplayName: options.displayName,
         appName: options.name,
         framework: 'react-native',
-        setParserOptionsProject: options.setParserOptionsProject,
+        enableTypedLinting: isTypedLintingEnabled(options),
         skipFormat: true,
       });
     case 'none':

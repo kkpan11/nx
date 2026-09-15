@@ -1,24 +1,30 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
-import type { ProjectGraphProjectNode } from '@nx/devkit';
+import type { ProjectGraphProjectNode, TargetConfiguration } from '@nx/devkit';
 // nx-ignore-next-line
 import { GraphError } from 'nx/src/command-line/graph/graph';
-/* eslint-enable @nx/enforce-module-boundaries */
+
 import { EyeIcon } from '@heroicons/react/24/outline';
-import { PropertyInfoTooltip, Tooltip } from '@nx/graph/ui-tooltips';
-import { TooltipTriggerText } from '../target-configuration-details/tooltip-trigger-text';
 import { twMerge } from 'tailwind-merge';
-import { Pill } from '../pill';
-import { TargetTechnologies } from '../target-technologies/target-technologies';
+import { Tooltip } from '@nx/graph-ui-common';
+import { TagList } from '../tag-list/tag-list';
+import { OwnersList } from '../owners-list/owners-list';
 import { TargetConfigurationGroupList } from '../target-configuration-details-group-list/target-configuration-details-group-list';
+import { TooltipTriggerText } from '../target-configuration-details/tooltip-trigger-text';
+import { TargetTechnologies } from '../target-technologies/target-technologies';
+import { PropertyInfoTooltip } from '../tooltips/property-info-tooltip';
 
 export interface ProjectDetailsProps {
   project: ProjectGraphProjectNode;
+  projectId?: string;
   sourceMap: Record<string, string[]>;
   errors?: GraphError[];
   variant?: 'default' | 'compact';
   connectedToCloud?: boolean;
-  onViewInProjectGraph?: (data: { projectName: string }) => void;
+  disabledTaskSyncGenerators?: string[];
+  onViewInProjectGraph?: (data: {
+    projectName: string;
+    projectId?: string;
+  }) => void;
   onViewInTaskGraph?: (data: {
     projectName: string;
     targetName: string;
@@ -36,6 +42,7 @@ const typeToProjectType = {
 
 export const ProjectDetails = ({
   project,
+  projectId,
   sourceMap,
   variant,
   onViewInProjectGraph,
@@ -44,6 +51,7 @@ export const ProjectDetails = ({
   onNxConnect,
   viewInProjectGraphPosition = 'top',
   connectedToCloud,
+  disabledTaskSyncGenerators,
 }: ProjectDetailsProps) => {
   const projectData = project.data;
   const isCompact = variant === 'compact';
@@ -53,7 +61,9 @@ export const ProjectDetails = ({
       [
         ...(projectData.metadata?.technologies ?? []),
         ...Object.values(projectData.targets ?? {})
-          .map((target) => target?.metadata?.technologies)
+          .map(
+            (target: TargetConfiguration<any>) => target?.metadata?.technologies
+          )
           .flat(),
       ].filter(Boolean)
     ),
@@ -90,37 +100,37 @@ export const ProjectDetails = ({
           </div>
           {onViewInProjectGraph && viewInProjectGraphPosition === 'top' && (
             <ViewInProjectGraphButton
-              callback={() =>
-                onViewInProjectGraph({ projectName: project.name })
+              onClick={() =>
+                onViewInProjectGraph({ projectName: project.name, projectId })
               }
             />
           )}
         </div>
         <div className="flex flex-wrap justify-between py-2">
-          <div>
+          <div className="min-w-0">
             {projectData.metadata?.description ? (
-              <p className="mb-2 text-sm capitalize text-gray-500 dark:text-slate-400">
+              <p className="mb-2 text-sm text-gray-500 capitalize dark:text-slate-400">
                 {projectData.metadata?.description}
               </p>
             ) : null}
+            {projectData.metadata?.owners &&
+            Object.keys(projectData.metadata?.owners).length ? (
+              <OwnersList
+                className="mb-2"
+                owners={Object.keys(projectData.metadata?.owners)}
+              />
+            ) : null}
             {projectData.tags && projectData.tags.length ? (
-              <p>
-                <span className="font-medium">Tags:</span>
-                {projectData.tags?.map((tag) => (
-                  <span className="ml-2 font-mono lowercase">
-                    <Pill text={tag} />
-                  </span>
-                ))}
-              </p>
+              <TagList className="mb-2" tags={projectData.tags} />
             ) : null}
             {projectData.root ? (
-              <p>
+              <p className="mb-2">
                 <span className="font-medium">Root:</span>
                 <span className="font-mono"> {projectData.root.trim()}</span>
               </p>
             ) : null}
-            {projectData.projectType ?? typeToProjectType[project.type] ? (
-              <p>
+            {(projectData.projectType ?? typeToProjectType[project.type]) ? (
+              <p className="mb-2">
                 <span className="font-medium">Type:</span>
                 <span className="ml-2 font-mono capitalize">
                   {projectData.projectType ?? typeToProjectType[project.type]}
@@ -132,7 +142,7 @@ export const ProjectDetails = ({
             {onViewInProjectGraph &&
               viewInProjectGraphPosition === 'bottom' && (
                 <ViewInProjectGraphButton
-                  callback={() =>
+                  onClick={() =>
                     onViewInProjectGraph({ projectName: project.name })
                   }
                 />
@@ -160,6 +170,7 @@ export const ProjectDetails = ({
           onRunTarget={onRunTarget}
           onViewInTaskGraph={onViewInTaskGraph}
           connectedToCloud={connectedToCloud}
+          disabledTaskSyncGenerators={disabledTaskSyncGenerators}
           onNxConnect={onNxConnect}
         />
       </div>
@@ -169,13 +180,13 @@ export const ProjectDetails = ({
 
 export default ProjectDetails;
 
-function ViewInProjectGraphButton({ callback }: { callback: () => void }) {
+function ViewInProjectGraphButton({ onClick }: { onClick: () => void }) {
   return (
     <button
-      className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-base text-slate-600 ring-2 ring-inset ring-slate-400/40 hover:bg-slate-50 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-800/60"
-      onClick={() => callback()}
+      className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-base text-slate-600 ring-2 ring-slate-400/40 ring-inset hover:bg-slate-50 dark:text-slate-300 dark:ring-slate-400/30 dark:hover:bg-slate-800/60"
+      onClick={() => onClick()}
     >
-      <EyeIcon className="h-5 w-5 "></EyeIcon>
+      <EyeIcon className="h-5 w-5"></EyeIcon>
       <span>View In Graph</span>
     </button>
   );

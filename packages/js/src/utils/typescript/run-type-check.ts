@@ -1,9 +1,9 @@
-import * as chalk from 'chalk';
+import chalk from 'chalk';
 import * as path from 'path';
 import type { BuilderProgram, Diagnostic, Program } from 'typescript';
-import { codeFrameColumns } from 'nx/src/utils/code-frames';
 import { highlight } from '../code-frames/highlight';
 import { readTsConfig } from '../../utils/typescript/ts-config';
+import { codeFrameColumns } from '@nx/devkit/internal';
 
 export interface TypeCheckResult {
   warnings?: string[];
@@ -21,6 +21,8 @@ interface BaseTypeCheckOptions {
   cacheDir?: string;
   incremental?: boolean;
   rootDir?: string;
+  projectRoot?: string;
+  ignoreDiagnostics?: boolean;
 }
 
 type Mode = NoEmitMode | EmitDeclarationOnlyMode;
@@ -42,9 +44,8 @@ export async function runTypeCheckWatch(
     errorCount?: number
   ) => void | Promise<void>
 ) {
-  const { ts, workspaceRoot, config, compilerOptions } = await setupTypeScript(
-    options
-  );
+  const { ts, workspaceRoot, config, compilerOptions } =
+    await setupTypeScript(options);
 
   const host = ts.createWatchCompilerHost(
     config.fileNames,
@@ -65,7 +66,9 @@ export async function runTypeCheckWatch(
 
   const watchProgram = ts.createWatchProgram(host);
   const program = watchProgram.getProgram().getProgram();
-  const diagnostics = ts.getPreEmitDiagnostics(program);
+  const diagnostics = options.ignoreDiagnostics
+    ? []
+    : ts.getPreEmitDiagnostics(program);
 
   return {
     close: watchProgram.close.bind(watchProgram),
@@ -93,6 +96,10 @@ export async function runTypeCheck(
       options: {
         ...compilerOptions,
         incremental: true,
+        // Set after the spread so it overrides any user-set tsBuildInfoFile.
+        // This is a dedicated type-check program with Nx-injected options that
+        // differ from the real build, so its build info must not share a file
+        // with the build, or it corrupts the build's incremental cache.
         tsBuildInfoFile: path.join(cacheDir, '.tsbuildinfo'),
       },
     });
@@ -102,9 +109,9 @@ export async function runTypeCheck(
 
   const result = program.emit();
 
-  const allDiagnostics = ts
-    .getPreEmitDiagnostics(program as Program)
-    .concat(result.diagnostics);
+  const allDiagnostics = options.ignoreDiagnostics
+    ? []
+    : ts.getPreEmitDiagnostics(program as Program).concat(result.diagnostics);
 
   return getTypeCheckResult(
     ts,
@@ -118,7 +125,7 @@ export async function runTypeCheck(
 
 async function setupTypeScript(options: TypeCheckOptions) {
   const ts = await import('typescript');
-  const { workspaceRoot, tsConfigPath, cacheDir, incremental, rootDir } =
+  const { workspaceRoot, tsConfigPath, cacheDir, incremental, projectRoot } =
     options;
   const config = readTsConfig(tsConfigPath);
   if (config.errors.length) {
@@ -128,15 +135,23 @@ async function setupTypeScript(options: TypeCheckOptions) {
 
   const emitOptions =
     options.mode === 'emitDeclarationOnly'
-      ? { emitDeclarationOnly: true, declaration: true, outDir: options.outDir }
-      : { noEmit: true };
+      ? {
+          emitDeclarationOnly: true,
+          declaration: true,
+          outDir: options.outDir,
+          declarationDir:
+            options.projectRoot && options.outDir.indexOf(projectRoot)
+              ? options.outDir.replace(projectRoot, '')
+              : undefined,
+        }
+      : { noEmit: true, composite: false };
 
   const compilerOptions = {
     ...config.options,
     skipLibCheck: true,
     ...emitOptions,
     incremental,
-    rootDir: rootDir || config.options.rootDir,
+    rootDir: options.rootDir || config.options.rootDir,
   };
 
   return { ts, workspaceRoot, cacheDir, config, compilerOptions };

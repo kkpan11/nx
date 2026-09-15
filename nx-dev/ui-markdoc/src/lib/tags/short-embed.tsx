@@ -6,10 +6,11 @@ import {
   useLayoutEffect,
   useState,
 } from 'react';
-import { Schema, Tag } from '@markdoc/markdoc';
+import markdoc, { Schema } from '@markdoc/markdoc';
 import { Transition } from '@headlessui/react';
-import { Button } from '@nx/nx-dev/ui-common';
+import { Button } from '@nx/nx-dev-ui-common';
 import { XMarkIcon } from '@heroicons/react/24/outline';
+const { Tag } = markdoc;
 
 interface VideoData {
   title: string;
@@ -53,13 +54,15 @@ export const ShortEmbedContext = createContext<{
   userInteraction: boolean;
 }>({ current: null, userInteraction: false });
 
+export type ShortEmbedsProps = {
+  videoData: VideoData[];
+  children: ReactNode;
+};
+
 export function ShortEmbeds({
   videoData,
   children,
-}: {
-  videoData: VideoData[];
-  children: ReactNode;
-}): JSX.Element | null {
+}: ShortEmbedsProps): JSX.Element | null {
   const [currentVideo, setCurrentVideo] = useState<VideoData>(videoData[0]);
   const [isShowing, setIsShowing] = useState(false);
   const [userInteraction, setUserInteraction] = useState(false);
@@ -84,7 +87,10 @@ export function ShortEmbeds({
     <ShortEmbedContext.Provider
       value={{ current: currentVideo, userInteraction }}
     >
-      <aside id="short-embed" className="fixed bottom-5 right-5 z-50 w-80">
+      <aside
+        id="short-embed"
+        className="not-content fixed right-5 bottom-5 z-50 w-80"
+      >
         <Transition
           appear={true}
           show={isShowing}
@@ -95,14 +101,14 @@ export function ShortEmbeds({
           leaveFrom="opacity-100 translate-y-0"
           leaveTo="opacity-0 translate-y-full"
         >
-          <div className="coding relative mt-12 flex h-full w-full flex-col rounded-xl border border-slate-200 bg-slate-50 p-2 leading-normal text-slate-800 subpixel-antialiased shadow-xl dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+          <div className="coding relative mt-12 flex h-full w-full flex-col rounded-xl border border-zinc-200 bg-zinc-50 p-2 leading-normal text-zinc-800 subpixel-antialiased shadow-xl dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
             <Button
               size="small"
               variant="secondary"
               onClick={() => {
                 setTimeout(() => setIsShowing(false), 500);
               }}
-              className="absolute right-2 top-2"
+              className="absolute top-2 right-2"
               title="Close"
             >
               <XMarkIcon className="h-4 w-4" />
@@ -128,7 +134,7 @@ export function ShortEmbeds({
                             setUserInteraction(true);
                             setCurrentVideo(config);
                           }}
-                          className="flex h-24 overflow-hidden rounded-lg border border-slate-200 bg-white/40 text-sm shadow-sm transition focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 hover:cursor-pointer hover:bg-white dark:border-slate-800/40 dark:bg-slate-800/60 dark:hover:bg-slate-800"
+                          className="flex h-24 overflow-hidden rounded-lg border border-zinc-200 bg-white/40 text-sm shadow-xs transition focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 hover:cursor-pointer hover:bg-white dark:border-zinc-800/40 dark:bg-zinc-800/60 dark:hover:bg-zinc-800"
                         >
                           <div className="w-32 shrink-0">
                             <img
@@ -137,7 +143,7 @@ export function ShortEmbeds({
                               alt={`Another recommendation: ${config.title}`}
                             />
                           </div>
-                          <div className="grid h-full w-full shrink grid-cols-1 content-center overflow-ellipsis p-2">
+                          <div className="grid h-full w-full shrink grid-cols-1 content-center p-2 overflow-ellipsis">
                             {config.title}
                           </div>
                         </div>
@@ -153,7 +159,9 @@ export function ShortEmbeds({
   );
 }
 
-export function ShortVideo({ embedUrl, title }: VideoData) {
+export type ShortVideoProps = VideoData;
+
+export function ShortVideo({ embedUrl, title }: ShortVideoProps) {
   const { current, userInteraction } = useContext(ShortEmbedContext);
 
   if (embedUrl !== current?.embedUrl) {
@@ -161,7 +169,7 @@ export function ShortVideo({ embedUrl, title }: VideoData) {
   }
 
   return (
-    <div className="h-96 w-full overflow-hidden rounded-lg">
+    <div className="not-content h-96 w-full overflow-hidden rounded-lg">
       <iframe
         className="!m-0 border-0"
         width="100%"

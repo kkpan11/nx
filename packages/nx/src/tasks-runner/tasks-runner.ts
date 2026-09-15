@@ -9,6 +9,7 @@ export type TaskStatus =
   | 'success'
   | 'failure'
   | 'skipped'
+  | 'stopped'
   | 'local-cache-kept-existing'
   | 'local-cache'
   | 'remote-cache';
@@ -23,6 +24,7 @@ export type TasksRunner<T = unknown> = (
   context?: {
     target?: string;
     initiatingProject?: string | null;
+    initiatingTasks: Task[];
     projectGraph: ProjectGraph;
     nxJson: NxJsonConfiguration;
     nxArgs: NxArgs;

@@ -7,6 +7,7 @@
   "title": "Expo EAS Build executor",
   "description": "Start an EAS build for your expo project.",
   "type": "object",
+  "x-deprecated": "The `@nx/expo:build` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/expo:convert-to-inferred` to migrate to the `@nx/expo/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "presets": [
     {
       "name": "Build for a specific platform",
@@ -77,6 +78,22 @@
       "type": "string",
       "description": "Submit on build complete using the submit profile with provided name",
       "examples": ["production", "development", "preview"]
+    },
+    "message": {
+      "type": "string",
+      "description": "A short message describing the build",
+      "examples": ["My message"]
+    },
+    "buildLoggerLevel": {
+      "type": "string",
+      "description": "The level of logs to output during the build process.",
+      "enum": ["trace", "debug", "info", "warn", "error", "fatal"],
+      "default": "info"
+    },
+    "freezeCredentials": {
+      "type": "boolean",
+      "description": "Prevent the build from updating credentials in non-interactive mode",
+      "default": false
     }
   },
   "required": []

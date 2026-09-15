@@ -5,15 +5,16 @@ import {
   readProjectConfiguration,
   Tree,
 } from '@nx/devkit';
+import { assertSupportedReactVersion } from '../../utils/assert-supported-react-version';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
 import { basename, dirname, extname, join, relative } from 'path';
 import {
   findExportDeclarationsForJsx,
   getComponentNode,
 } from '../../utils/ast-utils';
-import { getDefaultsForComponent } from '../../utils/component-props';
+import { getComponentPropDefaults } from '../../utils/component-props';
 import { nxVersion } from '../../utils/versions';
 import { ComponentTestSchema } from './schema';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
 
 let tsModule: typeof import('typescript');
 
@@ -21,26 +22,19 @@ export async function componentTestGenerator(
   tree: Tree,
   options: ComponentTestSchema
 ) {
+  assertSupportedReactVersion(tree);
   ensurePackage('@nx/cypress', nxVersion);
-  const { assertMinimumCypressVersion } = await import(
-    '@nx/cypress/src/utils/cypress-version'
-  );
-  assertMinimumCypressVersion(10);
   // normalize any windows paths
   options.componentPath = options.componentPath.replace(/\\/g, '/');
 
   const projectConfig = readProjectConfiguration(tree, options.project);
+  const sourceRoot = getProjectSourceRoot(projectConfig, tree);
 
-  const normalizedPath = options.componentPath.startsWith(
-    projectConfig.sourceRoot
-  )
-    ? relative(projectConfig.sourceRoot, options.componentPath)
+  const normalizedPath = options.componentPath.startsWith(sourceRoot)
+    ? relative(sourceRoot, options.componentPath)
     : options.componentPath;
 
-  const componentPath = joinPathFragments(
-    projectConfig.sourceRoot,
-    normalizedPath
-  );
+  const componentPath = joinPathFragments(sourceRoot, normalizedPath);
 
   if (tree.exists(componentPath)) {
     generateSpecsForComponents(tree, componentPath);
@@ -72,7 +66,7 @@ function generateSpecsForComponents(tree: Tree, filePath: string) {
 
   if (cmpNodes?.length) {
     const components = cmpNodes.map((cmp) => {
-      const defaults = getDefaultsForComponent(sourceFile, cmp);
+      const defaults = getComponentPropDefaults(sourceFile, cmp);
       const isDefaultExport = defaultExport
         ? (defaultExport as any).name.text === (cmp as any).name.text
         : false;
@@ -81,6 +75,7 @@ function generateSpecsForComponents(tree: Tree, filePath: string) {
         props: [...defaults.props, ...defaults.argTypes],
         name: (cmp as any).name.text as string,
         typeName: defaults.propsTypeName,
+        inlineTypeString: defaults.inlineTypeString,
       };
     });
     const namedImports = components

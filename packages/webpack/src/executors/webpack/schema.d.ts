@@ -1,4 +1,4 @@
-import { AssetGlob } from '@nx/js/src/utils/assets/assets';
+import { AssetGlob } from '@nx/js/internal';
 
 export interface AssetGlobPattern {
   glob: string;
@@ -36,20 +36,21 @@ export interface OptimizationOptions {
   styles: boolean;
 }
 
+export interface TypeCheckOptions {
+  async: boolean;
+}
+
 export interface WebpackExecutorOptions {
   additionalEntryPoints?: AdditionalEntryPoint[];
   assets?: Array<AssetGlob | string>;
   buildLibsFromSource?: boolean;
   commonChunk?: boolean;
   compiler?: 'babel' | 'swc' | 'tsc';
-  deleteOutputPath?: boolean;
   externalDependencies?: 'all' | 'none' | string[];
   extractLicenses?: boolean;
   fileReplacements?: FileReplacement[];
   generatePackageJson?: boolean;
-  // TODO(v20): Remove this option
-  /** @deprecated set webpackConfig and provide an explicit webpack.config.js file (See: https://nx.dev/recipes/webpack/webpack-config-setup) */
-  isolatedConfig?: boolean;
+  runtimeDependencies?: string[];
   standardWebpackConfigFunction?: boolean;
   main?: string;
   memoryLimit?: number;
@@ -62,14 +63,18 @@ export interface WebpackExecutorOptions {
   polyfills?: string;
   progress?: boolean;
   runtimeChunk?: boolean;
-  sourceMap?: boolean | 'hidden';
+  sourceMap?: boolean | string;
   statsJson?: boolean;
   target?: string;
+  /** @deprecated Use `typeCheckOptions` option instead. */
+  skipTypeChecking?: boolean;
+  typeCheckOptions?: boolean | TypeCheckOptions;
   transformers?: TransformerEntry[];
   tsConfig?: string;
   vendorChunk?: boolean;
   verbose?: boolean;
   watch?: boolean;
+  cache?: boolean | { type: 'memory' | 'filesystem'; [key: string]: any };
   webpackConfig?: string;
   babelConfig?: string;
   babelUpwardRootMode?: boolean;
@@ -77,6 +82,7 @@ export interface WebpackExecutorOptions {
   crossOrigin?: 'none' | 'anonymous' | 'use-credentials';
   deployUrl?: string;
   extractCss?: boolean;
+  cssModuleHashFunction?: string;
   generateIndexHtml?: boolean;
   index?: string;
   postcssConfig?: string;
@@ -88,11 +94,11 @@ export interface WebpackExecutorOptions {
   rebaseRootRelative?: boolean;
 }
 
-export interface NormalizedWebpackExecutorOptions
-  extends WebpackExecutorOptions {
+export interface NormalizedWebpackExecutorOptions extends WebpackExecutorOptions {
   outputFileName: string;
   assets: AssetGlobPattern[];
   root: string;
   projectRoot: string;
   sourceRoot: string;
+  useTsconfigPaths: boolean;
 }

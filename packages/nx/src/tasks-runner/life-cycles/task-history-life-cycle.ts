@@ -1,16 +1,53 @@
-import { serializeTarget } from '../../utils/serialize-target';
+import { readNxJson } from '../../config/nx-json';
 import { Task } from '../../config/task-graph';
+import { IS_WASM, type TaskRun as NativeTaskRun } from '../../native';
+import { isNxCloudUsed } from '../../utils/nx-cloud-utils';
 import { output } from '../../utils/output';
-import {
-  getHistoryForHashes,
-  TaskRun,
-  writeTaskRunsToHistory as writeTaskRunsToHistory,
-} from '../../utils/task-history';
+import { serializeTarget } from '../../utils/serialize-target';
+import { getTaskHistory, TaskHistory } from '../../utils/task-history';
+import { isTuiEnabled } from '../is-tui-enabled';
 import { LifeCycle, TaskResult } from '../life-cycle';
+import { LegacyTaskHistoryLifeCycle } from './task-history-life-cycle-old';
+
+interface TaskRun extends NativeTaskRun {
+  target: Task['target'];
+  cacheable: boolean;
+}
+
+let tasksHistoryLifeCycle: TaskHistoryLifeCycle | LegacyTaskHistoryLifeCycle;
+
+export function getTasksHistoryLifeCycle():
+  | TaskHistoryLifeCycle
+  | LegacyTaskHistoryLifeCycle {
+  if (!tasksHistoryLifeCycle) {
+    tasksHistoryLifeCycle = !IS_WASM
+      ? new TaskHistoryLifeCycle()
+      : new LegacyTaskHistoryLifeCycle();
+  }
+
+  return tasksHistoryLifeCycle;
+}
 
 export class TaskHistoryLifeCycle implements LifeCycle {
   private startTimings: Record<string, number> = {};
-  private taskRuns: TaskRun[] = [];
+  // Holds no terminalOutput: this singleton outlives every run in the
+  // process, and agents complete thousands of tasks in one process.
+  private pendingResults = new Map<
+    string,
+    Pick<TaskResult, 'task' | 'code' | 'status'>
+  >();
+  private taskRuns = new Map<string, TaskRun>();
+  private taskHistory: TaskHistory | null = getTaskHistory();
+  private flakyTasks: string[];
+
+  constructor() {
+    if (tasksHistoryLifeCycle) {
+      throw new Error(
+        'TaskHistoryLifeCycle is a singleton and should not be instantiated multiple times'
+      );
+    }
+    tasksHistoryLifeCycle = this;
+  }
 
   startTasks(tasks: Task[]): void {
     for (let task of tasks) {
@@ -19,51 +56,91 @@ export class TaskHistoryLifeCycle implements LifeCycle {
   }
 
   async endTasks(taskResults: TaskResult[]) {
-    const taskRuns: TaskRun[] = taskResults.map((taskResult) => ({
-      project: taskResult.task.target.project,
-      target: taskResult.task.target.target,
-      configuration: taskResult.task.target.configuration,
-      hash: taskResult.task.hash,
-      code: taskResult.code.toString(),
-      status: taskResult.status,
-      start: (
-        taskResult.task.startTime ?? this.startTimings[taskResult.task.id]
-      ).toString(),
-      end: (taskResult.task.endTime ?? new Date().getTime()).toString(),
-    }));
-    this.taskRuns.push(...taskRuns);
+    for (const { task, code, status } of taskResults) {
+      this.pendingResults.set(task.id, { task, code, status });
+    }
   }
 
   async endCommand() {
-    await writeTaskRunsToHistory(this.taskRuns);
-    const history = await getHistoryForHashes(this.taskRuns.map((t) => t.hash));
-    const flakyTasks: string[] = [];
+    const pendingResults = Array.from(this.pendingResults.values());
+    this.pendingResults.clear();
 
-    // check if any hash has different exit codes => flaky
-    for (let hash in history) {
-      if (
-        history[hash].length > 1 &&
-        history[hash].some((run) => run.code !== history[hash][0].code)
-      ) {
-        flakyTasks.push(
-          serializeTarget(
-            history[hash][0].project,
-            history[hash][0].target,
-            history[hash][0].configuration
-          )
-        );
+    if (!this.taskHistory) {
+      return;
+    }
+
+    // Build TaskRun objects now — task.hash is guaranteed to be set by this point
+    for (const { task, code, status } of pendingResults) {
+      this.taskRuns.set(task.hash, {
+        hash: task.hash,
+        target: task.target,
+        code,
+        status,
+        start: task.startTime ?? this.startTimings[task.id],
+        end: task.endTime ?? Date.now(),
+        cacheable: task.cache === true,
+      });
+      delete this.startTimings[task.id];
+    }
+
+    const runs = [];
+
+    // Only check for flaky tasks among cacheable tasks
+    const cacheableHashes: string[] = [];
+    const iterator = this.taskRuns.entries();
+    for (const [hash, run] of iterator) {
+      runs.push(run);
+      if (run.cacheable) {
+        cacheableHashes.push(hash);
       }
     }
-    if (flakyTasks.length > 0) {
+    await this.taskHistory.recordTaskRuns(runs);
+
+    this.flakyTasks =
+      cacheableHashes.length > 0
+        ? await this.taskHistory.getFlakyTasks(cacheableHashes)
+        : [];
+    // Do not directly print output when using the TUI
+    if (isTuiEnabled()) {
+      return;
+    }
+    this.printFlakyTasksMessage();
+  }
+
+  printFlakyTasksMessage() {
+    if (this.flakyTasks?.length > 0) {
+      const MAX_VISIBLE_FLAKY = 5;
+      const visibleFlaky =
+        this.flakyTasks.length > MAX_VISIBLE_FLAKY + 1
+          ? this.flakyTasks.slice(0, MAX_VISIBLE_FLAKY)
+          : this.flakyTasks;
+      const hiddenCount = this.flakyTasks.length - visibleFlaky.length;
+      const flakyRows = visibleFlaky.map((hash) => {
+        const taskRun = this.taskRuns.get(hash);
+        return `  ${serializeTarget(
+          taskRun.target.project,
+          taskRun.target.target,
+          taskRun.target.configuration
+        )}`;
+      });
+      if (hiddenCount > 0) {
+        flakyRows.push(`  ${hiddenCount} more...`);
+      }
       output.warn({
         title: `Nx detected ${
-          flakyTasks.length === 1 ? 'a flaky task' : ' flaky tasks'
+          this.flakyTasks.length === 1
+            ? 'a flaky task'
+            : `${this.flakyTasks.length} flaky tasks`
         }`,
         bodyLines: [
           ,
-          ...flakyTasks.map((t) => `  ${t}`),
-          '',
-          `Flaky tasks can disrupt your CI pipeline. Automatically retry them with Nx Cloud. Learn more at https://nx.dev/ci/features/flaky-tasks`,
+          ...flakyRows,
+          ...(isNxCloudUsed(readNxJson())
+            ? []
+            : [
+                '',
+                `Flaky tasks can disrupt your CI pipeline. Automatically retry them with Nx Cloud. Learn more at https://nx.dev/ci/features/flaky-tasks`,
+              ]),
         ],
       });
     }

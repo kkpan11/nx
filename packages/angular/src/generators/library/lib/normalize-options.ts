@@ -1,9 +1,17 @@
-import { names, Tree } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import { Linter } from '@nx/eslint';
+import { names, type Tree } from '@nx/devkit';
+import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+} from '@nx/devkit/internal';
 import { UnitTestRunner } from '../../../utils/test-runners';
-import { Schema } from '../schema';
-import { NormalizedSchema } from './normalized-schema';
+import {
+  getComponentType,
+  getModuleTypeSeparator,
+} from '../../utils/artifact-types';
+import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
+import type { Schema } from '../schema';
+import type { NormalizedSchema } from './normalized-schema';
+import { normalizeLinterOption } from '@nx/js/internal';
 
 export async function normalizeOptions(
   host: Tree,
@@ -11,21 +19,21 @@ export async function normalizeOptions(
 ): Promise<NormalizedSchema> {
   schema.standalone = schema.standalone ?? true;
   // Create a schema with populated default values
+  // No `linter` default here: it would mask the resolution below, which is what
+  // detects the workspace's linter and prompts when there is nothing to detect.
   const options: Schema = {
     buildable: false,
-    linter: Linter.EsLint,
     publishable: false,
-    simpleName: false,
     skipFormat: false,
-    unitTestRunner: UnitTestRunner.Jest,
     // Publishable libs cannot use `full` yet, so if its false then use the passed value or default to `full`
     compilationMode: schema.publishable
       ? 'partial'
-      : schema.compilationMode ?? 'full',
+      : (schema.compilationMode ?? 'full'),
     skipModule: schema.skipModule || schema.standalone,
     ...schema,
   };
 
+  await ensureRootProjectName(options, 'library');
   const {
     projectName,
     names: projectNames,
@@ -36,25 +44,31 @@ export async function normalizeOptions(
     projectType: 'library',
     directory: options.directory,
     importPath: options.importPath,
-    projectNameAndRootFormat: options.projectNameAndRootFormat,
-    callingGenerator: '@nx/angular:library',
   });
 
-  const fileName = options.simpleName
-    ? projectNames.projectSimpleName
-    : projectNames.projectFileName;
+  const fileName = projectNames.projectFileName;
 
   const moduleName = `${names(fileName).className}Module`;
   const parsedTags = options.tags
     ? options.tags.split(',').map((s) => s.trim())
     : [];
-  const modulePath = `${projectRoot}/src/lib/${fileName}.module.ts`;
+  const moduleTypeSeparator = getModuleTypeSeparator(host);
+  const modulePath = `${projectRoot}/src/lib/${fileName}${moduleTypeSeparator}module.ts`;
+
+  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(host);
+  const unitTestRunner =
+    options.unitTestRunner ??
+    (angularMajorVersion >= 21 && (options.buildable || options.publishable)
+      ? UnitTestRunner.VitestAngular
+      : angularMajorVersion >= 21
+        ? UnitTestRunner.VitestAnalog
+        : UnitTestRunner.Jest);
 
   const ngCliSchematicLibRoot = projectName;
   const allNormalizedOptions = {
     ...options,
-    linter: options.linter ?? Linter.EsLint,
-    unitTestRunner: options.unitTestRunner ?? UnitTestRunner.Jest,
+    linter: await normalizeLinterOption(host, options.linter),
+    unitTestRunner,
     prefix: options.prefix ?? 'lib',
     name: projectName,
     projectRoot,
@@ -65,9 +79,11 @@ export async function normalizeOptions(
     fileName,
     importPath,
     ngCliSchematicLibRoot,
+    skipTests: unitTestRunner === 'none' ? true : options.skipTests,
     standaloneComponentName: `${
       names(projectNames.projectSimpleName).className
     }Component`,
+    moduleTypeSeparator,
   };
 
   const {
@@ -84,6 +100,8 @@ export async function normalizeOptions(
     ...libraryOptions
   } = allNormalizedOptions;
 
+  const componentType = getComponentType(host);
+
   return {
     libraryOptions,
     componentOptions: {
@@ -99,6 +117,7 @@ export async function normalizeOptions(
       selector,
       skipSelector,
       flat,
+      type: componentType,
     },
   };
 }

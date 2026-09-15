@@ -1,24 +1,29 @@
 import { configurationGenerator } from './src/generators/configuration/configuration';
 import { NxAppWebpackPlugin } from './src/plugins/nx-webpack-plugin/nx-app-webpack-plugin';
-import { NxTsconfigPathsWebpackPlugin as _NxTsconfigPathsWebpackPlugin } from './src/plugins/nx-typescript-webpack-plugin/nx-tsconfig-paths-webpack-plugin';
-import { convertConfigToWebpackPluginGenerator } from './src/generators/convert-config-to-webpack-plugin/convert-config-to-webpack-plugin';
 import { useLegacyNxPlugin } from './src/plugins/use-legacy-nx-plugin/use-legacy-nx-plugin';
 
-export {
-  configurationGenerator,
-  convertConfigToWebpackPluginGenerator,
-  useLegacyNxPlugin,
-};
+// Lazy-loaded to avoid requiring typescript before it's installed.
+// Other generators may import this index before typescript is available.
+// This generator imports @phenomnomnominal/tsquery which requires typescript.
+// Note: This seems to only affect yarn v1.
+export function convertConfigToWebpackPluginGenerator(
+  ...args: Parameters<
+    typeof import('./src/generators/convert-config-to-webpack-plugin/convert-config-to-webpack-plugin').convertConfigToWebpackPluginGenerator
+  >
+) {
+  return require('./src/generators/convert-config-to-webpack-plugin/convert-config-to-webpack-plugin').convertConfigToWebpackPluginGenerator(
+    ...args
+  );
+}
+
+export { configurationGenerator, useLegacyNxPlugin };
 
 // Exported for backwards compatibility in case a plugin is using the old name.
 /** @deprecated Use `configurationGenerator` instead. */
 export const webpackProjectGenerator = configurationGenerator;
 
-// TODO(v20): Remove this in favor of deep imports in order to load configs faster (150-200ms faster).
-/** @deprecated Use NxAppWebpackPlugin from `@nx/webpack/app-plugin` instead. */
+/** @deprecated Use NxAppWebpackPlugin from `@nx/webpack/app-plugin` instead, which can improve graph creation by 150-200ms per file. */
 export const NxWebpackPlugin = NxAppWebpackPlugin;
-/** @deprecated Use NxTsconfigPathsWebpackPlugin from `@nx/webpack/tsconfig-paths-plugin` instead. */
-export const NxTsconfigPathsWebpackPlugin = _NxTsconfigPathsWebpackPlugin;
 
 export * from './src/utils/create-copy-plugin';
 export * from './src/utils/config';
@@ -36,4 +41,4 @@ export * from './src/executors/webpack/webpack.impl';
 export * from './src/utils/get-css-module-local-ident';
 export * from './src/utils/with-nx';
 export * from './src/utils/with-web';
-export * from './src/utils/module-federation/public-api';
+export * from './src/utils/e2e-web-server-info-utils';

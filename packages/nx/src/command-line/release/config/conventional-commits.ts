@@ -2,6 +2,7 @@ import { NxReleaseConfig } from './config';
 
 export const DEFAULT_CONVENTIONAL_COMMITS_CONFIG: NxReleaseConfig['conventionalCommits'] =
   {
+    useCommitScope: true,
     types: {
       feat: {
         semverBump: 'minor',
@@ -91,6 +92,13 @@ export const DEFAULT_CONVENTIONAL_COMMITS_CONFIG: NxReleaseConfig['conventionalC
         semverBump: 'none',
         changelog: {
           title: '⏪ Revert',
+          hidden: true,
+        },
+      },
+      __INVALID__: {
+        semverBump: 'none',
+        changelog: {
+          title: 'Invalid based on conventional commits specification',
           hidden: true,
         },
       },

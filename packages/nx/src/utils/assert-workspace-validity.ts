@@ -3,24 +3,32 @@ import { NxJsonConfiguration } from '../config/nx-json';
 import { findMatchingProjects } from './find-matching-projects';
 import { output } from './output';
 import { ProjectGraphProjectNode } from '../config/project-graph';
-import { WorkspaceValidityError } from '../devkit-internals';
+// Import from the defining module, not the devkit-internals barrel: this file
+// is on the project-graph construction path, and the barrel now eagerly
+// re-exports the project-graph modules, which would create a require cycle back
+// through build-project-graph. (Release modules cross the barrel as erased
+// types only — see the note in packages/devkit/internal.ts.)
+import { WorkspaceValidityError } from '../project-graph/error-types';
 
 export function assertWorkspaceValidity(
   projects: Record<string, ProjectConfiguration>,
   nxJson: NxJsonConfiguration
 ) {
   const projectNames = Object.keys(projects);
-  const projectGraphNodes = projectNames.reduce((graph, project) => {
-    const projectConfiguration = projects[project];
-    graph[project] = {
-      name: project,
-      type: projectConfiguration.projectType === 'library' ? 'lib' : 'app', // missing fallback to `e2e`
-      data: {
-        ...projectConfiguration,
-      },
-    };
-    return graph;
-  }, {} as Record<string, ProjectGraphProjectNode>);
+  const projectGraphNodes = projectNames.reduce(
+    (graph, project) => {
+      const projectConfiguration = projects[project];
+      graph[project] = {
+        name: project,
+        type: projectConfiguration.projectType === 'library' ? 'lib' : 'app', // missing fallback to `e2e`
+        data: {
+          ...projectConfiguration,
+        },
+      };
+      return graph;
+    },
+    {} as Record<string, ProjectGraphProjectNode>
+  );
 
   const invalidImplicitDependencies = new Map<string, string[]>();
 
@@ -37,36 +45,33 @@ export function assertWorkspaceValidity(
 
   const projectsWithNonArrayImplicitDependencies = new Map<string, unknown>();
 
-  projectNames
-    .filter((projectName) => {
-      const project = projects[projectName];
+  projectNames.reduce((map, projectName) => {
+    const project = projects[projectName];
 
-      // Report if for whatever reason, a project is configured to use implicitDependencies but it is not an array
-      if (
-        !!project.implicitDependencies &&
-        !Array.isArray(project.implicitDependencies)
-      ) {
-        projectsWithNonArrayImplicitDependencies.set(
-          projectName,
-          project.implicitDependencies
-        );
-      }
-      return (
-        !!project.implicitDependencies &&
-        Array.isArray(project.implicitDependencies)
-      );
-    })
-    .reduce((map, projectName) => {
-      const project = projects[projectName];
-      detectAndSetInvalidProjectGlobValues(
-        map,
+    if (
+      !!project.implicitDependencies &&
+      !Array.isArray(project.implicitDependencies)
+    ) {
+      projectsWithNonArrayImplicitDependencies.set(
         projectName,
-        project.implicitDependencies,
-        projects,
-        projectGraphNodes
+        project.implicitDependencies
       );
       return map;
-    }, invalidImplicitDependencies);
+    }
+
+    if (!project.implicitDependencies) {
+      return map;
+    }
+
+    detectAndSetInvalidProjectGlobValues(
+      map,
+      projectName,
+      project.implicitDependencies,
+      projects,
+      projectGraphNodes
+    );
+    return map;
+  }, invalidImplicitDependencies);
 
   if (
     projectsWithNonArrayImplicitDependencies.size === 0 &&
@@ -114,7 +119,10 @@ function detectAndSetInvalidProjectGlobValues(
     const projectName = implicit.startsWith('!')
       ? implicit.substring(1)
       : implicit;
-
+    // Do not error on cross-workspace implicit dependency references
+    if (projectName.startsWith('nx-cloud:')) {
+      return false;
+    }
     return !(
       projectConfigurations[projectName] ||
       findMatchingProjects([implicit], projects).length

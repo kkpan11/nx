@@ -1,6 +1,6 @@
 import type { Plugin } from 'rollup';
-import type { PackageJson } from 'nx/src/utils/package-json';
 import { updatePackageJson } from './update-package-json';
+import { type PackageJson } from '@nx/devkit/internal';
 
 export interface GeneratePackageJsonOptions {
   outputPath: string;
@@ -12,12 +12,14 @@ export interface GeneratePackageJsonOptions {
   additionalEntryPoints?: string[];
 }
 
+export const pluginName = 'rollup-plugin-nx-generate-package-json';
+
 export function generatePackageJson(
   options: GeneratePackageJsonOptions,
   packageJson: PackageJson
 ): Plugin {
   return {
-    name: 'rollup-plugin-nx-generate-package-json',
+    name: pluginName,
     writeBundle: () => {
       updatePackageJson(options, packageJson);
     },

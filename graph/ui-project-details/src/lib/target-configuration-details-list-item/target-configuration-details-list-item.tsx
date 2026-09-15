@@ -1,4 +1,3 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type { ProjectGraphProjectNode } from '@nx/devkit';
 import TargetConfigurationDetails from '../target-configuration-details/target-configuration-details';
@@ -7,6 +6,7 @@ export interface TargetConfigurationDetailsListItemProps {
   project: ProjectGraphProjectNode;
   sourceMap: Record<string, string[]>;
   connectedToCloud?: boolean;
+  disabledTaskSyncGenerators?: string[];
   variant?: 'default' | 'compact';
   onRunTarget?: (data: { projectName: string; targetName: string }) => void;
   onViewInTaskGraph?: (data: {
@@ -23,6 +23,7 @@ export function TargetConfigurationDetailsListItem({
   variant,
   sourceMap,
   connectedToCloud,
+  disabledTaskSyncGenerators,
   onRunTarget,
   onViewInTaskGraph,
   onNxConnect,
@@ -42,6 +43,7 @@ export function TargetConfigurationDetailsListItem({
         targetConfiguration={target}
         sourceMap={sourceMap}
         connectedToCloud={connectedToCloud}
+        disabledTaskSyncGenerators={disabledTaskSyncGenerators}
         onRunTarget={onRunTarget}
         onViewInTaskGraph={onViewInTaskGraph}
         onNxConnect={onNxConnect}

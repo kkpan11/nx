@@ -1,7 +1,13 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import * as devkit from '@nx/devkit';
-import { addProjectConfiguration, readJson, Tree } from '@nx/devkit';
+import {
+  addProjectConfiguration,
+  readJson,
+  readNxJson,
+  Tree,
+  updateJson,
+  updateNxJson,
+} from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { generateTestLibrary } from '../utils/testing';
 import { librarySecondaryEntryPointGenerator } from './library-secondary-entry-point';
@@ -10,7 +16,7 @@ describe('librarySecondaryEntryPoint generator', () => {
   let tree: Tree;
 
   beforeEach(() => {
-    tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    tree = createTreeWithEmptyWorkspace();
   });
 
   it('should throw when the library does not exist in the workspace', async () => {
@@ -78,11 +84,45 @@ describe('librarySecondaryEntryPoint generator', () => {
     expect(tree.exists('libs/lib1/testing/README.md')).toBeTruthy();
     expect(tree.exists('libs/lib1/testing/src/index.ts')).toBeTruthy();
     expect(
-      tree.exists('libs/lib1/testing/src/lib/testing.module.ts')
+      tree.exists('libs/lib1/testing/src/lib/testing-module.ts')
     ).toBeTruthy();
     expect(
       tree.read('libs/lib1/testing/src/index.ts', 'utf-8')
     ).toMatchSnapshot();
+  });
+
+  it('should generate the module file respecting the "typeSeparator" generator default', async () => {
+    const nxJson = readNxJson(tree);
+    nxJson.generators = {
+      ...nxJson.generators,
+      '@nx/angular:module': {
+        typeSeparator: '.',
+      },
+    };
+    updateNxJson(tree, nxJson);
+    addProjectConfiguration(tree, 'lib1', {
+      root: 'libs/lib1',
+      projectType: 'library',
+    });
+    tree.write(
+      'libs/lib1/package.json',
+      JSON.stringify({ name: '@my-org/lib1' })
+    );
+
+    await librarySecondaryEntryPointGenerator(tree, {
+      name: 'testing',
+      library: 'lib1',
+      skipFormat: true,
+    });
+
+    expect(tree.exists('libs/lib1/testing/src/lib/testing.module.ts')).toBe(
+      true
+    );
+    expect(tree.read('libs/lib1/testing/src/index.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "export * from './lib/testing.module';
+      "
+    `);
   });
 
   it('should configure the entry file', async () => {
@@ -124,7 +164,7 @@ describe('librarySecondaryEntryPoint generator', () => {
     const tsConfig = readJson(tree, 'tsconfig.base.json');
     expect(
       tsConfig.compilerOptions.paths['@my-org/lib1/testing']
-    ).toStrictEqual(['libs/lib1/testing/src/index.ts']);
+    ).toStrictEqual(['./libs/lib1/testing/src/index.ts']);
   });
 
   it('should support a root tsconfig.json instead of tsconfig.base.json', async () => {
@@ -147,7 +187,7 @@ describe('librarySecondaryEntryPoint generator', () => {
     const tsConfig = readJson(tree, 'tsconfig.json');
     expect(
       tsConfig.compilerOptions.paths['@my-org/lib1/testing']
-    ).toStrictEqual(['libs/lib1/testing/src/index.ts']);
+    ).toStrictEqual(['./libs/lib1/testing/src/index.ts']);
   });
 
   it('should update the tsconfig "include" and "exclude" options', async () => {
@@ -163,8 +203,6 @@ describe('librarySecondaryEntryPoint generator', () => {
     expect(tsConfig.include).toStrictEqual(['src/**/*.ts']);
     expect(tsConfig.exclude).toStrictEqual([
       'src/**/*.spec.ts',
-      'src/test-setup.ts',
-      'jest.config.ts',
       'src/**/*.test.ts',
     ]);
 
@@ -175,38 +213,97 @@ describe('librarySecondaryEntryPoint generator', () => {
     });
 
     tsConfig = readJson(tree, 'libs/lib1/tsconfig.lib.json');
-    expect(tsConfig.include).toStrictEqual(['**/*.ts']);
+    expect(tsConfig.include).toStrictEqual([
+      'src/**/*.ts',
+      'testing/src/**/*.ts',
+    ]);
     expect(tsConfig.exclude).toStrictEqual([
-      '**/*.spec.ts',
-      'test-setup.ts',
-      'jest.config.ts',
-      '**/*.test.ts',
+      'src/**/*.spec.ts',
+      'src/**/*.test.ts',
+      'testing/src/**/*.spec.ts',
+      'testing/src/**/*.test.ts',
     ]);
   });
 
-  it('should format files', async () => {
-    jest.spyOn(devkit, 'formatFiles');
-    addProjectConfiguration(tree, 'lib1', {
-      root: 'libs/lib1',
-      projectType: 'library',
+  it('should not modify non-glob exclude paths like "src/test-setup.ts"', async () => {
+    await generateTestLibrary(tree, {
+      name: 'lib1',
+      directory: 'libs/lib1',
+      importPath: '@my-org/lib1',
+      publishable: true,
+      skipFormat: true,
     });
-    tree.write(
-      'libs/lib1/package.json',
-      JSON.stringify({ name: '@my-org/lib1' })
-    );
+    // Simulate jest setup adding src/test-setup.ts to exclude
+    updateJson(tree, 'libs/lib1/tsconfig.lib.json', (json) => {
+      json.exclude = [...(json.exclude ?? []), 'src/test-setup.ts'];
+      return json;
+    });
+    // verify initial state
+    let tsConfig = readJson(tree, 'libs/lib1/tsconfig.lib.json');
+    expect(tsConfig.include).toStrictEqual(['src/**/*.ts']);
+    expect(tsConfig.exclude).toStrictEqual([
+      'src/**/*.spec.ts',
+      'src/**/*.test.ts',
+      'src/test-setup.ts',
+    ]);
 
     await librarySecondaryEntryPointGenerator(tree, {
       name: 'testing',
       library: 'lib1',
+      skipFormat: true,
     });
 
-    expect(devkit.formatFiles).toHaveBeenCalled();
-    expect(
-      tree.read('libs/lib1/testing/src/index.ts', 'utf-8')
-    ).toMatchSnapshot();
-    expect(
-      tree.read('libs/lib1/testing/src/lib/testing.module.ts', 'utf-8')
-    ).toMatchSnapshot();
+    tsConfig = readJson(tree, 'libs/lib1/tsconfig.lib.json');
+    expect(tsConfig.include).toStrictEqual([
+      'src/**/*.ts',
+      'testing/src/**/*.ts',
+    ]);
+    expect(tsConfig.exclude).toStrictEqual([
+      'src/**/*.spec.ts',
+      'src/**/*.test.ts',
+      'src/test-setup.ts',
+      'testing/src/**/*.spec.ts',
+      'testing/src/**/*.test.ts',
+    ]);
+  });
+
+  describe('--skipFormat', () => {
+    let formatFilesSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      const devkitModule = require('@nx/devkit');
+      formatFilesSpy = jest
+        .spyOn(devkitModule, 'formatFiles')
+        .mockImplementation(() => Promise.resolve());
+    });
+
+    afterAll(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('should format files', async () => {
+      addProjectConfiguration(tree, 'lib1', {
+        root: 'libs/lib1',
+        projectType: 'library',
+      });
+      tree.write(
+        'libs/lib1/package.json',
+        JSON.stringify({ name: '@my-org/lib1' })
+      );
+
+      await librarySecondaryEntryPointGenerator(tree, {
+        name: 'testing',
+        library: 'lib1',
+      });
+
+      expect(formatFilesSpy).toHaveBeenCalled();
+      expect(
+        tree.read('libs/lib1/testing/src/index.ts', 'utf-8')
+      ).toMatchSnapshot();
+      expect(
+        tree.read('libs/lib1/testing/src/lib/testing-module.ts', 'utf-8')
+      ).toMatchSnapshot();
+    });
   });
 
   describe('--skipModule', () => {
@@ -228,7 +325,7 @@ describe('librarySecondaryEntryPoint generator', () => {
       });
 
       expect(
-        tree.exists('libs/lib1/testing/src/lib/testing.module.ts')
+        tree.exists('libs/lib1/testing/src/lib/testing-module.ts')
       ).toBeFalsy();
       expect(tree.exists('libs/lib1/testing/ng-package.json')).toBeTruthy();
       expect(tree.exists('libs/lib1/testing/README.md')).toBeTruthy();

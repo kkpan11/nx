@@ -1,4 +1,4 @@
-import { Linter } from '@nx/eslint';
+import { LinterType } from '@nx/js';
 import { E2eTestRunner, UnitTestRunner } from '../../utils/test-runners';
 import type { Styles } from '../utils/types';
 
@@ -11,6 +11,6 @@ export interface GeneratorOptions {
   skipInstall?: boolean;
   skipPostInstall?: boolean;
   style?: Styles;
-  linter?: Linter;
+  linter?: LinterType;
   skipPackageJson?: boolean;
 }

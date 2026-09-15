@@ -1,8 +1,8 @@
-import { ExecutorContext, logger, stripIndents } from '@nx/devkit';
+import { ExecutorContext, logger } from '@nx/devkit';
 import { existsSync, readdirSync, unlinkSync } from 'fs';
 import { basename, dirname } from 'path';
 import { getTempTailwindPath } from '../../utils/ct-helpers';
-import { installedCypressVersion } from '../../utils/cypress-version';
+import { warnCypressExecutorDeprecation } from '../../utils/deprecation';
 import { startDevServer } from '../../utils/start-dev-server';
 
 const Cypress = require('cypress'); // @NOTE: Importing via ES6 messes the whole test dependencies.
@@ -15,7 +15,8 @@ export interface CypressExecutorOptions extends Json {
   devServerTarget?: string;
   headed?: boolean;
   /**
-   * @deprecated use watch instead
+   * @deprecated Cypress runs headless by default. Use the --watch flag to
+   * control head/headless behavior instead. It will be removed in Nx v23.
    **/
   headless?: boolean;
   exit?: boolean;
@@ -26,10 +27,6 @@ export interface CypressExecutorOptions extends Json {
   browser?: string;
   env?: Record<string, string>;
   spec?: string;
-  /**
-   * @deprecated no longer used since cypress supports typescript out of the box
-   **/
-  copyFiles?: string;
   ciBuildId?: string | number;
   group?: string;
   ignoreTestFiles?: string | string[];
@@ -53,18 +50,24 @@ export default async function cypressExecutor(
   options: CypressExecutorOptions,
   context: ExecutorContext
 ) {
+  warnCypressExecutorDeprecation();
+
   options = normalizeOptions(options, context);
   // this is used by cypress component testing presets to build the executor contexts with the correct configuration options.
   process.env.NX_CYPRESS_TARGET_CONFIGURATION = context.configurationName;
   let success;
 
-  for await (const devServerValues of startDevServer(options, context)) {
+  const generatorInstance = startDevServer(options, context);
+  for await (const devServerValues of generatorInstance) {
     try {
       success = await runCypress(devServerValues.baseUrl, {
         ...options,
         portLockFilePath: devServerValues.portLockFilePath,
       });
-      if (!options.watch) break;
+      if (!options.watch) {
+        generatorInstance.return();
+        break;
+      }
     } catch (e) {
       logger.error(e.message);
       success = false;
@@ -80,70 +83,14 @@ function normalizeOptions(
   context: ExecutorContext
 ): NormalizedCypressExecutorOptions {
   options.env = options.env || {};
+  options.testingType ??= 'e2e';
   if (options.testingType === 'component') {
     const project = context?.projectGraph?.nodes?.[context.projectName];
     if (project?.data?.root) {
       options.ctTailwindPath = getTempTailwindPath(context);
     }
   }
-  checkSupportedBrowser(options);
-  warnDeprecatedHeadless(options);
-  warnDeprecatedCypressVersion();
   return options;
-}
-
-function checkSupportedBrowser({ browser }: CypressExecutorOptions) {
-  // Browser was not passed in as an option, cypress will use whatever default it has set and we dont need to check it
-  if (!browser) {
-    return;
-  }
-
-  if (installedCypressVersion() >= 4 && browser == 'canary') {
-    logger.warn(stripIndents`
-  Warning:
-  You are using a browser that is not supported by cypress v4+.
-
-  Read here for more info:
-  https://docs.cypress.io/guides/references/migration-guide.html#Launching-Chrome-Canary-with-browser
-  `);
-    return;
-  }
-
-  const supportedV3Browsers = ['electron', 'chrome', 'canary', 'chromium'];
-  if (
-    installedCypressVersion() <= 3 &&
-    !supportedV3Browsers.includes(browser)
-  ) {
-    logger.warn(stripIndents`
-    Warning:
-    You are using a browser that is not supported by cypress v3.
-    `);
-    return;
-  }
-}
-
-function warnDeprecatedHeadless({ headless }: CypressExecutorOptions) {
-  if (installedCypressVersion() < 8 || headless === undefined) {
-    return;
-  }
-
-  if (headless) {
-    const deprecatedMsg = stripIndents`
-    NOTE:
-    You can now remove the use of the '--headless' flag during 'cypress run' as this is the default for all browsers.`;
-
-    logger.warn(deprecatedMsg);
-  }
-}
-
-function warnDeprecatedCypressVersion() {
-  if (installedCypressVersion() < 10) {
-    logger.warn(stripIndents`
-NOTE:
-Support for Cypress versions < 10 is deprecated. Please upgrade to at least Cypress version 10.
-A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v10-migration-guide
-`);
-  }
 }
 
 /**
@@ -155,7 +102,6 @@ async function runCypress(
   baseUrl: string,
   opts: NormalizedCypressExecutorOptions
 ) {
-  const cypressVersion = installedCypressVersion();
   // Cypress expects the folder where a cypress config is present
   const projectFolderPath = dirname(opts.cypressConfig);
   const options: any = {
@@ -195,15 +141,12 @@ async function runCypress(
   options.parallel = opts.parallel;
   options.ciBuildId = opts.ciBuildId?.toString();
   options.group = opts.group;
+
   // renamed in cy 10
-  if (cypressVersion >= 10) {
-    options.config ??= {};
-    options.config[opts.testingType] = {
-      excludeSpecPattern: opts.ignoreTestFiles,
-    };
-  } else {
-    options.ignoreTestFiles = opts.ignoreTestFiles;
-  }
+  options.config ??= {};
+  options.config[opts.testingType] = {
+    excludeSpecPattern: opts.ignoreTestFiles,
+  };
 
   if (opts.reporter) {
     options.reporter = opts.reporter;

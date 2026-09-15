@@ -2,7 +2,7 @@
 import SyntaxHighlighter, { createElement } from 'react-syntax-highlighter';
 import { JSX, ReactNode, useMemo } from 'react';
 import { twMerge } from 'tailwind-merge';
-import { CopyToClipboardButton } from '@nx/graph/ui-components';
+import { CopyToClipboardButton } from '@nx/graph-ui-common';
 
 export function JsonCodeBlockPreTag({
   children,
@@ -35,7 +35,7 @@ export function JsonCodeBlock(props: JsonCodeBlockProps): JSX.Element {
   );
   return (
     <div className="code-block group relative w-full">
-      <div className="absolute right-0 top-0 z-10 flex">
+      <div className="absolute top-0 right-0 z-10 flex">
         <CopyToClipboardButton
           text={jsonString}
           tooltipAlignment="right"

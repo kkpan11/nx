@@ -2,12 +2,15 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 
 pub struct NxMutex<T>(Mutex<T>);
 
-impl <T> NxMutex<T> {
+impl<T> NxMutex<T> {
     pub fn new(value: T) -> Self {
         Self(Mutex::new(value))
     }
     pub fn lock(&self) -> anyhow::Result<MutexGuard<'_, T>> {
         Ok(self.0.lock())
+    }
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        self.0.try_lock()
     }
 }
 
@@ -18,9 +21,13 @@ impl NxCondvar {
         Self(Condvar::new())
     }
 
-    pub fn wait<'a, T, F>(&'a self, mut guard: MutexGuard<'a, T>, condition: F) -> anyhow::Result<MutexGuard<'a, T>>
-        where
-            F: Fn(&MutexGuard<'a, T>) -> bool
+    pub fn wait<'a, T, F>(
+        &'a self,
+        mut guard: MutexGuard<'a, T>,
+        condition: F,
+    ) -> anyhow::Result<MutexGuard<'a, T>>
+    where
+        F: Fn(&MutexGuard<'a, T>) -> bool,
     {
         if condition(&guard) {
             self.0.wait(&mut guard);

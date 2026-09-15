@@ -1,9 +1,8 @@
-import { cleanupProject, newProject, runCLI } from '@nx/e2e/utils';
+import { cleanupProject, newProject, runCLI } from '@nx/e2e-utils';
 
 describe('Nx Cloud', () => {
   beforeAll(() =>
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     })
   );

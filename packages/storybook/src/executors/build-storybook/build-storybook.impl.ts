@@ -1,21 +1,20 @@
 import { ExecutorContext, logger } from '@nx/devkit';
-import * as build from '@storybook/core-server';
-import { CLIOptions } from '@storybook/types';
+import type { CLIOptions } from 'storybook/internal/types';
 import {
-  pleaseUpgrade,
   storybookConfigExistsCheck,
-  storybookMajorVersion,
+  getInstalledStorybookVersion,
 } from '../../utils/utilities';
+import { gte } from 'semver';
+import { warnStorybookBuildExecutorDeprecation } from '../../utils/deprecation';
 
 export default async function buildStorybookExecutor(
   options: CLIOptions,
   context: ExecutorContext
 ) {
+  warnStorybookBuildExecutorDeprecation();
+
   storybookConfigExistsCheck(options.configDir, context.projectName);
-  const storybook7 = storybookMajorVersion() >= 7;
-  if (!storybook7) {
-    throw pleaseUpgrade();
-  }
+
   const buildOptions: CLIOptions = options;
   logger.info(`NX Storybook builder starting ...`);
   await runInstance(buildOptions);
@@ -24,14 +23,24 @@ export default async function buildStorybookExecutor(
   return { success: true };
 }
 
-function runInstance(options: CLIOptions): Promise<void | {
+async function runInstance(options: CLIOptions): Promise<void | {
   port: number;
   address: string;
   networkAddress: string;
 }> {
+  const installedStorybookVersion = getInstalledStorybookVersion();
+  const hasCoreServerInStorybookPackage = gte(
+    installedStorybookVersion,
+    '8.2.0'
+  );
+  const storybookCore = await (hasCoreServerInStorybookPackage
+    ? import('storybook/internal/core-server')
+    : // This is needed for backwards compatibility - but we do not have the package installed in the nx repo
+      // @ts-ignore
+      import('@storybook/core-server'));
   const env = process.env.NODE_ENV ?? 'production';
   process.env.NODE_ENV = env;
-  return build.build({
+  return storybookCore.build({
     ...options,
     mode: 'static',
   });

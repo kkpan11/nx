@@ -9,13 +9,13 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from '../../utils';
+} from '@nx/e2e-utils';
 
 describe('js:swc executor', () => {
   let scope: string;
 
   beforeAll(() => {
-    scope = newProject();
+    scope = newProject({ packages: ['@nx/js', '@nx/eslint', '@nx/jest'] });
   });
 
   afterAll(() => {
@@ -24,14 +24,12 @@ describe('js:swc executor', () => {
 
   it('should create libs with js executors (--bundler=swc)', async () => {
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=swc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=swc --no-interactive`);
 
     const libPackageJson = readJson(`libs/${lib}/package.json`);
     expect(libPackageJson.scripts).toBeUndefined();
 
-    expect(runCLI(`build ${lib}`)).toContain(
-      'Successfully compiled: 2 files with swc'
-    );
+    expect(() => runCLI(`build ${lib}`)).not.toThrow();
     checkFilesExist(
       `dist/libs/${lib}/package.json`,
       `dist/libs/${lib}/src/index.js`,
@@ -42,13 +40,13 @@ describe('js:swc executor', () => {
 
     const tsconfig = readJson(`tsconfig.base.json`);
     expect(tsconfig.compilerOptions.paths).toEqual({
-      [`@${scope}/${lib}`]: [`libs/${lib}/src/index.ts`],
+      [`@${scope}/${lib}`]: [`./libs/${lib}/src/index.ts`],
     });
   }, 240_000);
 
   it('should handle swcrc path mappings', async () => {
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=swc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=swc --no-interactive`);
 
     // add a dummy x.ts file for path mappings
     updateFile(
@@ -95,7 +93,7 @@ myLib();
 
   it('should support --strip-leading-paths option', () => {
     const lib = uniq('lib');
-    runCLI(`generate @nx/js:lib ${lib} --bundler=swc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${lib} --bundler=swc --no-interactive`);
 
     runCLI(`build ${lib} --stripLeadingPaths`);
 

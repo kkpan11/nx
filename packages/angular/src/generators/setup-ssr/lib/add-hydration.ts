@@ -4,28 +4,38 @@ import {
   type Tree,
 } from '@nx/devkit';
 import { insertImport } from '@nx/js';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
 import type { CallExpression, SourceFile } from 'typescript';
 import {
   addProviderToAppConfig,
   addProviderToModule,
 } from '../../../utils/nx-devkit/ast-utils';
-import { type Schema } from '../schema';
+import type { NormalizedGeneratorOptions } from '../schema';
 
 let tsModule: typeof import('typescript');
 let tsquery: typeof import('@phenomnomnominal/tsquery').tsquery;
 
-export function addHydration(tree: Tree, options: Schema) {
+export function addHydration(tree: Tree, options: NormalizedGeneratorOptions) {
   const projectConfig = readProjectConfiguration(tree, options.project);
+  const sourceRoot = getProjectSourceRoot(projectConfig, tree);
 
   if (!tsModule) {
     tsModule = ensureTypescript();
     tsquery = require('@phenomnomnominal/tsquery').tsquery;
   }
 
-  const pathToClientConfigFile = options.standalone
-    ? joinPathFragments(projectConfig.sourceRoot, 'app/app.config.ts')
-    : joinPathFragments(projectConfig.sourceRoot, 'app/app.module.ts');
+  let pathToClientConfigFile: string;
+  if (options.standalone) {
+    pathToClientConfigFile = joinPathFragments(sourceRoot, 'app/app.config.ts');
+  } else {
+    pathToClientConfigFile = joinPathFragments(sourceRoot, 'app/app.module.ts');
+    if (!tree.exists(pathToClientConfigFile)) {
+      pathToClientConfigFile = joinPathFragments(
+        sourceRoot,
+        'app/app-module.ts'
+      );
+    }
+  }
 
   const sourceText = tree.read(pathToClientConfigFile, 'utf-8');
   let sourceFile = tsModule.createSourceFile(
@@ -66,19 +76,17 @@ export function addHydration(tree: Tree, options: Schema) {
     '@angular/platform-browser',
     pathToClientConfigFile
   );
+  sourceFile = addImport(
+    sourceFile,
+    'withEventReplay',
+    '@angular/platform-browser',
+    pathToClientConfigFile
+  );
 
+  const provider = 'provideClientHydration(withEventReplay())';
   if (options.standalone) {
-    addProviderToAppConfig(
-      tree,
-      pathToClientConfigFile,
-      'provideClientHydration()'
-    );
+    addProviderToAppConfig(tree, pathToClientConfigFile, provider);
   } else {
-    addProviderToModule(
-      tree,
-      sourceFile,
-      pathToClientConfigFile,
-      'provideClientHydration()'
-    );
+    addProviderToModule(tree, sourceFile, pathToClientConfigFile, provider);
   }
 }

@@ -1,10 +1,8 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { Tree } from '@nx/devkit';
 import storiesGenerator from './stories';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import applicationGenerator from '../application/application';
-import { Linter } from '@nx/eslint';
 import libraryGenerator from '../library/library';
 
 describe('react:stories for libraries', () => {
@@ -54,13 +52,6 @@ describe('react:stories for libraries', () => {
     ).toMatchSnapshot();
 
     const packageJson = JSON.parse(appTree.read('package.json', 'utf-8'));
-    expect(
-      packageJson.devDependencies['@storybook/addon-interactions']
-    ).toBeDefined();
-    expect(packageJson.devDependencies['@storybook/test-runner']).toBeDefined();
-    expect(
-      packageJson.devDependencies['@storybook/testing-library']
-    ).toBeDefined();
   });
 
   it('should create the stories without interaction tests', async () => {
@@ -234,28 +225,14 @@ export async function createTestUILib(
   let appTree = createTreeWithEmptyWorkspace();
 
   await libraryGenerator(appTree, {
-    linter: Linter.EsLint,
+    linter: 'eslint',
     component: true,
     skipFormat: true,
     skipTsConfig: false,
     style: 'css',
     unitTestRunner: 'none',
-    name: libName,
-    projectNameAndRootFormat: 'as-provided',
+    directory: libName,
   });
 
-  // create some Nx app that we'll use to generate the cypress
-  // spec into it. We don't need a real Cypress setup
-
-  await applicationGenerator(appTree, {
-    e2eTestRunner: 'none',
-    linter: Linter.EsLint,
-    skipFormat: true,
-    style: 'css',
-    unitTestRunner: 'none',
-    name: `${libName}-e2e`,
-    js: plainJS,
-    projectNameAndRootFormat: 'as-provided',
-  });
   return appTree;
 }

@@ -4,59 +4,11 @@
   "sourceRoot": "packages/next",
   "projectType": "library",
   "targets": {
-    "build-base": {
-      "executor": "@nx/js:tsc",
-      "options": {
-        "assets": [
-          {
-            "input": "packages/next",
-            "glob": "**/files/**",
-            "output": "/"
-          },
-          {
-            "input": "packages/next",
-            "glob": "**/files/**/.gitkeep",
-            "output": "/"
-          },
-          {
-            "input": "packages/next",
-            "glob": "**/files/**/.babelrc__tmpl__",
-            "output": "/"
-          },
-          {
-            "input": "packages/next",
-            "glob": "**/*.json",
-            "ignore": ["**/tsconfig*.json", "project.json", ".eslintrc.json"],
-            "output": "/"
-          },
-          {
-            "input": "packages/next",
-            "glob": "**/*.js",
-            "ignore": ["**/jest.config.js"],
-            "output": "/"
-          },
-          {
-            "input": "packages/next",
-            "glob": "**/*.d.ts",
-            "output": "/"
-          },
-          {
-            "input": "",
-            "glob": "LICENSE",
-            "output": "/"
-          }
-        ]
-      }
-    },
     "build": {
-      "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/build/packages/next"],
-      "options": {
-        "command": "node ./scripts/copy-readme.js next"
-      }
-    },
-    "add-extra-dependencies": {
-      "command": "node ./scripts/add-dependency-to-build.js next @nrwl/next"
+      "command": "node ./scripts/copy-readme.js next packages/next/readme-template.md packages/next/README.md",
+      "inputs": ["copyReadme"],
+      "outputs": ["{projectRoot}/README.md"]
     }
-  }
+  },
+  "implicitDependencies": ["jest"]
 }

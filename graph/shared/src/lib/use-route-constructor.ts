@@ -3,7 +3,9 @@ import { getEnvironmentConfig } from './use-environment-config';
 
 export const useRouteConstructor = (): ((
   to: To,
-  retainSearchParams: boolean,
+  retainSearchParams:
+    | boolean
+    | ((searchParams: URLSearchParams) => URLSearchParams),
   searchParamsKeysToOmit?: string[]
 ) => To) => {
   const { environment } = getEnvironmentConfig();
@@ -12,7 +14,7 @@ export const useRouteConstructor = (): ((
 
   return (
     to: To,
-    retainSearchParams: boolean = true,
+    retainSearchParams = true,
     searchParamsKeysToOmit: string[] = []
   ) => {
     if (searchParamsKeysToOmit?.length) {
@@ -20,7 +22,7 @@ export const useRouteConstructor = (): ((
         searchParams.delete(key);
       });
     }
-    let pathname = '';
+    let pathname: string | undefined = '';
 
     if (typeof to === 'object') {
       if (environment === 'dev') {
@@ -33,11 +35,9 @@ export const useRouteConstructor = (): ((
         pathname,
         search: to.search
           ? to.search.toString()
-          : retainSearchParams
-          ? searchParams.toString()
-          : '',
+          : getSearchParams(retainSearchParams, searchParams),
       };
-    } else if (typeof to === 'string') {
+    } else {
       if (environment === 'dev') {
         pathname = `/${selectedWorkspaceId}${to}`;
       } else {
@@ -45,8 +45,21 @@ export const useRouteConstructor = (): ((
       }
       return {
         pathname,
-        search: retainSearchParams ? searchParams.toString() : '',
+        search: getSearchParams(retainSearchParams, searchParams),
       };
     }
   };
 };
+
+function getSearchParams(
+  retainSearchParams:
+    | boolean
+    | ((searchParams: URLSearchParams) => URLSearchParams),
+  searchParams: URLSearchParams
+) {
+  return typeof retainSearchParams === 'function'
+    ? retainSearchParams(searchParams).toString()
+    : retainSearchParams
+      ? searchParams.toString()
+      : '';
+}

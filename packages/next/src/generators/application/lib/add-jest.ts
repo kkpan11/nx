@@ -4,12 +4,17 @@ import {
   readJson,
   Tree,
   updateJson,
+  GeneratorCallback,
 } from '@nx/devkit';
+import { isTypedLintingEnabled } from '@nx/eslint/internal';
 
 import { nxVersion } from '../../../utils/versions';
 import { NormalizedSchema } from './normalize-options';
 
-export async function addJest(host: Tree, options: NormalizedSchema) {
+export async function addJest(
+  host: Tree,
+  options: NormalizedSchema
+): Promise<GeneratorCallback> {
   if (options.unitTestRunner !== 'jest') {
     return () => {};
   }
@@ -24,8 +29,11 @@ export async function addJest(host: Tree, options: NormalizedSchema) {
     supportTsx: true,
     skipSerializers: true,
     setupFile: 'none',
-    compiler: 'babel',
+    // The generated config is replaced by updateJestConfig, so this only decides
+    // which transformer package gets installed; 'tsc' installs none.
+    compiler: 'tsc',
     skipFormat: true,
+    runtimeTsconfigFileName: 'tsconfig.json',
   });
 
   const tsConfigSpecJson = readJson(
@@ -52,13 +60,15 @@ export async function addJest(host: Tree, options: NormalizedSchema) {
     joinPathFragments(options.appProjectRoot, 'tsconfig.spec.json'),
     (json) => {
       json.compilerOptions.jsx = 'react';
-      // have to override exclude otherwise lint will fail with setParserOptionsProject and jest.config.ts
-      if (options.setParserOptionsProject) {
+      // Override exclude so typed linting doesn't fail on jest.config.ts and jest.config.cts.
+      if (isTypedLintingEnabled(options)) {
         const tsConfig = readJson(
           host,
           joinPathFragments(options.appProjectRoot, 'tsconfig.json')
         );
-        json.exclude = tsConfig.exclude.filter((e) => e !== 'jest.config.ts');
+        json.exclude = tsConfig.exclude.filter(
+          (e) => e !== 'jest.config.ts' && e !== 'jest.config.cts'
+        );
       }
       return json;
     }

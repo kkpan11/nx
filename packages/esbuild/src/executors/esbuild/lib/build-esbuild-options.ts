@@ -1,16 +1,19 @@
 import * as esbuild from 'esbuild';
 import * as path from 'path';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, lstatSync } from 'fs';
 import {
   ExecutorContext,
   joinPathFragments,
   normalizePath,
   ProjectGraphProjectNode,
+  readJsonFile,
+  workspaceRoot,
 } from '@nx/devkit';
 
 import { getClientEnvironment } from '../../../utils/environment-variables';
 import { NormalizedEsBuildExecutorOptions } from '../schema';
 import { getEntryPoints } from '../../../utils/get-entry-points';
+import { join } from 'path';
 
 const ESM_FILE_EXTENSION = '.js';
 const CJS_FILE_EXTENSION = '.cjs';
@@ -20,25 +23,30 @@ export function buildEsbuildOptions(
   options: NormalizedEsBuildExecutorOptions,
   context: ExecutorContext
 ): esbuild.BuildOptions {
-  const outExtension = getOutExtension(format, options);
+  const outExtension = getOutExtension(format, options, context);
+  const external = options.bundle
+    ? [
+        ...(options.userDefinedBuildOptions?.external ?? []),
+        ...options.external,
+      ].filter(
+        (packageName) => !options.excludeFromExternal?.includes(packageName)
+      )
+    : undefined;
 
   const esbuildOptions: esbuild.BuildOptions = {
     ...options.userDefinedBuildOptions,
+    // Nx-computed paths are workspace-root-relative, not cwd-relative.
+    absWorkingDir: context.root,
     entryNames:
       options.outputHashing === 'all' ? '[dir]/[name].[hash]' : '[dir]/[name]',
     bundle: options.bundle,
     // Cannot use external with bundle option
-    external: options.bundle
-      ? [
-          ...(options.userDefinedBuildOptions?.external ?? []),
-          ...options.external,
-        ]
-      : undefined,
+    external: external,
     minify: options.minify,
     platform: options.platform,
     target: options.target,
     metafile: options.metafile,
-    tsconfig: options.tsConfig,
+    tsconfig: join(context.root, options.tsConfig),
     sourcemap:
       (options.sourcemap ?? options.userDefinedBuildOptions?.sourcemap) ||
       false,
@@ -49,7 +57,10 @@ export function buildEsbuildOptions(
   };
 
   if (options.platform === 'browser') {
-    esbuildOptions.define = getClientEnvironment();
+    esbuildOptions.define = {
+      ...getClientEnvironment(),
+      ...options.userDefinedBuildOptions?.define,
+    };
   }
 
   if (!esbuildOptions.outfile && !esbuildOptions.outdir) {
@@ -68,8 +79,11 @@ export function buildEsbuildOptions(
     esbuildOptions.entryPoints = entryPoints;
   } else if (options.platform === 'node' && format === 'cjs') {
     // When target platform Node and target format is CJS, then also transpile workspace libs used by the app.
-    // Provide a `require` override in the main entry file so workspace libs can be loaded when running the app.
-    const paths = getTsConfigCompilerPaths(context);
+    // Provide a loader override in the main entry file so workspace libs can be loaded when running the app.
+    const paths = options.isTsSolutionSetup
+      ? createPathsFromTsConfigReferences(context)
+      : getTsConfigCompilerPaths(context);
+
     const entryPointsFromProjects = getEntryPoints(
       context.projectName,
       context,
@@ -82,7 +96,13 @@ export function buildEsbuildOptions(
 
     esbuildOptions.entryPoints = [
       // Write a main entry file that registers workspace libs and then calls the user-defined main.
-      writeTmpEntryWithRequireOverrides(paths, outExtension, options, context),
+      writeTmpEntryWithRequireOverrides(
+        paths,
+        outExtension,
+        options,
+        context,
+        format
+      ),
       ...entryPointsFromProjects.map((f) => {
         /**
          * Maintain same directory structure as the workspace, so that other workspace libs may be used by the project.
@@ -118,21 +138,145 @@ export function buildEsbuildOptions(
   return esbuildOptions;
 }
 
+/**
+ * When using TS project references we need to map the paths to the referenced projects.
+ * This is necessary because esbuild does not support project references out of the box.
+ * @param context ExecutorContext
+ */
+export function createPathsFromTsConfigReferences(
+  context: ExecutorContext
+): Record<string, string[]> {
+  const { findAllProjectNodeDependencies } = require('@nx/devkit/internal');
+  const {
+    isValidPackageJsonBuildConfig,
+    findRuntimeTsConfigName,
+  } = require('@nx/js/internal');
+  const { readTsConfig } = require('@nx/js');
+
+  const deps = findAllProjectNodeDependencies(
+    context.projectName,
+    context.projectGraph
+  );
+  const tsConfig = readJsonFile(
+    joinPathFragments(context.root, 'tsconfig.json')
+  );
+  const referencesAsPaths = new Set(
+    tsConfig.references.reduce((acc, ref) => {
+      if (!ref.path) return acc;
+
+      const fullPath = joinPathFragments(workspaceRoot, ref.path);
+
+      try {
+        if (lstatSync(fullPath).isDirectory()) {
+          acc.push(fullPath);
+        }
+      } catch {
+        // Ignore errors (e.g., path doesn't exist)
+      }
+
+      return acc;
+    }, [])
+  );
+
+  // for each dep we check if it contains a build target
+  // we only want to add the paths for projects that do not have a build target
+  return deps.reduce((acc, dep) => {
+    const projectNode = context.projectGraph.nodes[dep];
+    const projectPath = joinPathFragments(workspaceRoot, projectNode.data.root);
+    const resolvedTsConfigPath =
+      findRuntimeTsConfigName(projectPath) ?? 'tsconfig.json';
+    const projTsConfig = readTsConfig(resolvedTsConfigPath) as any;
+
+    const projectPkgJson = readJsonFile(
+      joinPathFragments(projectPath, 'package.json')
+    );
+
+    if (
+      projTsConfig &&
+      !isValidPackageJsonBuildConfig(
+        projTsConfig,
+        workspaceRoot,
+        projectPath
+      ) &&
+      projectPkgJson?.name
+    ) {
+      const entryPoint = getProjectEntryPoint(projectPkgJson, projectPath);
+      if (referencesAsPaths.has(projectPath)) {
+        acc[projectPkgJson.name] = [path.relative(workspaceRoot, entryPoint)];
+      }
+    }
+
+    return acc;
+  }, {});
+}
+
+// Get the entry point for the project
+function getProjectEntryPoint(projectPkgJson: any, projectPath: string) {
+  let entryPoint = null;
+  if (typeof projectPkgJson.exports === 'string') {
+    // If exports is a string, use it as the entry point
+    entryPoint = path.relative(
+      workspaceRoot,
+      joinPathFragments(projectPath, projectPkgJson.exports)
+    );
+  } else if (
+    typeof projectPkgJson.exports === 'object' &&
+    projectPkgJson.exports['.']
+  ) {
+    // If exports is an object and has a '.' key, process it
+    const exportEntry = projectPkgJson.exports['.'];
+    if (typeof exportEntry === 'object') {
+      entryPoint =
+        exportEntry.import ||
+        exportEntry.require ||
+        exportEntry.default ||
+        null;
+    } else if (typeof exportEntry === 'string') {
+      entryPoint = exportEntry;
+    }
+
+    if (entryPoint) {
+      entryPoint = path.relative(
+        workspaceRoot,
+        joinPathFragments(projectPath, entryPoint)
+      );
+    }
+  }
+
+  // If no exports were found, fall back to main and module
+  if (!entryPoint) {
+    if (projectPkgJson.main) {
+      entryPoint = path.relative(
+        workspaceRoot,
+        joinPathFragments(projectPath, projectPkgJson.main)
+      );
+    } else if (projectPkgJson.module) {
+      entryPoint = path.relative(
+        workspaceRoot,
+        joinPathFragments(projectPath, projectPkgJson.module)
+      );
+    }
+  }
+  return entryPoint;
+}
+
 export function getOutExtension(
   format: 'cjs' | 'esm',
-  options: NormalizedEsBuildExecutorOptions
+  options: Pick<NormalizedEsBuildExecutorOptions, 'userDefinedBuildOptions'>,
+  context?: ExecutorContext
 ): '.cjs' | '.mjs' | '.js' {
   const userDefinedExt = options.userDefinedBuildOptions?.outExtension?.['.js'];
   // Allow users to change the output extensions from default CJS and ESM extensions.
   // CJS -> .js
   // ESM -> .mjs
+
   return userDefinedExt === '.js' && format === 'cjs'
     ? '.js'
     : userDefinedExt === '.mjs' && format === 'esm'
-    ? '.mjs'
-    : format === 'esm'
-    ? ESM_FILE_EXTENSION
-    : CJS_FILE_EXTENSION;
+      ? '.mjs'
+      : format === 'esm'
+        ? ESM_FILE_EXTENSION
+        : CJS_FILE_EXTENSION;
 }
 
 export function getOutfile(
@@ -140,7 +284,7 @@ export function getOutfile(
   options: NormalizedEsBuildExecutorOptions,
   context: ExecutorContext
 ) {
-  const ext = getOutExtension(format, options);
+  const ext = getOutExtension(format, options, context);
   const candidate = joinPathFragments(
     context.target.options.outputPath,
     options.outputFileName
@@ -153,7 +297,8 @@ function writeTmpEntryWithRequireOverrides(
   paths: Record<string, string[]>,
   outExtension: '.cjs' | '.js' | '.mjs',
   options: NormalizedEsBuildExecutorOptions,
-  context: ExecutorContext
+  context: ExecutorContext,
+  format: 'cjs' | 'esm' = 'cjs'
 ): { in: string; out: string } {
   const project = context.projectGraph?.nodes[context.projectName];
   // Write a temp main entry source that registers workspace libs.
@@ -167,17 +312,14 @@ function writeTmpEntryWithRequireOverrides(
     tmpPath,
     `main-with-require-overrides.js`
   );
+  const mainFile = `./${path.join(
+    mainPathRelativeToDist,
+    `${mainFileName}${outExtension}`
+  )}`;
+
   writeFileSync(
     mainWithRequireOverridesInPath,
-    getRegisterFileContent(
-      project,
-      paths,
-      `./${path.join(
-        mainPathRelativeToDist,
-        `${mainFileName}${outExtension}`
-      )}`,
-      outExtension
-    )
+    getRegisterFileContent(project, paths, mainFile, outExtension, format)
   );
 
   let mainWithRequireOverridesOutPath: string;
@@ -203,7 +345,8 @@ export function getRegisterFileContent(
   project: ProjectGraphProjectNode,
   paths: Record<string, string[]>,
   mainFile: string,
-  outExtension = '.js'
+  outExtension = '.js',
+  format: 'cjs' | 'esm' = 'cjs'
 ) {
   mainFile = normalizePath(mainFile);
 
@@ -232,7 +375,58 @@ export function getRegisterFileContent(
     return acc;
   }, []);
 
-  return `
+  if (format === 'esm') {
+    return `
+/**
+ * IMPORTANT: Do not modify this file.
+ * This file allows the app to run without bundling in workspace libraries.
+ * Must be contained in the ".nx" folder inside the output path.
+ */
+import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const distPath = __dirname;
+const manifest = ${JSON.stringify(manifest)};
+
+// Resolver for workspace libs
+const originalResolve = import.meta.resolve;
+if (originalResolve) {
+  import.meta.resolve = function(specifier, parent) {
+    const matchingEntry = manifest.find(
+      (entry) => specifier === entry.module || specifier.startsWith(entry.module + '/')
+    );
+    
+    if (matchingEntry) {
+      if (matchingEntry.exactMatch) {
+        const candidate = join(distPath, matchingEntry.exactMatch);
+        if (existsSync(candidate)) {
+          return pathToFileURL(candidate).href;
+        }
+      } else {
+        const re = new RegExp(matchingEntry.module.replace(/\\*$/, "(?<rest>.*)"));
+        const match = specifier.match(re);
+        if (match?.groups) {
+          const candidate = join(distPath, matchingEntry.pattern.replace("*", ""), match.groups.rest);
+          if (existsSync(candidate)) {
+            return pathToFileURL(candidate).href;
+          }
+        }
+      }
+    }
+    
+    return originalResolve.call(this, specifier, parent);
+  };
+}
+
+// Call the user-defined main.
+await import(pathToFileURL(join(distPath, '${mainFile}')).href);
+`;
+  } else {
+    return `
 /**
  * IMPORTANT: Do not modify this file.
  * This file allows the app to run without bundling in workspace libraries.
@@ -286,19 +480,34 @@ function isFile(s) {
 }
 
 // Call the user-defined main.
-require('${mainFile}');
+module.exports = require('${mainFile}');
 `;
+  }
 }
 
 function getPrefixLength(pattern: string): number {
-  return pattern.substring(0, pattern.indexOf('*')).length;
+  const prefixIfWildcard = pattern.substring(0, pattern.indexOf('*')).length;
+  const prefixWithoutWildcard = pattern.substring(
+    0,
+    pattern.lastIndexOf('/')
+  ).length;
+  // if the pattern doesn't contain '*', then the length is always 0
+  // This causes issues when there are sub packages such as
+  // @nx/core
+  // @nx/core/testing
+  return prefixIfWildcard || prefixWithoutWildcard;
 }
 
 function getTsConfigCompilerPaths(context: ExecutorContext): {
   [key: string]: string[];
 } {
+  const rootTsConfigPath = getRootTsConfigPath(context);
+  if (!rootTsConfigPath) {
+    return {};
+  }
+
   const tsconfigPaths = require('tsconfig-paths');
-  const tsConfigResult = tsconfigPaths.loadConfig(getRootTsConfigPath(context));
+  const tsConfigResult = tsconfigPaths.loadConfig(rootTsConfigPath);
   if (tsConfigResult.resultType !== 'success') {
     throw new Error('Cannot load tsconfig file');
   }
@@ -313,7 +522,5 @@ function getRootTsConfigPath(context: ExecutorContext): string | null {
     }
   }
 
-  throw new Error(
-    'Could not find a root tsconfig.json or tsconfig.base.json file.'
-  );
+  return null;
 }

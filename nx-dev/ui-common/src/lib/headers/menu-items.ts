@@ -13,12 +13,23 @@ import {
   UserGroupIcon,
   ComputerDesktopIcon,
   GlobeAltIcon,
+  MicrophoneIcon,
+  VideoCameraIcon,
+  CheckBadgeIcon,
+  LifebuoyIcon,
+  BookOpenIcon,
+  ShieldCheckIcon,
+  ServerStackIcon,
+  ArrowTrendingUpIcon,
+  CommandLineIcon,
+  UsersIcon,
+  DocumentChartBarIcon,
+  DocumentTextIcon,
 } from '@heroicons/react/24/outline';
 import { FC, SVGProps } from 'react';
-import { NxAgentsIcon } from '../nx-agents-icon';
-import { NxReplayIcon } from '../nx-replay-icon';
 import { DiscordIcon } from '../discord-icon';
 import { BuildingOfficeIcon } from '@heroicons/react/24/solid';
+import { NxAgentsIcon, NxReplayIcon } from '@nx/nx-dev-ui-icons';
 
 export interface MenuItem {
   name: string;
@@ -29,154 +40,149 @@ export interface MenuItem {
   isNew: boolean;
 }
 
-export const featuresItems: MenuItem[] = [
+export const featuresItems: Record<string, MenuItem[]> = {
+  '': [
+    {
+      name: 'Run Tasks',
+      // description: 'Run one or many tasks in parallel.',
+      description: null,
+      href: '/docs/features/run-tasks',
+      icon: BoltIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Cache Task Results',
+      // description: 'Speeds up your local workflow.',
+      description: null,
+      href: '/docs/features/cache-task-results',
+      icon: CircleStackIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Explore Your Workspace',
+      // description: 'See interactions for tasks and modules.',
+      description: null,
+      href: '/docs/features/explore-graph',
+      icon: ShareIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Automate Updating Dependencies',
+      // description: 'Keep running on latest without effort.',
+      description: null,
+      href: '/docs/features/automate-updating-dependencies',
+      icon: ArrowUpCircleIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Enforce Module Boundaries',
+      // description: 'Partition your code into defined units.',
+      description: null,
+      href: '/docs/features/enforce-module-boundaries',
+      icon: Squares2X2Icon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Manage Releases',
+      // description: 'Versioning, changelog, publishing.',
+      description: null,
+      href: '/docs/features/manage-releases',
+      icon: CubeIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+  ],
+  'Nx Cloud Features': [
+    {
+      name: 'Use Remote Caching (Nx Replay)',
+      description: 'Zero-config, fast & secure remote cache solution.',
+      href: '/docs/features/ci-features/remote-cache',
+      icon: NxReplayIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Distribute Task Execution (Nx Agents)',
+      description:
+        'One-line config for distributing tasks across multiple machines',
+      href: '/docs/features/ci-features/distribute-task-execution',
+      icon: NxAgentsIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+  ],
+  'Nx Enterprise Features': [
+    {
+      name: 'Run Conformance Rules',
+      description: null,
+      href: '/docs/enterprise/conformance',
+      icon: CheckBadgeIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+    {
+      name: 'Define Project Owners',
+      description: null,
+      href: '/docs/enterprise/owners',
+      icon: UserGroupIcon,
+      isNew: false,
+      isHighlight: false,
+    },
+  ],
+};
+export const ossProducts: MenuItem[] = [
   {
-    name: 'Run Tasks',
-    // description: 'Run one or many tasks in parallel.',
-    description: null,
-    href: '/features/run-tasks',
-    icon: BoltIcon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Cache Task Results',
-    // description: 'Speeds up your local workflow.',
-    description: null,
-    href: '/features/cache-task-results',
-    icon: CircleStackIcon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Explore Your Workspace',
-    // description: 'See interactions for tasks and modules.',
-    description: null,
-    href: '/features/explore-graph',
-    icon: ShareIcon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Automate Updating Dependencies',
-    // description: 'Keep running on latest without effort.',
-    description: null,
-    href: '/features/automate-updating-dependencies',
-    icon: ArrowUpCircleIcon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Enforce Module Boundaries',
-    // description: 'Partition your code into defined units.',
-    description: null,
-    href: '/features/enforce-module-boundaries',
-    icon: Squares2X2Icon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Manage Releases',
-    // description: 'Versioning, changelog, publishing.',
-    description: null,
-    href: '/features/manage-releases',
-    icon: CubeIcon,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Use Remote Caching (Nx Replay)',
-    description: 'Zero-config, fast & secure remote cache solution.',
-    href: '/ci/features/remote-cache',
-    icon: NxReplayIcon,
-    isNew: false,
-    isHighlight: true,
-  },
-  {
-    name: 'Distribute Task Execution (Nx Agents)',
-    description:
-      'One-line config for distributing tasks across multiple machines',
-    href: '/ci/features/distribute-task-execution',
-    icon: NxAgentsIcon,
-    isNew: false,
-    isHighlight: true,
-  },
-];
-export const plans: MenuItem[] = [
-  {
-    name: 'Nx Cloud',
-    description:
-      'End-to-end solution for smart, efficient and maintainable CI.',
-    href: 'https://nx.app',
+    name: 'Nx',
+    description: 'Smart Monorepos - Fast Builds',
+    href: '/docs/getting-started/intro',
     icon: null,
     isNew: false,
     isHighlight: false,
   },
   {
-    name: 'Nx Enterprise',
-    description:
-      'The ultimate Nx & Nx Cloud toolchain, tailored to your needs.',
-    href: '/enterprise',
-    icon: null,
-    isNew: false,
-    isHighlight: false,
-  },
-];
-const useCaseItems: MenuItem[] = [
-  {
-    name: 'Get actionable feedback',
-    description: 'Enhanced analysis & analytics of your workflows.',
-    href: '',
-    icon: null,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Reduce CI timings with remote caching',
-    description: 'Share task results & artifacts between CI & teams.',
-    href: '',
-    icon: null,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Performant task distribution at scale',
-    description: 'Faster & cheaper CI workflows.',
-    href: '',
-    icon: null,
-    isNew: false,
-    isHighlight: false,
-  },
-  {
-    name: 'Improve E2E time execution on CI',
-    description: 'Automatic task splitting.',
-    href: '',
+    name: 'Nx Console',
+    description: 'Editor integration for VSCode, Cursor and IntelliJ IDEs',
+    href: '/docs/getting-started/editor-setup',
     icon: null,
     isNew: false,
     isHighlight: false,
   },
 ];
+
 export const learnItems: MenuItem[] = [
   {
     name: 'Step by step tutorials',
     description: null,
-    href: '/getting-started/intro#learn-nx',
+    href: '/docs/getting-started/tutorials',
     icon: AcademicCapIcon,
     isNew: false,
     isHighlight: false,
   },
   {
-    name: 'Code examples for your stack',
+    name: 'Podcasts',
     description: null,
-    href: '/showcase/example-repos',
-    icon: CodeBracketIcon,
+    href: '/podcast',
+    icon: MicrophoneIcon,
     isNew: false,
     isHighlight: false,
   },
   {
-    name: 'Video tutorials',
+    name: 'Webinars',
     description: null,
-    href: 'https://www.youtube.com/@nxdevtools',
+    href: '/webinar',
+    icon: ComputerDesktopIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'Nx Video Courses',
+    description: null,
+    href: '/courses',
     icon: PlayCircleIcon,
     isNew: false,
     isHighlight: false,
@@ -205,26 +211,80 @@ export const learnItems: MenuItem[] = [
     isNew: false,
     isHighlight: false,
   },
-];
-export const eventItems: MenuItem[] = [
   {
-    name: 'Monorepo World',
+    name: 'Books',
     description: null,
-    href: 'https://monorepo.world',
-    icon: GlobeAltIcon,
+    href: '/resources-library?filterBy=book',
+    icon: BookOpenIcon,
     isNew: false,
     isHighlight: false,
   },
   {
-    name: 'Webinars',
+    name: 'Case Studies',
     description: null,
-    href: 'https://go.nx.dev/webinar',
-    icon: ComputerDesktopIcon,
+    href: '/resources-library?filterBy=case-study',
+    icon: DocumentChartBarIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'Whitepapers',
+    description: null,
+    href: '/resources-library?filterBy=whitepaper',
+    icon: DocumentTextIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+];
+export const eventItems: MenuItem[] = [
+  {
+    name: 'Nx Live',
+    description: null,
+    href: 'https://www.youtube.com/playlist?list=PLakNactNC1dE8KLQ5zd3fQwu_yQHjTmR5',
+    icon: VideoCameraIcon,
     isNew: false,
     isHighlight: false,
   },
 ];
 
+export const solutionsItems: MenuItem[] = [
+  {
+    name: 'Developers',
+    description:
+      'Accelerate your CI with Nx: smart cache sharing, flaky-test auto‑retries, parallel runs & dynamic agents.',
+    href: '/solutions/engineering',
+    icon: CommandLineIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'Engineering Managers',
+    description:
+      'Boost efficiency with powerful monorepos and intelligent CI. Build, test, and deploy faster, freeing teams to innovate.',
+    href: '/solutions/management',
+    icon: BoltIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'Platform & DevOps Teams',
+    description:
+      'Get dependable, out-of-the-box CI that scales effortlessly. Cut costs and boost speed with smart caching, distribution, and enhanced security.',
+    icon: ServerStackIcon,
+    href: '/solutions/platform',
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'CTOs & VPs of Engineering',
+    description:
+      'Supercharge engineering ROI with faster delivery, lower CI costs, and fewer risks. Scale safely and future-proof your stack.',
+    icon: ArrowTrendingUpIcon,
+    href: '/solutions/leadership',
+    isNew: false,
+    isHighlight: false,
+  },
+];
 export const companyItems: MenuItem[] = [
   {
     name: 'About Us',
@@ -242,11 +302,47 @@ export const companyItems: MenuItem[] = [
     isNew: false,
     isHighlight: false,
   },
+  {
+    name: 'Partners',
+    description: null,
+    icon: LifebuoyIcon,
+    href: '/partners',
+    isNew: false,
+    isHighlight: false,
+  },
 ];
-export const solutionsMenuItems = {
-  'Helping you grow': plans,
-  // 'Use cases': useCaseItems
-};
+export const enterpriseItems: MenuItem[] = [
+  {
+    name: 'Overview',
+    description:
+      "Accelerate your organization's journey to tighter collaboration, better developer experience, and speed…lots of speed.",
+    href: '/enterprise',
+    icon: BuildingOfficeIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+  {
+    name: 'Security',
+    description:
+      'Protect your codebase from artifact poisoning with infrastructure-first security.',
+    icon: ShieldCheckIcon,
+    href: '/enterprise/security',
+    isNew: false,
+    isHighlight: false,
+  },
+];
+export const professionalServicesItems: MenuItem[] = [
+  {
+    name: 'Nx Labs',
+    description:
+      'From expert training to hands-on engineering support, we meet teams where they are and help them move forward with confidence.',
+    href: '/contact/labs',
+    icon: UsersIcon,
+    isNew: false,
+    isHighlight: false,
+  },
+];
+
 export const resourceMenuItems = {
   Learn: learnItems,
   Events: eventItems,

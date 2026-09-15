@@ -1,5 +1,5 @@
-let runCLI = jest.fn();
-let readConfig = jest.fn(() =>
+let mockRunCLI = jest.fn();
+let mockReadConfig = jest.fn(() =>
   Promise.resolve({
     projectConfig: {
       displayName: 'something',
@@ -8,11 +8,11 @@ let readConfig = jest.fn(() =>
 );
 
 jest.mock('jest', () => ({
-  runCLI,
+  runCLI: (...args) => mockRunCLI(...args),
 }));
 
 jest.mock('jest-config', () => ({
-  readConfig,
+  readConfig: () => mockReadConfig(),
 }));
 
 import { ExecutorContext } from '@nx/devkit';
@@ -22,11 +22,11 @@ import { JestExecutorOptions } from './schema';
 describe('Jest Executor', () => {
   let mockContext: ExecutorContext;
   const defaultOptions: Omit<JestExecutorOptions, 'jestConfig'> = {
-    testPathPattern: [],
+    testPathPatterns: [],
   };
 
   beforeEach(async () => {
-    runCLI.mockReturnValue(
+    mockRunCLI.mockReturnValue(
       Promise.resolve({
         results: {
           success: true,
@@ -37,6 +37,25 @@ describe('Jest Executor', () => {
     mockContext = {
       root: '/root',
       projectName: 'proj',
+      projectGraph: {
+        nodes: {
+          proj: {
+            type: 'lib',
+            name: 'proj',
+            data: {
+              root: 'proj',
+              targets: {
+                test: {
+                  executor: '@nx/jest:jest',
+                },
+              },
+            },
+          },
+        },
+        dependencies: {
+          proj: [],
+        },
+      },
       projectsConfigurations: {
         version: 2,
         projects: {
@@ -87,10 +106,10 @@ describe('Jest Executor', () => {
         },
         mockContext
       );
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         expect.objectContaining({
           _: [],
-          testPathPattern: [],
+          testPathPatterns: [],
           watch: false,
         }),
         ['/root/jest.config.ts']
@@ -108,15 +127,17 @@ describe('Jest Executor', () => {
         },
         mockContext
       );
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(process.argv).toContain('--group=core');
+      expect(mockRunCLI).toHaveBeenCalledWith(
         expect.objectContaining({
           _: [],
-          testPathPattern: [],
+          testPathPatterns: [],
           watch: false,
           group: 'core',
         }),
         ['/root/jest.config.js']
       );
+      process.argv.pop(); // clean extra arg.
     });
 
     it('should send appropriate options to jestCLI when testFile is specified', async () => {
@@ -127,7 +148,7 @@ describe('Jest Executor', () => {
           codeCoverage: false,
           runInBand: true,
           testNamePattern: 'should load',
-          testPathPattern: ['/test/path'],
+          testPathPatterns: ['/test/path'],
           colors: false,
           reporters: ['/test/path'],
           verbose: false,
@@ -138,13 +159,13 @@ describe('Jest Executor', () => {
         mockContext
       );
 
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         expect.objectContaining({
           _: ['lib.spec.ts'],
           coverage: false,
           runInBand: true,
           testNamePattern: 'should load',
-          testPathPattern: ['/test/path'],
+          testPathPatterns: ['/test/path'],
           colors: false,
           reporters: ['/test/path'],
           verbose: false,
@@ -170,14 +191,14 @@ describe('Jest Executor', () => {
         mockContext
       );
 
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         expect.objectContaining({
           _: ['file1.ts', 'file2.ts'],
           coverage: false,
           findRelatedTests: true,
           runInBand: true,
           testNamePattern: 'should load',
-          testPathPattern: [],
+          testPathPatterns: [],
           watch: false,
         }),
         ['/root/jest.config.ts']
@@ -205,7 +226,7 @@ describe('Jest Executor', () => {
           silent: true,
           testNamePattern: 'test',
           testPathIgnorePatterns: ['/test/path/|/tests/e2e/'],
-          testPathPattern: ['/test/path'],
+          testPathPatterns: ['/test/path'],
           colors: false,
           reporters: ['/test/path'],
           verbose: false,
@@ -219,7 +240,7 @@ describe('Jest Executor', () => {
         },
         mockContext
       );
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         {
           _: [],
           coverage: true,
@@ -239,7 +260,7 @@ describe('Jest Executor', () => {
           silent: true,
           testNamePattern: 'test',
           testPathIgnorePatterns: ['/test/path/|/tests/e2e/'],
-          testPathPattern: ['/test/path'],
+          testPathPatterns: ['/test/path'],
           colors: false,
           verbose: false,
           reporters: ['/test/path'],
@@ -264,72 +285,14 @@ describe('Jest Executor', () => {
         },
         mockContext
       );
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         {
           _: [],
           maxWorkers: '50%',
-          testPathPattern: [],
+          testPathPatterns: [],
         },
         ['/root/jest.config.ts']
       );
-    });
-
-    it('should send the main to runCLI', async () => {
-      await jestExecutor(
-        {
-          ...defaultOptions,
-          jestConfig: './jest.config.ts',
-          setupFile: './test-setup.ts',
-          watch: false,
-        },
-        mockContext
-      );
-      expect(runCLI).toHaveBeenCalledWith(
-        expect.objectContaining({
-          _: [],
-          setupFilesAfterEnv: ['/root/test-setup.ts'],
-          testPathPattern: [],
-          watch: false,
-        }),
-        ['/root/jest.config.ts']
-      );
-    });
-
-    describe('when the jest config file has been modified', () => {
-      beforeAll(() => {
-        jest.doMock(
-          '/root/jest.config.ts',
-          () => ({
-            transform: {
-              '^.+\\.[tj]sx?$': 'ts-jest',
-            },
-            globals: { hereToStay: true, 'ts-jest': { diagnostics: false } },
-          }),
-          { virtual: true }
-        );
-      });
-
-      it('should merge the globals property from jest config', async () => {
-        await jestExecutor(
-          {
-            ...defaultOptions,
-            jestConfig: './jest.config.ts',
-            setupFile: './test-setup.ts',
-            watch: false,
-          },
-          mockContext
-        );
-
-        expect(runCLI).toHaveBeenCalledWith(
-          expect.objectContaining({
-            _: [],
-            setupFilesAfterEnv: ['/root/test-setup.ts'],
-            testPathPattern: [],
-            watch: false,
-          }),
-          ['/root/jest.config.ts']
-        );
-      });
     });
 
     describe('when we use babel-jest', () => {
@@ -353,10 +316,10 @@ describe('Jest Executor', () => {
         };
 
         await jestExecutor(options, mockContext);
-        expect(runCLI).toHaveBeenCalledWith(
+        expect(mockRunCLI).toHaveBeenCalledWith(
           expect.objectContaining({
             _: [],
-            testPathPattern: [],
+            testPathPatterns: [],
             watch: false,
           }),
           ['/root/jest.config.ts']
@@ -388,10 +351,10 @@ describe('Jest Executor', () => {
         },
         mockContext
       );
-      expect(runCLI).toHaveBeenCalledWith(
+      expect(mockRunCLI).toHaveBeenCalledWith(
         expect.objectContaining({
           _: [],
-          testPathPattern: [],
+          testPathPatterns: [],
           watch: false,
         }),
         ['/root/jest.config.ts']

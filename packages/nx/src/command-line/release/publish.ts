@@ -1,133 +1,206 @@
-import { NxJsonConfiguration, readNxJson } from '../../config/nx-json';
+import {
+  NxJsonConfiguration,
+  NxReleaseConfiguration,
+  readNxJson,
+} from '../../config/nx-json';
 import {
   ProjectGraph,
   ProjectGraphProjectNode,
 } from '../../config/project-graph';
+import { FsTree } from '../../generators/tree';
+import { hashArray } from '../../native';
 import { createProjectFileMapUsingProjectGraph } from '../../project-graph/file-map-utils';
+import {
+  runPostTasksExecution,
+  runPreTasksExecution,
+} from '../../project-graph/plugins/tasks-execution-hooks';
 import { createProjectGraphAsync } from '../../project-graph/project-graph';
-import { runCommand } from '../../tasks-runner/run-command';
+import { TaskResult } from '../../tasks-runner/life-cycle';
+import { runCommandForTasks } from '../../tasks-runner/run-command';
 import {
   createOverrides,
   readGraphFileFromGraphArg,
 } from '../../utils/command-line-utils';
+import { handleErrors } from '../../utils/handle-errors';
 import { output } from '../../utils/output';
-import { handleErrors } from '../../utils/params';
 import { projectHasTarget } from '../../utils/project-graph-utils';
+import { workspaceRoot } from '../../utils/workspace-root';
 import { generateGraph } from '../graph/graph';
 import { PublishOptions } from './command-object';
 import {
   createNxReleaseConfig,
   handleNxReleaseConfigError,
 } from './config/config';
-import { filterReleaseGroups } from './config/filter-release-groups';
+import { deepMergeJson } from './config/deep-merge-json';
+import { printConfigAndExit } from './utils/print-config';
+import { createReleaseGraph } from './utils/release-graph';
+
+export interface PublishProjectsResult {
+  [projectName: string]: {
+    code: number;
+  };
+}
 
 export const releasePublishCLIHandler = (args: PublishOptions) =>
-  handleErrors(args.verbose, () => releasePublish(args, true));
+  handleErrors(args.verbose, async () => {
+    const publishProjectsResult: PublishProjectsResult = await createAPI(
+      {},
+      false
+    )(args);
+    // If all projects are published successfully, return 0, otherwise return 1
+    return Object.values(publishProjectsResult).every(
+      (result) => result.code === 0
+    )
+      ? 0
+      : 1;
+  });
 
-/**
- * NOTE: This function is also exported for programmatic usage and forms part of the public API
- * of Nx. We intentionally do not wrap the implementation with handleErrors because users need
- * to have control over their own error handling when using the API.
- */
-export async function releasePublish(
-  args: PublishOptions,
-  isCLI = false
-): Promise<number> {
+export function createAPI(
+  overrideReleaseConfig: NxReleaseConfiguration,
+  ignoreNxJsonConfig: boolean
+) {
   /**
-   * When used via the CLI, the args object will contain a __overrides_unparsed__ property that is
-   * important for invoking the relevant executor behind the scenes.
-   *
-   * We intentionally do not include that in the function signature, however, so as not to cause
-   * confusing errors for programmatic consumers of this function.
+   * NOTE: This function is also exported for programmatic usage and forms part of the public API
+   * of Nx. We intentionally do not wrap the implementation with handleErrors because users need
+   * to have control over their own error handling when using the API.
    */
-  const _args = args as PublishOptions & { __overrides_unparsed__: string[] };
-
-  const projectGraph = await createProjectGraphAsync({ exitOnError: true });
-  const nxJson = readNxJson();
-
-  if (_args.verbose) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
-
-  // Apply default configuration to any optional user configuration
-  const { error: configError, nxReleaseConfig } = await createNxReleaseConfig(
-    projectGraph,
-    await createProjectFileMapUsingProjectGraph(projectGraph),
-    nxJson.release
-  );
-  if (configError) {
-    return await handleNxReleaseConfigError(configError);
-  }
-
-  const {
-    error: filterError,
-    releaseGroups,
-    releaseGroupToFilteredProjects,
-  } = filterReleaseGroups(
-    projectGraph,
-    nxReleaseConfig,
-    _args.projects,
-    _args.groups
-  );
-  if (filterError) {
-    output.error(filterError);
-    process.exit(1);
-  }
-
-  /**
-   * If the user is filtering to a subset of projects or groups, we should not run the publish task
-   * for dependencies, because that could cause projects outset of the filtered set to be published.
-   */
-  const shouldExcludeTaskDependencies =
-    _args.projects?.length > 0 || _args.groups?.length > 0;
-
-  let overallExitStatus = 0;
-
-  if (args.projects?.length) {
+  return async function releasePublish(
+    args: PublishOptions
+  ): Promise<PublishProjectsResult> {
     /**
-     * Run publishing for all remaining release groups and filtered projects within them
+     * When used via the CLI, the args object will contain a __overrides_unparsed__ property that is
+     * important for invoking the relevant executor behind the scenes.
+     *
+     * We intentionally do not include that in the function signature, however, so as not to cause
+     * confusing errors for programmatic consumers of this function.
      */
-    for (const releaseGroup of releaseGroups) {
-      const status = await runPublishOnProjects(
+    const _args = args as PublishOptions & { __overrides_unparsed__: string[] };
+
+    const projectGraph = await createProjectGraphAsync({ exitOnError: true });
+    const nxJson = readNxJson();
+    const overriddenConfig = overrideReleaseConfig ?? {};
+    const userProvidedReleaseConfig = ignoreNxJsonConfig
+      ? overriddenConfig
+      : deepMergeJson(nxJson.release ?? {}, overriddenConfig);
+
+    // Apply default configuration to any optional user configuration
+    const { error: configError, nxReleaseConfig } = await createNxReleaseConfig(
+      projectGraph,
+      await createProjectFileMapUsingProjectGraph(projectGraph),
+      userProvidedReleaseConfig
+    );
+    if (configError) {
+      return await handleNxReleaseConfigError(configError);
+    }
+    // --print-config exits directly as it is not designed to be combined with any other programmatic operations
+    if (args.printConfig) {
+      return printConfigAndExit({
+        userProvidedReleaseConfig,
+        nxReleaseConfig,
+        isDebug: args.printConfig === 'debug',
+      });
+    }
+
+    // Use pre-built release graph if provided, otherwise create a new one
+    const releaseGraph =
+      args.releaseGraph ||
+      (await createReleaseGraph({
+        // Only build the tree if no existing graph, it's only needed for this
+        tree: new FsTree(workspaceRoot, args.verbose),
+        projectGraph,
+        nxReleaseConfig,
+        filters: {
+          projects: _args.projects,
+          groups: _args.groups,
+        },
+        firstRelease: args.firstRelease,
+        verbose: args.verbose,
+        // Publish doesn't need to resolve current versions during graph construction
+        skipVersionResolution: true,
+      }));
+
+    // Display filter log if filters were applied
+    if (
+      releaseGraph.filterLog &&
+      process.env.NX_RELEASE_INTERNAL_SUPPRESS_FILTER_LOG !== 'true'
+    ) {
+      output.note(releaseGraph.filterLog);
+    }
+
+    /**
+     * If the user is filtering to a subset of projects or groups, we should not run the publish task
+     * for dependencies, because that could cause projects outset of the filtered set to be published.
+     */
+    const shouldExcludeTaskDependencies =
+      _args.projects?.length > 0 ||
+      _args.groups?.length > 0 ||
+      args.excludeTaskDependencies;
+
+    let overallPublishProjectsResult: PublishProjectsResult = {};
+
+    if (args.projects?.length) {
+      /**
+       * Run publishing for all remaining release groups and filtered projects within them
+       * in topological order
+       */
+      for (const releaseGroupName of releaseGraph.sortedReleaseGroups) {
+        const releaseGroup = releaseGraph.releaseGroups.find(
+          (g) => g.name === releaseGroupName
+        );
+        if (!releaseGroup) {
+          // Release group was filtered out, skip
+          continue;
+        }
+        const publishProjectsResult = await runPublishOnProjects(
+          _args,
+          projectGraph,
+          nxJson,
+          Array.from(
+            releaseGraph.releaseGroupToFilteredProjects.get(releaseGroup)
+          ),
+          {
+            excludeTaskDependencies: shouldExcludeTaskDependencies,
+            loadDotEnvFiles: process.env.NX_LOAD_DOT_ENV_FILES !== 'false',
+          }
+        );
+        overallPublishProjectsResult = {
+          ...overallPublishProjectsResult,
+          ...publishProjectsResult,
+        };
+      }
+
+      return overallPublishProjectsResult;
+    }
+
+    /**
+     * Run publishing for all remaining release groups
+     */
+    for (const releaseGroupName of releaseGraph.sortedReleaseGroups) {
+      const releaseGroup = releaseGraph.releaseGroups.find(
+        (g) => g.name === releaseGroupName
+      );
+      if (!releaseGroup) {
+        // Release group was filtered out, skip
+        continue;
+      }
+      const publishProjectsResult = await runPublishOnProjects(
         _args,
         projectGraph,
         nxJson,
-        Array.from(releaseGroupToFilteredProjects.get(releaseGroup)),
-        isCLI,
+        releaseGroup.projects,
         {
           excludeTaskDependencies: shouldExcludeTaskDependencies,
           loadDotEnvFiles: process.env.NX_LOAD_DOT_ENV_FILES !== 'false',
         }
       );
-      if (status !== 0) {
-        overallExitStatus = status || 1;
-      }
+      overallPublishProjectsResult = {
+        ...overallPublishProjectsResult,
+        ...publishProjectsResult,
+      };
     }
 
-    return overallExitStatus;
-  }
-
-  /**
-   * Run publishing for all remaining release groups
-   */
-  for (const releaseGroup of releaseGroups) {
-    const status = await runPublishOnProjects(
-      _args,
-      projectGraph,
-      nxJson,
-      releaseGroup.projects,
-      isCLI,
-      {
-        excludeTaskDependencies: shouldExcludeTaskDependencies,
-        loadDotEnvFiles: process.env.NX_LOAD_DOT_ENV_FILES !== 'false',
-      }
-    );
-    if (status !== 0) {
-      overallExitStatus = status || 1;
-    }
-  }
-
-  return overallExitStatus;
+    return overallPublishProjectsResult;
+  };
 }
 
 async function runPublishOnProjects(
@@ -135,12 +208,11 @@ async function runPublishOnProjects(
   projectGraph: ProjectGraph,
   nxJson: NxJsonConfiguration,
   projectNames: string[],
-  isCLI: boolean,
   extraOptions: {
     excludeTaskDependencies: boolean;
     loadDotEnvFiles: boolean;
   }
-): Promise<number> {
+): Promise<PublishProjectsResult> {
   const projectsToRun: ProjectGraphProjectNode[] = projectNames.map(
     (projectName) => projectGraph.nodes[projectName]
   );
@@ -156,6 +228,9 @@ async function runPublishOnProjects(
   if (args.otp) {
     overrides.otp = args.otp;
   }
+  if (args.access) {
+    overrides.access = args.access;
+  }
   if (args.dryRun) {
     overrides.dryRun = args.dryRun;
     /**
@@ -165,12 +240,17 @@ async function runPublishOnProjects(
     process.env.NX_DRY_RUN = 'true';
   }
 
-  if (args.verbose) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
-
   if (args.firstRelease) {
     overrides.firstRelease = args.firstRelease;
+  }
+
+  /**
+   * If using the `nx release` command, or possibly via the programmatic API, versionData will be passed through from the version subcommand.
+   * Provide it automatically to the publish executor options with a clear namespace to avoid userland conflicts.
+   * It will be filtered out of the final terminal output lifecycle to avoid cluttering the terminal.
+   */
+  if (args.versionData) {
+    overrides.nxReleaseVersionData = args.versionData;
   }
 
   const requiredTargetName = 'nx-release-publish';
@@ -195,7 +275,7 @@ async function runPublishOnProjects(
       },
       projectNamesWithTarget
     );
-    return 0;
+    return {};
   }
 
   const projectsWithTarget = projectsToRun.filter((project) =>
@@ -207,20 +287,37 @@ async function runPublishOnProjects(
       `Based on your config, the following projects were matched for publishing but do not have the "${requiredTargetName}" target specified:\n${[
         ...projectsToRun.map((p) => `- ${p.name}`),
         '',
-        `This is usually caused by not having an appropriate plugin, such as "@nx/js" installed, which will add the appropriate "${requiredTargetName}" target for you automatically.`,
+        `This is usually caused by either`,
+        `- not having an appropriate plugin, such as "@nx/js" installed, which will add the appropriate "${requiredTargetName}" target for you automatically`,
+        `- having "private": true set in your package.json, which prevents the target from being created`,
       ].join('\n')}\n`
     );
   }
+  const id = hashArray([...process.argv, Date.now().toString()]);
+  await runPreTasksExecution({
+    id,
+    workspaceRoot,
+    nxJsonConfiguration: nxJson,
+    argv: process.argv,
+  });
+  const startTime = Date.now();
 
   /**
    * Run the relevant nx-release-publish executor on each of the selected projects.
+   * NOTE: Force TUI to be disabled for now.
    */
-  const status = await runCommand(
+  process.env.NX_TUI = 'false';
+  const { taskResults } = await runCommandForTasks(
     projectsWithTarget,
     projectGraph,
     { nxJson },
     {
       targets: [requiredTargetName],
+      // Everything this command reports — the registry, the tag, the
+      // package.json diff, the dry-run summary — is printed from inside the
+      // task, so the failures-only default would swallow all of it (under
+      // --dry-run every task succeeds by definition). An explicit
+      // --output-style still wins, since it comes in through the spread.
       outputStyle: 'static',
       ...(args as any),
       // It is possible for workspaces to have circular dependencies between packages and still release them to a registry
@@ -231,17 +328,92 @@ async function runPublishOnProjects(
     {},
     extraOptions
   );
+  const endTime = Date.now();
 
-  if (status !== 0) {
-    // In order to not add noise to the overall CLI output, do not throw an additional error
-    if (isCLI) {
-      return status;
-    }
-    // Throw an additional error for programmatic API usage
-    throw new Error(
-      'One or more of the selected projects could not be published'
-    );
+  const publishProjectsResult: PublishProjectsResult = {};
+  for (const taskData of Object.values(taskResults)) {
+    publishProjectsResult[taskData.task.target.project] = {
+      code: taskData.code,
+    };
   }
 
-  return 0;
+  // Check for EOTP errors and provide a helpful re-run command
+  const eotpFailedProjects = getEOTPFailedProjects(taskResults);
+  if (eotpFailedProjects.length > 0) {
+    output.warn({
+      title:
+        'One or more packages failed to publish because a valid OTP was not provided or has expired.',
+      bodyLines: [
+        'Affected projects:',
+        ...eotpFailedProjects.map((p) => `  - ${p}`),
+        '',
+        'You can provide a new OTP and re-run the publish step in isolation:',
+        '',
+        `  ${buildRerunCommand(args)}`,
+      ],
+    });
+  }
+
+  await runPostTasksExecution({
+    id,
+    taskResults,
+    workspaceRoot,
+    nxJsonConfiguration: nxJson,
+    argv: process.argv,
+    startTime,
+    endTime,
+  });
+
+  return publishProjectsResult;
+}
+
+/**
+ * Return project names for failed tasks that contain EOTP error indicators in their terminal output.
+ * npm returns error code "EOTP" in JSON output.
+ * pnpm returns "EOTP" in error messages.
+ * Both will appear in the captured terminal output.
+ */
+function getEOTPFailedProjects(
+  taskResults: Record<string, TaskResult>
+): string[] {
+  return Object.values(taskResults)
+    .filter(
+      (result) =>
+        result.code !== 0 &&
+        result.terminalOutput &&
+        (result.terminalOutput.includes('EOTP') ||
+          result.terminalOutput.includes('one-time pass') ||
+          result.terminalOutput.includes('one-time password'))
+    )
+    .map((result) => result.task.target.project);
+}
+
+function buildRerunCommand(args: PublishOptions): string {
+  const parts = ['nx release publish'];
+
+  if (args.registry) {
+    parts.push(`--registry=${args.registry}`);
+  }
+  if (args.tag) {
+    parts.push(`--tag=${args.tag}`);
+  }
+  if (args.access) {
+    parts.push(`--access=${args.access}`);
+  }
+  if (args.projects?.length) {
+    parts.push(`--projects=${args.projects.join(',')}`);
+  }
+  if (args.groups?.length) {
+    parts.push(`--groups=${args.groups.join(',')}`);
+  }
+  if (args.firstRelease) {
+    parts.push('--first-release');
+  }
+  if (args.verbose) {
+    parts.push('--verbose');
+  }
+
+  parts.push('--otp=REPLACE_WITH_NEW_OTP');
+
+  return parts.join(' ');
 }

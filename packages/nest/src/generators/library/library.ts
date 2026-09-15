@@ -1,6 +1,18 @@
 import type { GeneratorCallback, Tree } from '@nx/devkit';
-import { formatFiles, runTasksInSerial } from '@nx/devkit';
+import { logShowProjectCommand } from '@nx/devkit/internal';
+import {
+  formatFiles,
+  joinPathFragments,
+  logger,
+  readJson,
+  runTasksInSerial,
+  writeJson,
+} from '@nx/devkit';
 import { libraryGenerator as jsLibraryGenerator } from '@nx/js';
+import { assertSupportedNestJsVersion } from '../../utils/assert-supported-nestjs-version';
+import { assertVitestSupported } from '../../utils/assert-vitest-supported';
+import { ensureDependencies } from '../../utils/ensure-dependencies';
+import initGenerator from '../init/init';
 import {
   addExportsToBarrelFile,
   addProject,
@@ -10,10 +22,7 @@ import {
   toJsLibraryGeneratorOptions,
   updateTsConfig,
 } from './lib';
-import type { LibraryGeneratorOptions } from './schema';
-import initGenerator from '../init/init';
-import { logShowProjectCommand } from '@nx/devkit/src/utils/log-show-project-command';
-import { ensureDependencies } from '../../utils/ensure-dependencies';
+import type { LibraryGeneratorOptions, NormalizedOptions } from './schema';
 
 export async function libraryGenerator(
   tree: Tree,
@@ -21,7 +30,7 @@ export async function libraryGenerator(
 ): Promise<GeneratorCallback> {
   return await libraryGeneratorInternal(tree, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
+    useProjectJson: true,
     ...rawOptions,
   });
 }
@@ -30,8 +39,19 @@ export async function libraryGeneratorInternal(
   tree: Tree,
   rawOptions: LibraryGeneratorOptions
 ): Promise<GeneratorCallback> {
+  assertSupportedNestJsVersion(tree);
+
   const options = await normalizeOptions(tree, rawOptions);
-  await jsLibraryGenerator(tree, toJsLibraryGeneratorOptions(options));
+
+  if (options.unitTestRunner === 'vitest') {
+    assertVitestSupported(tree);
+  }
+
+  const jsLibraryTask = await jsLibraryGenerator(
+    tree,
+    toJsLibraryGeneratorOptions(options)
+  );
+  updatePackageJson(tree, options);
   const initTask = await initGenerator(tree, rawOptions);
   const depsTask = ensureDependencies(tree);
   deleteFiles(tree, options);
@@ -46,6 +66,7 @@ export async function libraryGeneratorInternal(
 
   return runTasksInSerial(
     ...[
+      jsLibraryTask,
       initTask,
       depsTask,
       () => {
@@ -56,3 +77,23 @@ export async function libraryGeneratorInternal(
 }
 
 export default libraryGenerator;
+
+function updatePackageJson(tree: Tree, options: NormalizedOptions) {
+  const packageJsonPath = joinPathFragments(
+    options.projectRoot,
+    'package.json'
+  );
+  if (!tree.exists(packageJsonPath)) {
+    return;
+  }
+
+  const packageJson = readJson(tree, packageJsonPath);
+
+  if (packageJson.type === 'module') {
+    // The @nx/js:lib generator can set the type to 'module' which would
+    // potentially break consumers of the library.
+    delete packageJson.type;
+  }
+
+  writeJson(tree, packageJsonPath, packageJson);
+}

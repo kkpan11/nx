@@ -8,5 +8,10 @@ export interface ViteConfigurationGeneratorSchema {
   includeLib?: boolean;
   skipFormat?: boolean;
   testEnvironment?: 'node' | 'jsdom' | 'happy-dom' | 'edge-runtime' | string;
+  port?: number;
+  // Internal options
   addPlugin?: boolean;
+  projectType?: 'application' | 'library';
+  previewPort?: number;
+  useViteV7?: boolean;
 }

@@ -12,16 +12,10 @@ import {
   type Target,
 } from '@nx/devkit';
 import type { AssetGlobPattern } from '@nx/webpack';
-
-export interface SvgrOptions {
-  svgo?: boolean;
-  titleProp?: boolean;
-  ref?: boolean;
-}
+import { satisfies } from 'semver';
 
 export interface WithNxOptions extends NextConfig {
   nx?: {
-    svgr?: boolean | SvgrOptions;
     babelUpwardRootMode?: boolean;
     fileReplacements?: { replace: string; with: string }[];
     assets?: AssetGlobPattern[];
@@ -92,7 +86,7 @@ function getNxContext(
       parseTargetString(targetOptions.devServerTarget, partialExecutorContext)
     );
   } else if (targetOptions.buildTarget) {
-    // Executors such as @nx/next:server or @nx/next:export define the buildTarget option.
+    // Executors such as @nx/next:server define the buildTarget option.
     return getNxContext(
       graph,
       parseTargetString(targetOptions.buildTarget, partialExecutorContext)
@@ -118,15 +112,21 @@ function withNx(
   context: WithNxContext = getWithNxContext()
 ): NextConfigFn {
   return async (phase: string) => {
-    const { PHASE_PRODUCTION_SERVER, PHASE_DEVELOPMENT_SERVER } = await import(
-      'next/constants'
-    );
-    // Two scenarios where we want to skip graph creation:
+    const {
+      PHASE_PRODUCTION_SERVER,
+      PHASE_DEVELOPMENT_SERVER,
+    }: typeof import('next/constants') = require('next/constants');
+    // Three scenarios where we want to skip graph creation:
     // 1. Running production server means the build is already done so we just need to start the Next.js server.
     // 2. During graph creation (i.e. create nodes), we won't have a graph to read, and it is not needed anyway since it's a build-time concern.
+    // 3. Running outside of Nx, we don't have a graph to read.
     //
     // NOTE: Avoid any `require(...)` or `import(...)` statements here. Development dependencies are not available at production runtime.
-    if (PHASE_PRODUCTION_SERVER === phase || global.NX_GRAPH_CREATION) {
+    if (
+      PHASE_PRODUCTION_SERVER === phase ||
+      global.NX_GRAPH_CREATION ||
+      !process.env.NX_TASK_TARGET_TARGET
+    ) {
       const { nx, ...validNextConfig } = _nextConfig;
       return {
         distDir: '.next',
@@ -134,21 +134,24 @@ function withNx(
       };
     } else {
       const {
-        createProjectGraphAsync,
+        readCachedProjectGraph,
         joinPathFragments,
         offsetFromRoot,
         workspaceRoot,
       } = require('@nx/devkit');
 
-      let graph: ProjectGraph;
-      try {
-        graph = await createProjectGraphAsync();
-      } catch (e) {
-        throw new Error(
-          'Could not create project graph. Please ensure that your workspace is valid.',
-          { cause: e }
-        );
-      }
+      // Resolved from the workspace (not bundled) so the deprecation warning is
+      // not inlined into production builds. Reached only on the active Nx-task
+      // path; the production-server phase returns above.
+      const { warnWithNxDeprecation } = require(
+        require.resolve('@nx/next/src/utils/deprecation', {
+          paths: [workspaceRoot],
+        })
+      ) as typeof import('../src/utils/deprecation');
+      warnWithNxDeprecation();
+
+      // Since this is invoked by an Nx task, the graph is already cached.
+      const graph: ProjectGraph = readCachedProjectGraph();
 
       const originalTarget = {
         project: process.env.NX_TASK_TARGET_PROJECT,
@@ -173,7 +176,7 @@ function withNx(
         const { readTsConfigPaths } = require('@nx/js');
         const {
           findAllProjectNodeDependencies,
-        } = require('nx/src/utils/project-graph-utils');
+        } = require('@nx/devkit/internal');
         const paths = readTsConfigPaths();
         const deps = findAllProjectNodeDependencies(project);
         nextConfig.transpilePackages ??= [];
@@ -212,7 +215,11 @@ function withNx(
 
       const userWebpackConfig = nextConfig.webpack;
 
-      const { createWebpackConfig } = require('@nx/next/src/utils/config');
+      const { createWebpackConfig } = require(
+        require.resolve('@nx/next/src/utils/config', {
+          paths: [workspaceRoot],
+        })
+      ) as typeof import('@nx/next/src/utils/config');
       // If we have file replacements or assets, inside of the next config we pass the workspaceRoot as a join of the workspaceRoot and the projectDirectory
       // Because the file replacements and assets are relative to the projectRoot, not the workspaceRoot
       nextConfig.webpack = (a, b) =>
@@ -220,8 +227,9 @@ function withNx(
           _nextConfig.nx?.fileReplacements
             ? joinPathFragments(workspaceRoot, projectDirectory)
             : workspaceRoot,
-          _nextConfig.nx?.assets || options.assets,
-          _nextConfig.nx?.fileReplacements || options.fileReplacements
+          projectDirectory,
+          _nextConfig.nx?.fileReplacements || options.fileReplacements,
+          _nextConfig.nx?.assets || options.assets
         )(userWebpackConfig ? userWebpackConfig(a, b) : a, b);
 
       return nextConfig;
@@ -239,13 +247,33 @@ export function getNextConfig(
   }
   const userWebpack = nextConfig.webpack || ((x) => x);
   const { nx, ...validNextConfig } = nextConfig;
-  return {
-    eslint: {
+
+  const baseConfig: NextConfig = {
+    ...validNextConfig,
+  };
+
+  const nextJsVersion = require('next/package.json')?.version ?? '16.0.1';
+  if (satisfies(nextJsVersion, '<16.0.0', { includePrerelease: true })) {
+    baseConfig.eslint = {
       ignoreDuringBuilds: true,
       ...(validNextConfig.eslint ?? {}),
-    },
-    ...validNextConfig,
+    };
+  }
+
+  return {
+    ...baseConfig,
     webpack: (config, options) => {
+      /**
+       * To support ESM library export, we need to ensure the extensionAlias contains both `.js` and `.ts` extensions.
+       * This is because Webpack uses the `extensionAlias` to resolve the correct file extension when importing modules.
+       */
+      config.resolve.extensionAlias = {
+        ...(config.resolve.extensionAlias || {}),
+        '.js': ['.ts', '.tsx', '.js', '.jsx'],
+        '.mjs': ['.mts', '.mjs'],
+        '.cjs': ['.cts', '.cjs'],
+        '.jsx': ['.tsx', '.jsx'],
+      };
       /*
        * Update babel to support our monorepo setup.
        * The 'upward' mode allows the root babel.config.json and per-project .babelrc files to be picked up.
@@ -336,67 +364,6 @@ export function getNextConfig(
           ? nextGlobalCssLoader.issuer.and.concat(includes)
           : includes;
         delete nextGlobalCssLoader.issuer.and;
-      }
-
-      /**
-       * 5. Add SVGR support if option is on.
-       */
-
-      // Default SVGR support to be on for projects.
-      if (nx?.svgr !== false || typeof nx?.svgr === 'object') {
-        const defaultSvgrOptions = {
-          svgo: false,
-          titleProp: true,
-          ref: true,
-        };
-
-        const svgrOptions =
-          typeof nx?.svgr === 'object' ? nx.svgr : defaultSvgrOptions;
-        // TODO(v20): Remove file-loader and use `?react` querystring to differentiate between asset and SVGR.
-        // It should be:
-        // use: [{
-        //   test: /\.svg$/i,
-        //   type: 'asset',
-        //   resourceQuery: /react/, // *.svg?react
-        // },
-        // {
-        //   test: /\.svg$/i,
-        //   issuer: /\.[jt]sx?$/,
-        //   resourceQuery: { not: [/react/] }, // exclude react component if *.svg?react
-        //   use: ['@svgr/webpack'],
-        // }],
-        // See:
-        // - SVGR: https://react-svgr.com/docs/webpack/#use-svgr-and-asset-svg-in-the-same-project
-        // - Vite: https://www.npmjs.com/package/vite-plugin-svgr
-        // - Rsbuild: https://github.com/web-infra-dev/rsbuild/pull/1783
-        // Note: We also need a migration for any projects that are using SVGR to convert
-        //       `import { ReactComponent as X } from './x.svg` to
-        //       `import X from './x.svg?react';
-        config.module.rules.push({
-          test: /\.svg$/,
-          issuer: { not: /\.(css|scss|sass)$/ },
-          resourceQuery: {
-            not: [
-              /__next_metadata__/,
-              /__next_metadata_route__/,
-              /__next_metadata_image_meta__/,
-            ],
-          },
-          use: [
-            {
-              loader: require.resolve('@svgr/webpack'),
-              options: svgrOptions,
-            },
-            {
-              loader: require.resolve('file-loader'),
-              options: {
-                // Next.js hard-codes assets to load from "static/media".
-                // See: https://github.com/vercel/next.js/blob/53d017d/packages/next/src/build/webpack-config.ts#L1993
-                name: 'static/media/[name].[hash].[ext]',
-              },
-            },
-          ],
-        });
       }
 
       return userWebpack(config, options);

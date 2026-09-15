@@ -4,9 +4,10 @@ import {
   newProject,
   runCLI,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
-describe('Next.js Storybook', () => {
+// TODO(Colum): Re-enable this test once storybook releases a version with: https://github.com/storybookjs/storybook/pull/32306
+xdescribe('Next.js Storybook', () => {
   const appName = uniq('app');
   beforeAll(() => {
     newProject({
@@ -15,10 +16,10 @@ describe('Next.js Storybook', () => {
       packages: ['@nx/next', '@nx/react'],
     });
     runCLI(
-      `generate @nx/next:app ${appName} --e2eTestRunner=none --project-name-and-root-format=as-provided --no-interactive`
+      `generate @nx/next:app ${appName} --e2eTestRunner=none --no-interactive`
     );
     runCLI(
-      `generate @nx/next:component foo --directory=${appName}/components/foo --nameAndDirectoryFormat=as-provided --no-interactive`
+      `generate @nx/next:component ${appName}/components/foo/foo --no-interactive`
     );
   });
 

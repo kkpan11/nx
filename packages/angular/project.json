@@ -5,70 +5,20 @@
   "projectType": "library",
   "targets": {
     "build-ng": {
-      "dependsOn": ["build-base"],
+      "dependsOn": ["build-base", "typecheck"],
       "executor": "@nx/angular:package",
       "options": {
         "project": "packages/angular/ng-package.json",
         "tsConfig": "packages/angular/tsconfig.lib.runtime.json"
       },
-      "outputs": ["{workspaceRoot}/build/packages/angular"]
-    },
-    "build-base": {
-      "executor": "@nx/js:tsc",
-      "options": {
-        "assets": [
-          {
-            "input": "packages/angular",
-            "glob": "**/files/**",
-            "output": "/"
-          },
-          {
-            "input": "packages/angular",
-            "glob": "**/creator-files/**",
-            "output": "/"
-          },
-          {
-            "input": "packages/angular",
-            "glob": "**/files/**/.gitkeep",
-            "output": "/"
-          },
-          {
-            "input": "packages/angular",
-            "glob": "**/*.json",
-            "ignore": ["**/tsconfig*.json", "project.json", ".eslintrc.json"],
-            "output": "/"
-          },
-          {
-            "input": "packages/angular",
-            "glob": "**/*.js",
-            "ignore": ["**/jest.config.js"],
-            "output": "/"
-          },
-          {
-            "input": "packages/angular",
-            "glob": "**/*.d.ts",
-            "output": "/"
-          },
-          {
-            "input": "",
-            "glob": "LICENSE",
-            "output": "/"
-          }
-        ]
-      }
+      "outputs": ["{projectRoot}/dist"]
     },
     "build": {
-      "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/build/packages/angular"],
-      "dependsOn": ["build-ng", "build-base", "^build"],
-      "options": {
-        "command": "node ./scripts/copy-readme.js angular",
-        "parallel": false
-      }
-    },
-    "add-extra-dependencies": {
-      "command": "node ./scripts/add-dependency-to-build.js angular @nrwl/angular"
+      "dependsOn": ["^build", "build-ng", "typecheck", "build-base"],
+      "outputs": ["{projectRoot}/README.md"],
+      "command": "node ./scripts/copy-readme.js angular packages/angular/readme-template.md packages/angular/README.md",
+      "inputs": ["copyReadme"]
     }
   },
-  "implicitDependencies": []
+  "implicitDependencies": ["vite", "storybook", "playwright", "jest"]
 }

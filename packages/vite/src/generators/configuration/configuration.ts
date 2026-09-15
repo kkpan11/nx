@@ -1,28 +1,42 @@
 import {
+  ensurePackage,
   formatFiles,
   GeneratorCallback,
   joinPathFragments,
+  readJson,
   readNxJson,
   readProjectConfiguration,
   runTasksInSerial,
   Tree,
   updateJson,
+  writeJson,
 } from '@nx/devkit';
-import { initGenerator as jsInitGenerator } from '@nx/js';
-
+import {
+  getUpdatedPackageJsonContent,
+  initGenerator as jsInitGenerator,
+} from '@nx/js';
+import {
+  getImportPath,
+  getDefinedCustomConditionName,
+  getProjectType,
+  isUsingTsSolutionSetup,
+} from '@nx/js/internal';
+import { join } from 'node:path/posix';
+import { ensureDependencies } from '../../utils/ensure-dependencies';
+import { assertSupportedViteVersion } from '../../utils/assert-supported-vite-version';
+import { warnViteExecutorGenerating } from '../../utils/deprecation';
 import {
   addBuildTarget,
-  addServeTarget,
   addPreviewTarget,
+  addServeTarget,
   createOrEditViteConfig,
   TargetFlags,
 } from '../../utils/generator-utils';
-
+import { nxVersion } from '../../utils/versions';
 import initGenerator from '../init/init';
-import vitestGenerator from '../vitest/vitest-generator';
-import { ViteConfigurationGeneratorSchema } from './schema';
-import { ensureDependencies } from '../../utils/ensure-dependencies';
 import { convertNonVite } from './lib/convert-non-vite';
+import { ViteConfigurationGeneratorSchema } from './schema';
+import { type PackageJson } from '@nx/devkit/internal';
 
 export function viteConfigurationGenerator(
   host: Tree,
@@ -38,12 +52,18 @@ export async function viteConfigurationGeneratorInternal(
   tree: Tree,
   schema: ViteConfigurationGeneratorSchema
 ) {
+  assertSupportedViteVersion(tree);
+
   const tasks: GeneratorCallback[] = [];
 
   const projectConfig = readProjectConfiguration(tree, schema.project);
   const { targets, root: projectRoot } = projectConfig;
 
-  const projectType = projectConfig.projectType ?? 'library';
+  const projectType = getProjectType(
+    tree,
+    projectConfig.root,
+    schema.projectType ?? projectConfig.projectType
+  );
 
   schema.includeLib ??= projectType === 'library';
 
@@ -67,7 +87,11 @@ export async function viteConfigurationGeneratorInternal(
     tsConfigName: projectRoot === '.' ? 'tsconfig.json' : 'tsconfig.base.json',
   });
   tasks.push(jsInitTask);
-  const initTask = await initGenerator(tree, { ...schema, skipFormat: true });
+  const initTask = await initGenerator(tree, {
+    ...schema,
+    projectRoot,
+    skipFormat: true,
+  });
   tasks.push(initTask);
   tasks.push(ensureDependencies(tree, schema));
 
@@ -84,6 +108,15 @@ export async function viteConfigurationGeneratorInternal(
   );
 
   if (!hasPlugin) {
+    const willScaffoldExecutorTargets =
+      !projectAlreadyHasViteTargets.build ||
+      (!schema.includeLib &&
+        (!projectAlreadyHasViteTargets.serve ||
+          !projectAlreadyHasViteTargets.preview));
+    if (willScaffoldExecutorTargets) {
+      warnViteExecutorGenerating();
+    }
+
     if (!projectAlreadyHasViteTargets.build) {
       addBuildTarget(tree, schema, 'build');
     }
@@ -103,20 +136,10 @@ export async function viteConfigurationGeneratorInternal(
       tree,
       joinPathFragments(projectRoot, 'tsconfig.lib.json'),
       (json) => {
-        if (!json.compilerOptions) {
-          json.compilerOptions = {};
-        }
-        if (!json.compilerOptions.types) {
-          json.compilerOptions.types = [];
-        }
+        json.compilerOptions ??= {};
+        json.compilerOptions.types ??= [];
         if (!json.compilerOptions.types.includes('vite/client')) {
-          return {
-            ...json,
-            compilerOptions: {
-              ...json.compilerOptions,
-              types: [...json.compilerOptions.types, 'vite/client'],
-            },
-          };
+          json.compilerOptions.types.push('vite/client');
         }
         return json;
       }
@@ -133,7 +156,7 @@ export async function viteConfigurationGeneratorInternal(
           includeLib: schema.includeLib,
           includeVitest: schema.includeVitest,
           inSourceTests: schema.inSourceTests,
-          rollupOptionsExternal: [
+          rolldownOptionsExternal: [
             "'react'",
             "'react-dom'",
             "'react/jsx-runtime'",
@@ -144,17 +167,30 @@ export async function viteConfigurationGeneratorInternal(
               : `import react from '@vitejs/plugin-react'`,
           ],
           plugins: ['react()'],
+          port: schema.port,
+          useEsmExtension: true,
         },
         false,
         undefined
       );
     } else {
-      createOrEditViteConfig(tree, schema, false, projectAlreadyHasViteTargets);
+      createOrEditViteConfig(
+        tree,
+        { ...schema, useEsmExtension: true },
+        false,
+        projectAlreadyHasViteTargets
+      );
     }
   }
 
   if (schema.includeVitest) {
-    const vitestTask = await vitestGenerator(tree, {
+    ensurePackage('@nx/vitest', nxVersion);
+    // CommonJS `require` instead of dynamic ESM `import` — `ensurePackage`
+    // exposes the temp install via `Module._initPaths`, which ESM ignores.
+    const {
+      configurationGenerator: vitestConfigurationGenerator,
+    }: typeof import('@nx/vitest/generators') = require('@nx/vitest/generators');
+    const vitestTask = await vitestConfigurationGenerator(tree, {
       project: schema.project,
       uiFramework: schema.uiFramework,
       inSourceTests: schema.inSourceTests,
@@ -163,8 +199,15 @@ export async function viteConfigurationGeneratorInternal(
       testTarget: 'test',
       skipFormat: true,
       addPlugin: schema.addPlugin,
+      compiler: schema.compiler,
+      projectType,
+      testEnvironment: schema.testEnvironment,
     });
     tasks.push(vitestTask);
+  }
+
+  if (isUsingTsSolutionSetup(tree)) {
+    updatePackageJson(tree, schema, projectType);
   }
 
   if (!schema.skipFormat) {
@@ -175,3 +218,47 @@ export async function viteConfigurationGeneratorInternal(
 }
 
 export default viteConfigurationGenerator;
+
+function updatePackageJson(
+  tree: Tree,
+  options: ViteConfigurationGeneratorSchema,
+  projectType: 'application' | 'library'
+) {
+  const project = readProjectConfiguration(tree, options.project);
+
+  const packageJsonPath = join(project.root, 'package.json');
+  let packageJson: PackageJson;
+  if (tree.exists(packageJsonPath)) {
+    packageJson = readJson(tree, packageJsonPath);
+  } else {
+    packageJson = {
+      name: getImportPath(tree, options.project),
+      version: '0.0.1',
+    };
+    if (getProjectType(tree, project.root, projectType) === 'application') {
+      packageJson.private = true;
+    }
+  }
+
+  if (projectType === 'library') {
+    // we always write/override the vite and project config with some set values,
+    // so we can rely on them
+    const main = join(project.root, 'src/index.ts');
+    // we configure the dts plugin with the entryRoot set to `src`
+    const rootDir = join(project.root, 'src');
+    const outputPath = joinPathFragments(project.root, 'dist');
+
+    packageJson = getUpdatedPackageJsonContent(packageJson, {
+      main,
+      outputPath,
+      projectRoot: project.root,
+      rootDir,
+      generateExportsField: true,
+      packageJsonPath,
+      format: ['esm'],
+      developmentConditionName: getDefinedCustomConditionName(tree),
+    });
+  }
+
+  writeJson(tree, packageJsonPath, packageJson);
+}

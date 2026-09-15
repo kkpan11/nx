@@ -1,4 +1,3 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type {
   ProjectGraphClientResponse,
@@ -9,8 +8,6 @@ export abstract class ExternalApi {
   abstract openProjectDetails(projectName: string, targetName?: string): void;
 
   abstract focusProject(projectName: string): void;
-
-  abstract toggleSelectProject(projectName: string): void;
 
   abstract selectAllProjects(): void;
 

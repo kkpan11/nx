@@ -7,6 +7,7 @@ import type {
   RollupWithNxPluginOptions,
 } from './with-nx-options';
 import { createEntryPoints } from '@nx/js';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
 
 export function normalizeOptions(
   projectRoot: string,
@@ -16,6 +17,12 @@ export function normalizeOptions(
   if (global.NX_GRAPH_CREATION)
     return options as NormalizedRollupWithNxPluginOptions;
   normalizeRelativePaths(projectRoot, options);
+
+  // New TS Solution already has a typecheck target
+  if (isUsingTsSolutionSetup()) {
+    options.skipTypeCheck = true;
+  }
+
   return {
     ...options,
     additionalEntryPoints: createEntryPoints(
@@ -35,6 +42,7 @@ export function normalizeOptions(
     javascriptEnabled: options.javascriptEnabled ?? false,
     skipTypeCheck: options.skipTypeCheck ?? false,
     skipTypeField: options.skipTypeField ?? false,
+    buildLibsFromSource: options.buildLibsFromSource ?? true,
   };
 }
 
@@ -91,11 +99,11 @@ function normalizeRelativePaths(
 ): void {
   for (const [fieldName, fieldValue] of Object.entries(options)) {
     if (isRelativePath(fieldValue)) {
-      options[fieldName] = join(projectRoot, fieldValue);
+      options[fieldName] = normalizePath(join(projectRoot, fieldValue));
     } else if (Array.isArray(fieldValue)) {
       for (let i = 0; i < fieldValue.length; i++) {
         if (isRelativePath(fieldValue[i])) {
-          fieldValue[i] = join(projectRoot, fieldValue[i]);
+          fieldValue[i] = normalizePath(join(projectRoot, fieldValue[i]));
         }
       }
     }

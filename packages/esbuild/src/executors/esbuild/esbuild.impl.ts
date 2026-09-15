@@ -1,6 +1,7 @@
-import * as chalk from 'chalk';
+import * as pc from 'picocolors';
 import type { ExecutorContext } from '@nx/devkit';
-import { cacheDir, joinPathFragments, logger, stripIndents } from '@nx/devkit';
+import { createAsyncIterable } from '@nx/devkit/internal';
+import { cacheDir, logger, stripIndents, writeJsonFile } from '@nx/devkit';
 import {
   copyAssets,
   copyPackageJson,
@@ -12,22 +13,24 @@ import {
 import * as esbuild from 'esbuild';
 import { normalizeOptions } from './lib/normalize';
 
-import { EsBuildExecutorOptions } from './schema';
-import { removeSync, writeJsonSync } from 'fs-extra';
-import { createAsyncIterable } from '@nx/devkit/src/utils/async-iterable';
+import {
+  EsBuildExecutorOptions,
+  NormalizedEsBuildExecutorOptions,
+} from './schema';
 import {
   buildEsbuildOptions,
   getOutExtension,
   getOutfile,
 } from './lib/build-esbuild-options';
 import { getExtraDependencies } from './lib/get-extra-dependencies';
-import { DependentBuildableProjectNode } from '@nx/js/src/utils/buildable-libs-utils';
-import { join } from 'path';
+import { DependentBuildableProjectNode } from '@nx/js/internal';
+import { deleteOutputDir } from '../../utils/fs';
+import { join, relative } from 'path';
 
-const BUILD_WATCH_FAILED = `[ ${chalk.red(
+const BUILD_WATCH_FAILED = `[ ${pc.red(
   'watch'
 )} ] build finished with errors (see above), watching for changes...`;
-const BUILD_WATCH_SUCCEEDED = `[ ${chalk.green(
+const BUILD_WATCH_SUCCEEDED = `[ ${pc.green(
   'watch'
 )} ] build succeeded, watching for changes...`;
 
@@ -42,8 +45,9 @@ export async function* esbuildExecutor(
 ) {
   process.env.NODE_ENV ??= context.configurationName ?? 'production';
 
-  const options = normalizeOptions(_options, context);
-  if (options.deleteOutputPath) removeSync(options.outputPath);
+  const options = await normalizeOptions(_options, context);
+  if (options.deleteOutputPath)
+    deleteOutputDir(context.root, options.outputPath);
 
   const assetsResult = await copyAssets(options, context);
 
@@ -82,10 +86,12 @@ export async function* esbuildExecutor(
 
     const cpjOptions: CopyPackageJsonOptions = {
       ...options,
+      format: options.format,
       // TODO(jack): make types generate with esbuild
       skipTypings: true,
       generateLockfile: true,
-      outputFileExtensionForCjs: getOutExtension('cjs', options),
+      outputFileExtensionForCjs: getOutExtension('cjs', options, context),
+      outputFileExtensionForEsm: getOutExtension('esm', options, context),
       excludeLibsInPackageJson: !options.thirdParty,
       // TODO(jack): Remove the need to pass updateBuildableProjectDepsInPackageJson option when overrideDependencies or extraDependencies are passed.
       // Add this back to fix a regression.
@@ -123,7 +129,10 @@ export async function* esbuildExecutor(
                       name: 'nx-watch-plugin',
                       setup(build: esbuild.PluginBuild) {
                         build.onEnd(async (result: esbuild.BuildResult) => {
-                          if (!options.skipTypeCheck) {
+                          if (
+                            !options.skipTypeCheck ||
+                            (options.isTsSolutionSetup && options.declaration)
+                          ) {
                             const { errors } = await runTypeCheck(
                               options,
                               context
@@ -156,21 +165,31 @@ export async function* esbuildExecutor(
             });
 
             await ctx.watch();
-            return () => ctx.dispose();
+            return async () => ctx.dispose();
           })
         );
 
         registerCleanupCallback(() => {
-          assetsResult?.stop();
-          packageJsonResult?.stop();
-          disposeFns.forEach((fn) => fn());
+          if (typeof assetsResult?.stop === 'function') assetsResult.stop();
+
+          if (typeof packageJsonResult?.stop === 'function') {
+            packageJsonResult.stop();
+          }
+
+          disposeFns.forEach(async (fn) => {
+            await fn();
+          });
+
           done(); // return from async iterable
         });
       }
     );
   } else {
     // Run type-checks first and bail if they don't pass.
-    if (!options.skipTypeCheck) {
+    if (
+      !options.skipTypeCheck ||
+      (options.isTsSolutionSetup && options.declaration)
+    ) {
       const { errors } = await runTypeCheck(options, context);
       if (errors.length > 0) {
         yield { success: false };
@@ -189,8 +208,8 @@ export async function* esbuildExecutor(
           options.format.length === 1
             ? 'meta.json'
             : `meta.${options.format[i]}.json`;
-        writeJsonSync(
-          joinPathFragments(options.outputPath, filename),
+        writeJsonFile(
+          join(context.root, options.outputPath, filename),
           buildResult.metafile
         );
       }
@@ -206,10 +225,11 @@ export async function* esbuildExecutor(
 }
 
 function getTypeCheckOptions(
-  options: EsBuildExecutorOptions,
+  options: NormalizedEsBuildExecutorOptions,
   context: ExecutorContext
 ) {
   const { watch, tsConfig, outputPath } = options;
+  const projectRoot = context.projectGraph.nodes[context.projectName].data.root;
 
   const typeCheckOptions: TypeCheckOptions = {
     ...(options.declaration
@@ -220,21 +240,29 @@ function getTypeCheckOptions(
       : {
           mode: 'noEmit',
         }),
-    tsConfigPath: tsConfig,
+    tsConfigPath: relative(process.cwd(), join(context.root, tsConfig)),
     workspaceRoot: context.root,
     rootDir: options.declarationRootDir ?? context.root,
+    projectRoot,
   };
 
   if (watch) {
     typeCheckOptions.incremental = true;
-    typeCheckOptions.cacheDir = cacheDir;
+    // Scope the incremental .tsbuildinfo per project (in its own subdir, not
+    // alongside Nx's cache files) so concurrent serves don't collide on a
+    // single file.
+    typeCheckOptions.cacheDir = join(cacheDir, 'esbuild', projectRoot);
+  }
+
+  if (options.isTsSolutionSetup && options.skipTypeCheck) {
+    typeCheckOptions.ignoreDiagnostics = true;
   }
 
   return typeCheckOptions;
 }
 
 async function runTypeCheck(
-  options: EsBuildExecutorOptions,
+  options: NormalizedEsBuildExecutorOptions,
   context: ExecutorContext
 ) {
   const { errors, warnings } = await _runTypeCheck(

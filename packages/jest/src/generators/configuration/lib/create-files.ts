@@ -4,8 +4,10 @@ import {
   readProjectConfiguration,
   Tree,
 } from '@nx/devkit';
+import { addSwcTestConfig, getTsConfigModuleResolution } from '@nx/js/internal';
 import { join } from 'path';
 import type { JestPresetExtension } from '../../../utils/config/config-file';
+import { getInstalledJestMajorVersion } from '../../../utils/versions';
 import { NormalizedJestProjectSchema } from '../schema';
 
 export function createFiles(
@@ -15,8 +17,14 @@ export function createFiles(
 ) {
   const projectConfig = readProjectConfiguration(tree, options.project);
 
-  const filesFolder =
-    options.setupFile === 'angular' ? '../files-angular' : '../files';
+  // Detect Jest 30+ to use .cts config files (CommonJS TypeScript)
+  // Treat null (version cannot be determined) as Jest 30+
+  const jestMajorVersion = getInstalledJestMajorVersion(tree);
+  const useCommonJsConfig = jestMajorVersion === null || jestMajorVersion >= 30;
+  const useJsSyntax = useCommonJsConfig || !!options.js;
+
+  const commonFilesFolder =
+    options.setupFile === 'angular' ? '../files-angular' : '../files/common';
 
   let transformer: string;
   let transformerOptions: string | null = null;
@@ -24,7 +32,9 @@ export function createFiles(
     transformer = 'babel-jest';
   } else if (options.compiler === 'swc') {
     transformer = '@swc/jest';
-    if (options.supportTsx) {
+    if (options.isTsSolutionSetup) {
+      transformerOptions = 'swcJestConfig';
+    } else if (options.supportTsx) {
       transformerOptions =
         "{ jsc: { parser: { syntax: 'typescript', tsx: true }, transform: { react: { runtime: 'automatic' } } } }";
     }
@@ -33,31 +43,94 @@ export function createFiles(
     transformerOptions = "{ tsconfig: '<rootDir>/tsconfig.spec.json' }";
   }
 
-  generateFiles(tree, join(__dirname, filesFolder), projectConfig.root, {
+  if (options.compiler === 'swc' && options.isTsSolutionSetup) {
+    addSwcTestConfig(tree, projectConfig.root, 'es6', options.supportTsx);
+  }
+
+  const projectRoot = options.rootProject
+    ? options.project
+    : projectConfig.root;
+  const rootOffset = offsetFromRoot(projectConfig.root);
+  // jsdom is the default in the nx preset
+  const testEnvironment =
+    options.testEnvironment === 'none' || options.testEnvironment === 'jsdom'
+      ? ''
+      : options.testEnvironment;
+  const coverageDirectory = options.isTsSolutionSetup
+    ? `test-output/jest/coverage`
+    : `${rootOffset}coverage/${projectRoot}`;
+
+  const usesTsJestModuleSettings =
+    !options.isTsSolutionSetup || transformer === 'ts-jest';
+  const moduleResolution = usesTsJestModuleSettings
+    ? getTsConfigModuleResolution(tree)
+    : undefined;
+  // ts-jest forces `moduleResolution: node10` on the CommonJS path for
+  // TypeScript < 6, and node10 ignores package `exports`. Transpiling per file
+  // keeps exports-only workspace libraries resolvable. See NXC-4591.
+  const isolatedModules =
+    options.isTsSolutionSetup &&
+    transformer === 'ts-jest' &&
+    moduleResolution === 'node10';
+
+  generateFiles(tree, join(__dirname, commonFilesFolder), projectConfig.root, {
     tmpl: '',
     ...options,
-    // jsdom is the default
-    testEnvironment:
-      options.testEnvironment === 'none' || options.testEnvironment === 'jsdom'
-        ? ''
-        : options.testEnvironment,
+    testEnvironment,
     transformer,
     transformerOptions,
-    js: !!options.js,
+    js: useJsSyntax,
     rootProject: options.rootProject,
-    projectRoot: options.rootProject ? options.project : projectConfig.root,
-    offsetFromRoot: offsetFromRoot(projectConfig.root),
+    projectRoot,
+    offsetFromRoot: rootOffset,
     presetExt,
+    coverageDirectory,
+    extendedConfig: options.isTsSolutionSetup
+      ? `${rootOffset}tsconfig.base.json`
+      : './tsconfig.json',
+    outDir: options.isTsSolutionSetup
+      ? `./out-tsc/jest`
+      : `${rootOffset}dist/out-tsc`,
+    module: usesTsJestModuleSettings ? 'commonjs' : undefined,
+    moduleResolution,
+    isolatedModules,
   });
+
+  if (options.setupFile !== 'angular') {
+    generateFiles(
+      tree,
+      join(
+        __dirname,
+        options.isTsSolutionSetup
+          ? '../files/jest-config-ts-solution'
+          : '../files/jest-config-non-ts-solution'
+      ),
+      projectConfig.root,
+      {
+        tmpl: '',
+        ...options,
+        testEnvironment,
+        transformer,
+        transformerOptions,
+        js: useJsSyntax,
+        rootProject: options.rootProject,
+        offsetFromRoot: rootOffset,
+        presetExt,
+        coverageDirectory,
+      }
+    );
+  }
 
   if (options.setupFile === 'none') {
     tree.delete(join(projectConfig.root, './src/test-setup.ts'));
   }
 
-  if (options.js) {
-    tree.rename(
-      join(projectConfig.root, 'jest.config.ts'),
-      join(projectConfig.root, 'jest.config.js')
-    );
+  const configPath = join(projectConfig.root, 'jest.config.ts');
+  if (tree.exists(configPath)) {
+    if (options.js) {
+      tree.rename(configPath, join(projectConfig.root, 'jest.config.js'));
+    } else if (useCommonJsConfig) {
+      tree.rename(configPath, join(projectConfig.root, 'jest.config.cts'));
+    }
   }
 }

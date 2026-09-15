@@ -1,0 +1,207 @@
+---
+title: Nx with Vite
+description: Use Vite with Nx to build and cache projects across your monorepo, with affected-only builds and distributed CI.
+sidebar:
+  label: Introduction
+weight: 2
+filter: 'type:References'
+---
+
+[Vite](https://vite.dev/) is a fast build tool and dev server for modern web apps. In a Vite monorepo, Nx runs and caches Vite tasks across every project so you only rebuild what changed.
+
+The `@nx/vite` plugin adds [inferred tasks](#configuration) and [project configuration generators](#setup).
+
+{% aside type="note" title="Vitest is now in @nx/vitest" %}
+Starting with Nx v22, Vitest support has moved to the dedicated [`@nx/vitest` plugin](/docs/technologies/test-tools/vitest/introduction). In Nx v21 and prior, `@nx/vite` contained what is now in `@nx/vitest`. If you are upgrading, see the [migration guide](/docs/kb/migrating-from-nx-vite).
+{% /aside %}
+
+You can use Vite with Nx without the plugin and still get [task caching](/docs/features/cache-task-results), [task orchestration](/docs/features/run-tasks), and the [project graph](/docs/features/explore-graph).
+
+## Requirements
+
+The `@nx/vite` plugin supports the following package versions.
+
+| Package | Supported Versions                         |
+| ------- | ------------------------------------------ |
+| `vite`  | ^5.0.0 \|\| ^6.0.0 \|\| ^7.0.0 \|\| ^8.0.0 |
+
+For supported `vitest` versions, see the [`@nx/vitest` plugin requirements](/docs/technologies/test-tools/vitest/introduction#requirements).
+
+[Nx generators](/docs/features/generate-code) install the latest supported versions automatically when scaffolding new projects.
+
+## Setup
+
+### Add to an existing workspace
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/vite` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+Using `nx add` helps ensure the correct version is installed and configured.
+{% /aside %}
+
+Install the plugin:
+
+```shell
+nx add @nx/vite
+```
+
+Configure an existing project to use Vite:
+
+```shell
+nx g @nx/vite:configuration --project=my-app
+```
+
+Verify inferred tasks in the project details view:
+
+```shell
+nx show project my-app --web
+```
+
+Replace `my-app` with your project name.
+
+### Create a new workspace
+
+Use a framework preset and keep the setup minimal:
+
+{% tabs syncKey="framework" %}
+{% tabitem label="React" %}
+
+```shell
+npx create-nx-workspace@latest --preset=react-standalone --bundler=vite
+```
+
+{% /tabitem %}
+{% tabitem label="Web" %}
+
+```shell
+npx create-nx-workspace@latest --preset=web-components --bundler=vite
+```
+
+{% /tabitem %}
+{% /tabs %}
+
+For the full framework workflows, see the [React introduction](/docs/technologies/react/introduction) or [Web app reference](/docs/reference/web).
+
+## Local development
+
+- `nx dev my-app` starts the Vite dev server for the project (same as the deprecated `serve` target).
+- `nx build my-app` creates a production build in `dist/` (controlled by `build.outDir` in `vite.config.*`) and registers the outputs for Nx caching.
+- `nx preview my-app` serves the production build using Vite preview (runs after `build`).
+- `nx serve-static my-app` serves the built assets from `dist/` for quick smoke tests.
+- `nx typecheck my-app` runs TypeScript typechecking when a `tsconfig*.json` exists in the project.
+
+Replace `my-app` with your project name.
+
+## Configuration
+
+### Configure task inference
+
+The `@nx/vite` plugin infers tasks by reading Vite config files. Any of the following config files will be picked up:
+
+- `vite.config.js`
+- `vite.config.ts`
+- `vite.config.mjs`
+- `vite.config.mts`
+- `vite.config.cjs`
+- `vite.config.cts`
+
+The configuration directory must also contain a `package.json` or `project.json`.
+
+Build tasks are only created when the project is buildable. A project is treated as buildable when any of the following are true:
+
+- `build.lib` is set in `vite.config.*`
+- `build.rollupOptions.input` or `build.rolldownOptions.input` is set (Vite 8 uses `rolldownOptions`)
+- `builder.buildApp` is set
+- an `index.html` file exists at the project root
+
+Dev, preview, and serve-static tasks are created for buildable projects. If you are in library mode (`build.lib`), these tasks are skipped unless you explicitly configure a dev server (e.g. `server.host` or `server.port`).
+
+Typecheck tasks are created when a `tsconfig*.json` file exists in the project.
+
+### Plugin options
+
+Configure `@nx/vite/plugin` in the `plugins` array in `nx.json`:
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/vite/plugin",
+      "options": {
+        "buildTargetName": "build",
+        "previewTargetName": "preview",
+        "serveTargetName": "serve",
+        "devTargetName": "dev",
+        "serveStaticTargetName": "serve-static",
+        "typecheckTargetName": "typecheck",
+        "compiler": "tsc",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    }
+  ]
+}
+```
+
+`serveTargetName` is deprecated; use `devTargetName` instead. `buildDepsTargetName` and `watchDepsTargetName` create tasks that build or watch project dependencies.
+
+| Option                  | Description                                        | Default        |
+| ----------------------- | -------------------------------------------------- | -------------- |
+| `buildTargetName`       | Name of the Vite build task                        | `build`        |
+| `previewTargetName`     | Name of the Vite preview task                      | `preview`      |
+| `serveTargetName`       | Name of the deprecated Vite serve task             | `serve`        |
+| `devTargetName`         | Name of the Vite dev server task                   | `dev`          |
+| `serveStaticTargetName` | Name of the static file server task                | `serve-static` |
+| `typecheckTargetName`   | Name of the typecheck task                         | `typecheck`    |
+| `compiler`              | Typecheck compiler: `tsc`, `tsgo`, or `vue-tsc`    | auto-detected  |
+| `buildDepsTargetName`   | Name of the build-deps task for dependency builds  | none           |
+| `watchDepsTargetName`   | Name of the watch-deps task for dependency watches | none           |
+
+The build and typecheck tasks are cached, with build outputs based on your Vite configuration.
+The dev, preview, and static-server tasks are continuous.
+When `compiler` is omitted, Nx uses `vue-tsc` when it detects a Vite Vue plugin and `tsc` otherwise.
+
+### Disable or scope inference
+
+To stop inference for a specific project, exclude its config file with `include`/`exclude` filters in `nx.json`:
+
+```json
+// nx.json
+{
+  "plugins": [
+    {
+      "plugin": "@nx/vite/plugin",
+      "exclude": ["apps/legacy/**"]
+    }
+  ]
+}
+```
+
+To avoid specific targets, adjust the config files that trigger them. For example, remove `tsconfig*.json` to stop `typecheck`, or use library mode (`build.lib`) to skip `dev`, `preview`, and `serve-static` unless you set dev server options.
+
+### View inferred tasks
+
+To see what tasks Nx inferred for a project, open the [project details view](/docs/concepts/mental-model#inferred-tasks) in Nx Console or run:
+
+```shell
+nx show project my-app --web
+```
+
+A [target defaults](/docs/reference/nx-json#target-defaults) `plugin` filter for these tasks must use the exact identifier `@nx/vite/plugin`.
+
+## Set up CI for your Vite monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).
+
+## What's next
+
+{% cardgrid %}
+{% linkcard title="Configure Vite" description="Set up Vite config, Nx-specific plugins, and recommended defaults." href="/docs/kb/configure-vite" /%}
+{% linkcard title="React with Nx" description="Learn the React workflow in an Nx monorepo and how Vite fits." href="/docs/technologies/react/introduction" /%}
+{% linkcard title="Vue with Nx" description="See the Vue workflow in Nx and where Vite is used." href="/docs/technologies/vue/introduction" /%}
+{% linkcard title="Vitest with Nx" description="Add and run Vitest tests, including CI-friendly patterns." href="/docs/technologies/test-tools/vitest/introduction" /%}
+{% linkcard title="Vite Generators" description="Browse all Vite generator options for configuration and testing." href="/docs/technologies/build-tools/vite/generators" /%}
+{% linkcard title="Vite Executors" description="Browse all Vite executor options for dev and build." href="/docs/technologies/build-tools/vite/executors" /%}
+{% /cardgrid %}

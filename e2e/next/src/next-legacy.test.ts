@@ -1,15 +1,17 @@
-import { capitalize } from '@nx/devkit/src/utils/string-utils';
-import { joinPathFragments } from '@nx/devkit';
+import { joinPathFragments, names } from '@nx/devkit';
 import {
   checkFilesExist,
   cleanupProject,
   detectPackageManager,
+  fileExists,
   getPackageManagerCommand,
   isNotWindows,
   killPort,
+  listFiles,
   newProject,
   packageManagerLockFile,
   readFile,
+  reservePort,
   runCLI,
   runCommand,
   runCommandUntil,
@@ -17,7 +19,7 @@ import {
   uniq,
   updateFile,
   updateJson,
-} from 'e2e/utils';
+} from '@nx/e2e-utils';
 import { mkdirSync, removeSync } from 'fs-extra';
 import { join } from 'path';
 import { checkApp } from './utils';
@@ -29,7 +31,7 @@ describe('@nx/next (legacy)', () => {
 
   beforeAll(() => {
     proj = newProject({
-      packages: ['@nx/next'],
+      packages: ['@nx/next', '@nx/jest', '@nx/eslint', '@nx/playwright'],
     });
     packageManager = detectPackageManager(tmpProjPath());
     originalEnv = process.env.NODE_ENV;
@@ -62,23 +64,25 @@ describe('@nx/next (legacy)', () => {
       env: { NX_ADD_PLUGINS: 'false' },
     });
 
-    updateFile(`apps/${appName}/redirects.js`, 'module.exports = [];');
+    updateFile(`${appName}/redirects.js`, 'module.exports = [];');
     updateFile(
-      `apps/${appName}/nested/headers.js`,
+      `${appName}/nested/headers.js`,
       `module.exports = require('./headers-2');`
     );
-    updateFile(`apps/${appName}/nested/headers-2.js`, 'module.exports = [];');
-    updateFile(`apps/${appName}/next.config.js`, (content) => {
+    updateFile(`${appName}/nested/headers-2.js`, 'module.exports = [];');
+    updateFile(`${appName}/next.config.js`, (content) => {
       return `const redirects = require('./redirects');\nconst headers = require('./nested/headers.js');\n${content}`;
     });
 
     runCLI(`build ${appName}`);
-    checkFilesExist(`dist/apps/${appName}/redirects.js`);
-    checkFilesExist(`dist/apps/${appName}/nested/headers.js`);
-    checkFilesExist(`dist/apps/${appName}/nested/headers-2.js`);
+    checkFilesExist(`dist/${appName}/redirects.js`);
+    checkFilesExist(`dist/${appName}/nested/headers.js`);
+    checkFilesExist(`dist/${appName}/nested/headers-2.js`);
+
+    checkBuildOutputIsSelfContained(`dist/${appName}`);
   }, 120_000);
 
-  it('should build and install pruned lock file', () => {
+  it('should build and install pruned lock file', async () => {
     const appName = uniq('app');
     runCLI(`generate @nx/next:app ${appName} --no-interactive --style=css`, {
       env: { NX_ADD_PLUGINS: 'false' },
@@ -87,10 +91,10 @@ describe('@nx/next (legacy)', () => {
     const result = runCLI(`build ${appName} --generateLockfile=true`);
     expect(result).not.toMatch(/Graph is not consistent/);
     checkFilesExist(
-      `dist/apps/${appName}/${packageManagerLockFile[packageManager]}`
+      `dist/${appName}/${packageManagerLockFile[packageManager]}`
     );
     runCommand(`${getPackageManagerCommand().ciInstall}`, {
-      cwd: joinPathFragments(tmpProjPath(), 'dist/apps', appName),
+      cwd: joinPathFragments(tmpProjPath(), 'dist', appName),
     });
   }, 1_000_000);
 
@@ -199,9 +203,9 @@ describe('@nx/next (legacy)', () => {
               import dynamic from 'next/dynamic';
     
               const TestComponent = dynamic(
-                  () => import('@${proj}/${nextLib}').then(d => d.${capitalize(
-        nextLib
-      )})
+                  () => import('@${proj}/${nextLib}').then(d => d.${
+                    names(nextLib).className
+                  })
                 );
               ${content.replace(
                 `</h2>`,
@@ -235,7 +239,6 @@ describe('@nx/next (legacy)', () => {
       checkUnitTest: true,
       checkLint: true,
       checkE2E: isNotWindows(),
-      checkExport: false,
       appsDir: 'packages',
     });
 
@@ -245,14 +248,10 @@ describe('@nx/next (legacy)', () => {
       `dist/packages/${appName}/public/shared/ui/hello.txt`
     );
 
-    // Check that compiled next config does not contain bad imports
-    const nextConfigPath = `dist/packages/${appName}/next.config.js`;
-    expect(nextConfigPath).not.toContain(`require("../`); // missing relative paths
-    expect(nextConfigPath).not.toContain(`require("nx/`); // dev-only packages
-    expect(nextConfigPath).not.toContain(`require("@nx/`); // dev-only packages
+    checkBuildOutputIsSelfContained(`dist/packages/${appName}`);
 
     // Check that `nx serve <app> --prod` works with previous production build (e.g. `nx build <app>`).
-    const prodServePort = 4001;
+    const prodServePort = await reservePort();
     const prodServeProcess = await runCommandUntil(
       `run ${appName}:serve --prod --port=${prodServePort}`,
       (output) => {
@@ -261,7 +260,7 @@ describe('@nx/next (legacy)', () => {
     );
 
     // Check that the output is self-contained (i.e. can run with its own package.json + node_modules)
-    const selfContainedPort = 3000;
+    const selfContainedPort = await reservePort();
     runCLI(
       `generate @nx/workspace:run-commands serve-prod --project ${appName} --cwd=dist/packages/${appName} --command="npx next start --port=${selfContainedPort}"`,
       {
@@ -280,4 +279,80 @@ describe('@nx/next (legacy)', () => {
     await killPort(prodServePort);
     await killPort(selfContainedPort);
   }, 600_000);
+
+  it('should support --custom-server flag (swc)', async () => {
+    const appName = uniq('app');
+
+    runCLI(
+      `generate @nx/next:app ${appName} --no-interactive --custom-server --linter=eslint --unitTestRunner=jest`,
+      { env: { NX_ADD_PLUGINS: 'false' } }
+    );
+
+    // Check for custom server files added to source
+    checkFilesExist(`${appName}/server/main.ts`);
+    checkFilesExist(`${appName}/.server.swcrc`);
+
+    const result = runCLI(`build ${appName}`);
+
+    checkFilesExist(`dist/${appName}-server/server/main.js`);
+
+    expect(result).toContain(
+      `Successfully ran target build for project ${appName}`
+    );
+  }, 300_000);
+
+  it('should support --custom-server flag (tsc)', async () => {
+    const appName = uniq('app');
+
+    runCLI(
+      `generate @nx/next:app ${appName} --swc=false --no-interactive --custom-server --linter=eslint --unitTestRunner=jest`,
+      { env: { NX_ADD_PLUGINS: 'false' } }
+    );
+
+    checkFilesExist(`${appName}/server/main.ts`);
+
+    const result = runCLI(`build ${appName}`);
+
+    checkFilesExist(`dist/${appName}-server/server/main.js`);
+
+    expect(result).toContain(
+      `Successfully ran target build for project ${appName}`
+    );
+  }, 300_000);
 });
+
+// The build output must run where only the app's production dependencies are
+// installed, so the rewritten next.config.js must not require dev-only packages
+// and relative requires in the copied .nx-helpers files must resolve to files
+// present in the output (nrwl/nx#36511).
+function checkBuildOutputIsSelfContained(outputPath: string): void {
+  const nextConfigContent = readFile(`${outputPath}/next.config.js`);
+  for (const badImport of ['../', 'nx/', '@nx/']) {
+    expect(nextConfigContent).not.toContain(`require("${badImport}`);
+    expect(nextConfigContent).not.toContain(`require('${badImport}`);
+  }
+
+  const helpersDir = `${outputPath}/.nx-helpers`;
+  for (const helperFile of listFiles(helpersDir).filter((f) =>
+    f.endsWith('.js')
+  )) {
+    const content = readFile(`${helpersDir}/${helperFile}`);
+    for (const match of content.matchAll(
+      /require\((?:'(\.[^']+)'|"(\.[^"]+)")\)/g
+    )) {
+      const specifier = match[1] ?? match[2];
+      const resolves = [
+        specifier,
+        `${specifier}.js`,
+        `${specifier}/index.js`,
+      ].some((candidate) =>
+        fileExists(tmpProjPath(join(helpersDir, candidate)))
+      );
+      if (!resolves) {
+        throw new Error(
+          `${helpersDir}/${helperFile} requires '${specifier}', which does not exist in the build output`
+        );
+      }
+    }
+  }
+}

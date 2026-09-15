@@ -1,312 +1,244 @@
 import {
-  CreateNodes,
+  calculateHashesForCreateNodes,
+  PluginCache,
+  hashObject,
+  combineGlobPatterns,
+  globWithWorkspaceContext,
+  workspaceDataDirectory,
+} from '@nx/devkit/internal';
+import {
   CreateNodesContext,
-  CreateNodesContextV2,
   createNodesFromFiles,
   CreateNodesResult,
-  CreateNodesV2,
+  CreateNodes,
+  detectPackageManager,
   getPackageManagerCommand,
-  logger,
-  readJsonFile,
   TargetConfiguration,
-  writeJsonFile,
 } from '@nx/devkit';
-import { calculateHashForCreateNodes } from '@nx/devkit/src/utils/calculate-hash-for-create-nodes';
-import { existsSync } from 'node:fs';
-import { basename, dirname, join, normalize, sep } from 'node:path';
-import { hashObject } from 'nx/src/hasher/file-hasher';
-import { workspaceDataDirectory } from 'nx/src/utils/cache-directory';
-import { combineGlobPatterns } from 'nx/src/utils/globs';
-import { globWithWorkspaceContext } from 'nx/src/utils/workspace-context';
-import { gte } from 'semver';
+import { getLockFileName, getRootTsConfigFileName } from '@nx/js';
 import {
+  walkTsconfigExtendsChain,
+  type RawTsconfigJsonCache,
+} from '@nx/js/internal';
+import type { ESLint as ESLintType } from 'eslint';
+import { existsSync } from 'node:fs';
+import { relative as nativeRelative, sep as nativeSep } from 'node:path';
+import { basename, dirname, join, normalize, sep } from 'node:path/posix';
+import {
+  BASE_ESLINT_CONFIG_FILENAMES,
   baseEsLintConfigFile,
-  baseEsLintFlatConfigFile,
   ESLINT_CONFIG_FILENAMES,
   isFlatConfig,
 } from '../utils/config-file';
 import { resolveESLintClass } from '../utils/resolve-eslint-class';
-
-const pmc = getPackageManagerCommand();
 
 export interface EslintPluginOptions {
   targetName?: string;
   extensions?: string[];
 }
 
-const DEFAULT_EXTENSIONS = ['ts', 'tsx', 'js', 'jsx', 'html', 'vue'];
+const DEFAULT_EXTENSIONS = [
+  'ts',
+  'cts',
+  'mts',
+  'tsx',
+  'js',
+  'cjs',
+  'mjs',
+  'jsx',
+  'html',
+  'vue',
+];
 const PROJECT_CONFIG_FILENAMES = ['project.json', 'package.json'];
-const ESLINT_CONFIG_GLOB_V1 = combineGlobPatterns(
-  ESLINT_CONFIG_FILENAMES.map((f) => `**/${f}`)
-);
 const ESLINT_CONFIG_GLOB_V2 = combineGlobPatterns([
   ...ESLINT_CONFIG_FILENAMES.map((f) => `**/${f}`),
   ...PROJECT_CONFIG_FILENAMES.map((f) => `**/${f}`),
 ]);
 
-function readTargetsCache(
-  cachePath: string
-): Record<string, CreateNodesResult['projects']> {
-  return process.env.NX_CACHE_PROJECT_GRAPH !== 'false' && existsSync(cachePath)
-    ? readJsonFile(cachePath)
-    : {};
-}
+type EslintProjects = CreateNodesResult['projects'];
 
-function writeTargetsToCache(
-  cachePath: string,
-  results: Record<string, CreateNodesResult['projects']>
-) {
-  writeJsonFile(cachePath, results);
-}
-
-const internalCreateNodes = async (
+const internalCreateNodesV2 = async (
+  ESLint: typeof ESLintType,
   configFilePath: string,
   options: EslintPluginOptions,
   context: CreateNodesContext,
-  projectsCache: Record<string, CreateNodesResult['projects']>
+  projectRootsByEslintRoots: Map<string, string[]>,
+  lintableFilesPerProjectRoot: Map<string, string[]>,
+  tsconfigChainsByProjectRoot: Map<string, string[]>,
+  projectsCache: PluginCache<EslintProjects>,
+  hashByRoot: Map<string, string>,
+  pmc: ReturnType<typeof getPackageManagerCommand>
 ): Promise<CreateNodesResult> => {
-  options = normalizeOptions(options);
   const configDir = dirname(configFilePath);
 
-  // Ensure that configFiles are set, e2e-run fails due to them being undefined in CI (does not occur locally)
-  // TODO(JamesHenry): Further troubleshoot this in CI
-  (context as any).configFiles = context.configFiles ?? [];
+  let sharedEslint: ESLintType;
+  const getEslint = (projectRoot: string) => {
+    if (existsSync(join(context.workspaceRoot, projectRoot, '.eslintignore'))) {
+      return new ESLint({ cwd: join(context.workspaceRoot, projectRoot) });
+    }
+    sharedEslint ??= new ESLint({
+      cwd: join(context.workspaceRoot, configDir),
+    });
+    return sharedEslint;
+  };
 
-  // Create a Set of all the directories containing eslint configs, and a
-  // list of globs to exclude from child projects
-  const nestedEslintRootPatterns: string[] = [];
-  for (const configFile of context.configFiles) {
-    const eslintRootDir = dirname(configFile);
+  // Collect each project root's contribution in parallel, but write
+  // them into `projects` afterwards in input order so insertion order
+  // (and therefore downstream merge order) is deterministic. Mutating
+  // `projects` from inside `Promise.all` would order keys by which
+  // async branch resolves first.
+  const orderedProjectRoots = projectRootsByEslintRoots.get(configDir) ?? [];
+  const contributions = await Promise.all(
+    orderedProjectRoots.map(async (projectRoot) => {
+      const hash = hashByRoot.get(projectRoot);
 
-    if (eslintRootDir !== configDir && isSubDir(configDir, eslintRootDir)) {
-      nestedEslintRootPatterns.push(`${eslintRootDir}/**/*`);
+      const cached = projectsCache.get(hash);
+      if (cached) {
+        return cached;
+      }
+
+      let hasNonIgnoredLintableFiles = false;
+      if (configDir !== projectRoot || projectRoot === '.') {
+        const eslint = getEslint(projectRoot);
+        for (const file of lintableFilesPerProjectRoot.get(projectRoot) ?? []) {
+          if (
+            !(await eslint.isPathIgnored(join(context.workspaceRoot, file)))
+          ) {
+            hasNonIgnoredLintableFiles = true;
+            break;
+          }
+        }
+      } else {
+        hasNonIgnoredLintableFiles = true;
+      }
+
+      if (!hasNonIgnoredLintableFiles) {
+        // No lintable files in the project, store in the cache and skip further processing
+        projectsCache.set(hash, {});
+        return null;
+      }
+
+      const project = getProjectUsingESLintConfig(
+        configFilePath,
+        projectRoot,
+        options,
+        context,
+        pmc,
+        tsconfigChainsByProjectRoot.get(projectRoot) ?? []
+      );
+
+      if (project) {
+        const entry = { [projectRoot]: project };
+        // Store project into the cache
+        projectsCache.set(hash, entry);
+        return entry;
+      }
+
+      // No project found, store in the cache
+      projectsCache.set(hash, {});
+      return null;
+    })
+  );
+
+  const projects: CreateNodesResult['projects'] = {};
+  for (const contribution of contributions) {
+    if (contribution) {
+      Object.assign(projects, contribution);
     }
   }
 
-  const projectFiles = await globWithWorkspaceContext(
-    context.workspaceRoot,
-    ['project.json', 'package.json', '**/project.json', '**/package.json'].map(
-      (f) => join(configDir, f)
-    ),
-    nestedEslintRootPatterns.length ? nestedEslintRootPatterns : undefined
-  );
-  // dedupe and sort project roots by depth for more efficient traversal
-  const dedupedProjectRoots = Array.from(
-    new Set(projectFiles.map((f) => dirname(f)))
-  ).sort((a, b) => (a !== b && isSubDir(a, b) ? -1 : 1));
-  const excludePatterns = dedupedProjectRoots.map((root) => `${root}/**/*`);
-
-  const ESLint = await resolveESLintClass(isFlatConfig(configFilePath));
-  const eslintVersion = ESLint.version;
-
-  const projects: CreateNodesResult['projects'] = {};
-  await Promise.all(
-    dedupedProjectRoots.map(async (childProjectRoot, index) => {
-      // anything after is either a nested project or a sibling project, can be excluded
-      const nestedProjectRootPatterns = excludePatterns.slice(index + 1);
-
-      // Ignore project roots where the project does not contain any lintable files
-      const lintableFiles = await globWithWorkspaceContext(
-        context.workspaceRoot,
-        [join(childProjectRoot, `**/*.{${options.extensions.join(',')}}`)],
-        // exclude nested eslint roots and nested project roots
-        [...nestedEslintRootPatterns, ...nestedProjectRootPatterns]
-      );
-
-      const parentConfigs = context.configFiles.filter((eslintConfig) =>
-        isSubDir(childProjectRoot, dirname(eslintConfig))
-      );
-      const hash = await calculateHashForCreateNodes(
-        childProjectRoot,
-        options,
-        context,
-        [...parentConfigs, join(childProjectRoot, '.eslintignore')]
-      );
-
-      if (projectsCache[hash]) {
-        // We can reuse the projects in the cache.
-        Object.assign(projects, projectsCache[hash]);
-        return;
-      }
-      const eslint = new ESLint({
-        cwd: join(context.workspaceRoot, childProjectRoot),
-      });
-      let hasNonIgnoredLintableFiles = false;
-      for (const file of lintableFiles) {
-        if (!(await eslint.isPathIgnored(join(context.workspaceRoot, file)))) {
-          hasNonIgnoredLintableFiles = true;
-          break;
-        }
-      }
-
-      if (!hasNonIgnoredLintableFiles) {
-        // No lintable files in the project, store in the cache and skip further processing
-        projectsCache[hash] = {};
-        return;
-      }
-
-      const project = getProjectUsingESLintConfig(
-        configFilePath,
-        childProjectRoot,
-        eslintVersion,
-        options,
-        context
-      );
-
-      if (project) {
-        projects[childProjectRoot] = project;
-        // Store project into the cache
-        projectsCache[hash] = { [childProjectRoot]: project };
-      } else {
-        // No project found, store in the cache
-        projectsCache[hash] = {};
-      }
-    })
-  );
-
   return {
     projects,
   };
 };
 
-let collectingLintableFilesPromise: Promise<void>;
-const internalCreateNodesV2 = async (
-  configFilePath: string,
-  options: EslintPluginOptions,
-  context: CreateNodesContextV2,
-  eslintConfigFiles: string[],
-  allProjectRoots: string[],
-  projectRootsByEslintRoots: Map<string, string[]>,
-  lintableFilesPerProjectRoot: Map<string, string[]>,
-  projectsCache: Record<string, CreateNodesResult['projects']>
-): Promise<CreateNodesResult> => {
-  const configDir = dirname(configFilePath);
-
-  const ESLint = await resolveESLintClass(isFlatConfig(configFilePath));
-  const eslintVersion = ESLint.version;
-
-  const projects: CreateNodesResult['projects'] = {};
-  await Promise.all(
-    projectRootsByEslintRoots.get(configDir).map(async (projectRoot) => {
-      const parentConfigs = eslintConfigFiles.filter((eslintConfig) =>
-        isSubDir(projectRoot, dirname(eslintConfig))
-      );
-      const hash = await calculateHashForCreateNodes(
-        projectRoot,
-        options,
-        {
-          configFiles: eslintConfigFiles,
-          nxJsonConfiguration: context.nxJsonConfiguration,
-          workspaceRoot: context.workspaceRoot,
-        },
-        [...parentConfigs, join(projectRoot, '.eslintignore')]
-      );
-
-      if (projectsCache[hash]) {
-        // We can reuse the projects in the cache.
-        Object.assign(projects, projectsCache[hash]);
-        return;
-      }
-
-      if (!lintableFilesPerProjectRoot.size) {
-        collectingLintableFilesPromise ??= collectLintableFilesByProjectRoot(
-          lintableFilesPerProjectRoot,
-          allProjectRoots,
-          options,
-          context
-        );
-        await collectingLintableFilesPromise;
-        collectingLintableFilesPromise = null;
-      }
-
-      const eslint = new ESLint({
-        cwd: join(context.workspaceRoot, projectRoot),
-      });
-      let hasNonIgnoredLintableFiles = false;
-      for (const file of lintableFilesPerProjectRoot.get(projectRoot) ?? []) {
-        if (!(await eslint.isPathIgnored(join(context.workspaceRoot, file)))) {
-          hasNonIgnoredLintableFiles = true;
-          break;
-        }
-      }
-
-      if (!hasNonIgnoredLintableFiles) {
-        // No lintable files in the project, store in the cache and skip further processing
-        projectsCache[hash] = {};
-        return;
-      }
-
-      const project = getProjectUsingESLintConfig(
-        configFilePath,
-        projectRoot,
-        eslintVersion,
-        options,
-        context
-      );
-
-      if (project) {
-        projects[projectRoot] = project;
-        // Store project into the cache
-        projectsCache[hash] = { [projectRoot]: project };
-      } else {
-        // No project found, store in the cache
-        projectsCache[hash] = {};
-      }
-    })
-  );
-
-  return {
-    projects,
-  };
-};
-
-export const createNodesV2: CreateNodesV2<EslintPluginOptions> = [
+export const createNodes: CreateNodes<EslintPluginOptions> = [
   ESLINT_CONFIG_GLOB_V2,
   async (configFiles, options, context) => {
     options = normalizeOptions(options);
+    const pmc = getPackageManagerCommand(
+      detectPackageManager(context.workspaceRoot)
+    );
     const optionsHash = hashObject(options);
     const cachePath = join(
       workspaceDataDirectory,
       `eslint-${optionsHash}.hash`
     );
-    const targetsCache = readTargetsCache(cachePath);
+    const targetsCache = new PluginCache<EslintProjects>(cachePath);
 
     const { eslintConfigFiles, projectRoots, projectRootsByEslintRoots } =
       splitConfigFiles(configFiles);
-    const lintableFilesPerProjectRoot = new Map<string, string[]>();
-
+    const lintableFilesPerProjectRoot = await collectLintableFilesByProjectRoot(
+      projectRoots,
+      options,
+      context
+    );
+    const tsconfigChainsByProjectRoot = collectTsconfigChainsByProjectRoot(
+      projectRoots,
+      context.workspaceRoot
+    );
+    const lockFilePattern = getLockFileName(
+      detectPackageManager(context.workspaceRoot)
+    );
+    const hashes = await calculateHashesForCreateNodes(
+      projectRoots,
+      options,
+      context,
+      projectRoots.map((root) => {
+        const parentConfigs = eslintConfigFiles.filter((eslintConfig) =>
+          isSubDir(root, dirname(eslintConfig))
+        );
+        return [
+          ...parentConfigs,
+          join(root, '.eslintignore'),
+          lockFilePattern,
+          ...(tsconfigChainsByProjectRoot.get(root) ?? []),
+        ];
+      })
+    );
+    const hashByRoot = new Map<string, string>(
+      projectRoots.map((r, i) => [r, hashes[i]])
+    );
     try {
+      if (eslintConfigFiles.length === 0) {
+        return [];
+      }
+      // Determine flat vs legacy from root config, matching ESLint's own
+      // behavior (find-up from cwd). Nested .eslintrc.* files are irrelevant
+      // when a root flat config exists. Prefer flat config at root when both
+      // flat and legacy root configs coexist (e.g., mid-migration).
+      const rootConfigs = eslintConfigFiles.filter((f) => dirname(f) === '.');
+      const rootConfig = rootConfigs.find(isFlatConfig) ?? rootConfigs[0];
+      const ESLint = await resolveESLintClass({
+        useFlatConfigOverrideVal: isFlatConfig(
+          rootConfig ?? eslintConfigFiles[0]
+        ),
+      });
       return await createNodesFromFiles(
         (configFile, options, context) =>
           internalCreateNodesV2(
+            ESLint,
             configFile,
             options,
             context,
-            eslintConfigFiles,
-            projectRoots,
             projectRootsByEslintRoots,
             lintableFilesPerProjectRoot,
-            targetsCache
+            tsconfigChainsByProjectRoot,
+            targetsCache,
+            hashByRoot,
+            pmc
           ),
         eslintConfigFiles,
         options,
         context
       );
     } finally {
-      writeTargetsToCache(cachePath, targetsCache);
+      targetsCache.writeToDisk();
     }
   },
 ];
 
-export const createNodes: CreateNodes<EslintPluginOptions> = [
-  ESLINT_CONFIG_GLOB_V1,
-  (configFilePath, options, context) => {
-    logger.warn(
-      '`createNodes` is deprecated. Update your plugin to utilize createNodesV2 instead. In Nx 20, this will change to the createNodesV2 API.'
-    );
-    return internalCreateNodes(configFilePath, options, context, {});
-  },
-];
+export const createNodesV2 = createNodes;
 
 function splitConfigFiles(configFiles: readonly string[]): {
   eslintConfigFiles: string[];
@@ -359,12 +291,79 @@ function groupProjectRootsByEslintRoots(
   return projectRootsByEslintRoots;
 }
 
+/**
+ * For each project root that has a `tsconfig.json`, resolves its `extends`
+ * chain and returns the workspace-relative paths of every reachable file
+ * that lives OUTSIDE the project root. Files inside the project root are
+ * already covered by `default` (`{projectRoot}/**\/*`); files resolved
+ * inside `node_modules` are invalidated via the lockfile; files that
+ * escape the workspace cannot be expressed as `{workspaceRoot}/...`.
+ *
+ * Root projects (`.`) are skipped — everything reachable from a root
+ * project's tsconfig is inside the project root by definition.
+ */
+function collectTsconfigChainsByProjectRoot(
+  projectRoots: string[],
+  workspaceRoot: string
+): Map<string, string[]> {
+  const jsonCache: RawTsconfigJsonCache = new Map();
+  const result = new Map<string, string[]>();
+
+  // The root tsconfig (tsconfig.base.json or tsconfig.json) is already
+  // handled by the native selective hasher (TsConfiguration hash
+  // instruction) which only hashes the path aliases relevant to each
+  // project.  Adding it as an explicit file input would bypass that
+  // optimization and cause every project to be affected on any change.
+  const rootTsConfigName = getRootTsConfigFileName();
+
+  for (const projectRoot of projectRoots) {
+    if (projectRoot === '.') continue;
+    const tsconfigPath = join(projectRoot, 'tsconfig.json');
+    if (!existsSync(join(workspaceRoot, tsconfigPath))) continue;
+
+    const outside: string[] = [];
+    const projectPrefix = `${projectRoot}/`;
+    walkTsconfigExtendsChain(
+      join(workspaceRoot, tsconfigPath),
+      (absolutePath) => {
+        const wsRelative = nativeRelative(workspaceRoot, absolutePath)
+          .split(nativeSep)
+          .join('/');
+        if (wsRelative.startsWith('../') || wsRelative === '..') {
+          return 'continue'; // escapes workspace
+        }
+        if (
+          wsRelative.startsWith('node_modules/') ||
+          wsRelative.includes('/node_modules/')
+        ) {
+          return 'continue'; // external package, lockfile invalidates
+        }
+        if (
+          wsRelative === projectRoot ||
+          wsRelative.startsWith(projectPrefix)
+        ) {
+          return 'continue'; // inside project root, covered by `default`
+        }
+        if (wsRelative === rootTsConfigName) {
+          return 'continue'; // handled by native selective hasher
+        }
+        outside.push(wsRelative);
+        return 'continue';
+      },
+      { jsonCache }
+    );
+    result.set(projectRoot, outside);
+  }
+  return result;
+}
+
 async function collectLintableFilesByProjectRoot(
-  lintableFilesPerProjectRoot: Map<string, string[]>,
   projectRoots: string[],
   options: EslintPluginOptions,
-  context: CreateNodesContext | CreateNodesContextV2
-): Promise<void> {
+  context: CreateNodesContext
+): Promise<Map<string, string[]>> {
+  const lintableFilesPerProjectRoot = new Map<string, string[]>();
+
   const lintableFiles = await globWithWorkspaceContext(context.workspaceRoot, [
     `**/*.{${options.extensions.join(',')}}`,
   ]);
@@ -382,6 +381,8 @@ async function collectLintableFilesByProjectRoot(
       lintableFilesPerProjectRoot.get(projectRoot).push(file);
     }
   }
+
+  return lintableFilesPerProjectRoot;
 }
 
 function getRootForDirectory(
@@ -403,13 +404,14 @@ function getRootForDirectory(
 function getProjectUsingESLintConfig(
   configFilePath: string,
   projectRoot: string,
-  eslintVersion: string,
   options: EslintPluginOptions,
-  context: CreateNodesContext | CreateNodesContextV2
+  context: CreateNodesContext,
+  pmc: ReturnType<typeof getPackageManagerCommand>,
+  tsconfigChainOutsideProjectRoot: string[]
 ): CreateNodesResult['projects'][string] | null {
   const rootEslintConfig = [
     baseEsLintConfigFile,
-    baseEsLintFlatConfigFile,
+    ...BASE_ESLINT_CONFIG_FILENAMES,
     ...ESLINT_CONFIG_FILENAMES,
   ].find((f) => existsSync(join(context.workspaceRoot, f)));
 
@@ -438,22 +440,24 @@ function getProjectUsingESLintConfig(
   return {
     targets: buildEslintTargets(
       eslintConfigs,
-      eslintVersion,
       projectRoot,
       context.workspaceRoot,
       options,
-      standaloneSrcPath
+      pmc,
+      standaloneSrcPath,
+      tsconfigChainOutsideProjectRoot
     ),
   };
 }
 
 function buildEslintTargets(
   eslintConfigs: string[],
-  eslintVersion: string,
   projectRoot: string,
   workspaceRoot: string,
   options: EslintPluginOptions,
-  standaloneSrcPath?: string
+  pmc: ReturnType<typeof getPackageManagerCommand>,
+  standaloneSrcPath?: string,
+  tsconfigChainOutsideProjectRoot: string[] = []
 ) {
   const isRootProject = projectRoot === '.';
   const targets: Record<string, TargetConfiguration> = {};
@@ -470,15 +474,15 @@ function buildEslintTargets(
       'default',
       // Certain lint rules can be impacted by changes to dependencies
       '^default',
-      ...eslintConfigs.map((config) =>
-        `{workspaceRoot}/${config}`.replace(
-          `{workspaceRoot}/${projectRoot}`,
-          isRootProject ? '{projectRoot}/' : '{projectRoot}'
-        )
-      ),
+      ...eslintConfigs.map((config) => `{workspaceRoot}/${config}`),
       ...(existsSync(join(workspaceRoot, projectRoot, '.eslintignore'))
-        ? ['{projectRoot}/.eslintignore']
+        ? [join('{workspaceRoot}', projectRoot, '.eslintignore')]
         : []),
+      // Tsconfig files reached via `extends` that live outside the project
+      // root — declared so the cache invalidates on upstream changes.
+      ...tsconfigChainOutsideProjectRoot.map(
+        (file) => `{workspaceRoot}/${file}`
+      ),
       '{workspaceRoot}/tools/eslint-rules/**/*',
       { externalDependencies: ['eslint'] },
     ],
@@ -497,13 +501,12 @@ function buildEslintTargets(
     },
   };
 
-  // Always set the environment variable to ensure that the ESLint CLI can run on eslint v8 and v9
+  // Supported ESLint versions (v9+) default to flat config, so only set the env
+  // var when the workspace still uses eslintrc, to force the legacy loader.
   const useFlatConfig = eslintConfigs.some((config) => isFlatConfig(config));
-  // Flat config is default for 9.0.0+
-  const defaultSetting = gte(eslintVersion, '9.0.0');
-  if (useFlatConfig !== defaultSetting) {
+  if (!useFlatConfig) {
     targetConfig.options.env = {
-      ESLINT_USE_FLAT_CONFIG: useFlatConfig ? 'true' : 'false',
+      ESLINT_USE_FLAT_CONFIG: 'false',
     };
   }
 
@@ -514,11 +517,11 @@ function buildEslintTargets(
 
 function normalizeOptions(options: EslintPluginOptions): EslintPluginOptions {
   const normalizedOptions: EslintPluginOptions = {
-    targetName: options.targetName ?? 'lint',
+    targetName: options?.targetName ?? 'lint',
   };
 
   // Normalize user input for extensions (strip leading . characters)
-  if (Array.isArray(options.extensions)) {
+  if (Array.isArray(options?.extensions)) {
     normalizedOptions.extensions = options.extensions.map((f) =>
       f.replace(/^\.+/, '')
     );

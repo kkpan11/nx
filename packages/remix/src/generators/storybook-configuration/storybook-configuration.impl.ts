@@ -9,8 +9,9 @@ import {
 import { join } from 'path';
 import type { StorybookConfigurationSchema } from './schema';
 import { storybookConfigurationGenerator } from '@nx/react';
+import { assertSupportedRemixVersion } from '../../utils/versions';
 
-export function remixStorybookConfiguration(
+export async function remixStorybookConfiguration(
   tree: Tree,
   schema: StorybookConfigurationSchema
 ) {
@@ -30,6 +31,8 @@ export default async function remixStorybookConfigurationInternal(
   tree: Tree,
   schema: StorybookConfigurationSchema
 ) {
+  assertSupportedRemixVersion(tree);
+
   const nxJson = readNxJson(tree);
   const addPluginDefault =
     process.env.NX_ADD_PLUGINS !== 'false' &&
@@ -37,7 +40,10 @@ export default async function remixStorybookConfigurationInternal(
   schema.addPlugin ??= addPluginDefault;
   const { root } = readProjectConfiguration(tree, schema.project);
 
-  if (!tree.exists(joinPathFragments(root, 'vite.config.ts'))) {
+  if (
+    !tree.exists(joinPathFragments(root, 'vite.config.mts')) &&
+    !tree.exists(joinPathFragments(root, 'vite.config.ts'))
+  ) {
     const cacheDir = normalizedJoinPaths(
       offsetFromRoot(root),
       'node_modules',

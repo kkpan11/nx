@@ -1,15 +1,15 @@
-import {
-  existsSync,
-  readJson,
-  readJsonSync,
-  unlinkSync,
-  writeJson,
-} from 'fs-extra';
+import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'path';
 import { DAEMON_DIR_FOR_CURRENT_WORKSPACE } from './tmp-dir';
+import { readJsonFile, writeJsonFileAsync } from '../utils/fileutils';
+import { nxVersion } from '../utils/versions';
+import { clientLogger } from './logger';
+import { VersionMismatchError } from './client/daemon-socket-messenger';
 
 export interface DaemonProcessJson {
   processId: number;
+  socketPath: string;
+  nxVersion: string;
 }
 
 export const serverProcessJsonPath = join(
@@ -17,11 +17,23 @@ export const serverProcessJsonPath = join(
   'server-process.json'
 );
 
-export async function readDaemonProcessJsonCache(): Promise<DaemonProcessJson | null> {
-  if (!existsSync(serverProcessJsonPath)) {
+export function readDaemonProcessJsonCache(): DaemonProcessJson | null {
+  try {
+    const daemonJson = readJsonFile(serverProcessJsonPath);
+    // If the daemon version doesn't match the client version, throw error
+    if (daemonJson.nxVersion !== nxVersion) {
+      clientLogger.log(
+        `[Cache] Version mismatch: daemon=${daemonJson.nxVersion}, client=${nxVersion}`
+      );
+      throw new VersionMismatchError();
+    }
+    return daemonJson;
+  } catch (e) {
+    if (e instanceof VersionMismatchError) {
+      throw e; // Let version mismatch bubble up
+    }
     return null;
   }
-  return await readJson(serverProcessJsonPath);
 }
 
 export function deleteDaemonJsonProcessCache(): void {
@@ -35,36 +47,9 @@ export function deleteDaemonJsonProcessCache(): void {
 export async function writeDaemonJsonProcessCache(
   daemonJson: DaemonProcessJson
 ): Promise<void> {
-  await writeJson(serverProcessJsonPath, daemonJson);
-}
-
-export async function safelyCleanUpExistingProcess(): Promise<void> {
-  const daemonProcessJson = await readDaemonProcessJsonCache();
-  if (daemonProcessJson && daemonProcessJson.processId) {
-    try {
-      process.kill(daemonProcessJson.processId);
-      // we wait for the process to actually shut down before returning
-      await new Promise<void>((resolve, reject) => {
-        let count = 0;
-        const interval = setInterval(() => {
-          try {
-            // sending a signal 0 to a process checks if the process is running instead of actually killing it
-            process.kill(daemonProcessJson.processId, 0);
-          } catch (e) {
-            clearInterval(interval);
-            resolve();
-          }
-          if ((count += 1) > 200) {
-            clearInterval(interval);
-            reject(
-              `Daemon process ${daemonProcessJson.processId} didn't exit after 2 seconds.`
-            );
-          }
-        }, 10);
-      });
-    } catch {}
-  }
-  deleteDaemonJsonProcessCache();
+  await writeJsonFileAsync(serverProcessJsonPath, daemonJson, {
+    appendNewLine: true,
+  });
 }
 
 // Must be sync for the help output use case
@@ -73,7 +58,7 @@ export function getDaemonProcessIdSync(): number | null {
     return null;
   }
   try {
-    const daemonProcessJson = readJsonSync(serverProcessJsonPath);
+    const daemonProcessJson = readJsonFile(serverProcessJsonPath);
     return daemonProcessJson.processId;
   } catch {
     return null;

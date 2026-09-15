@@ -1,24 +1,27 @@
+import { calculateDefaultProjectName } from '../../config/calculate-default-project-name';
+import { readNxJson } from '../../config/configuration';
+import { handleImport } from '../../utils/handle-import';
+import { NxJsonConfiguration } from '../../config/nx-json';
+import {
+  ProjectGraph,
+  ProjectGraphProjectNode,
+} from '../../config/project-graph';
+import { TargetDependencyConfig } from '../../config/workspace-json-project-json';
+import {
+  createProjectGraphAsync,
+  readProjectsConfigurationFromProjectGraph,
+} from '../../project-graph/project-graph';
 import { runCommand } from '../../tasks-runner/run-command';
 import {
   readGraphFileFromGraphArg,
   splitArgsIntoNxArgsAndOverrides,
 } from '../../utils/command-line-utils';
-import { connectToNxCloudIfExplicitlyAsked } from '../connect/connect-to-nx-cloud';
-import { performance } from 'perf_hooks';
-import {
-  createProjectGraphAsync,
-  readProjectsConfigurationFromProjectGraph,
-} from '../../project-graph/project-graph';
-import { ProjectGraph } from '../../config/project-graph';
-import { NxJsonConfiguration } from '../../config/nx-json';
-import { workspaceRoot } from '../../utils/workspace-root';
-import { splitTarget } from '../../utils/split-target';
+import { findMatchingProjects } from '../../utils/find-matching-projects';
 import { output } from '../../utils/output';
-import { TargetDependencyConfig } from '../../config/workspace-json-project-json';
-import { readNxJson } from '../../config/configuration';
-import { calculateDefaultProjectName } from '../../config/calculate-default-project-name';
-import { workspaceConfigurationCheck } from '../../utils/workspace-configuration-check';
+import { splitTarget } from '../../utils/split-target';
+import { workspaceRoot } from '../../utils/workspace-root';
 import { generateGraph } from '../graph/graph';
+import { connectToNxCloudIfExplicitlyAsked } from '../nx-cloud/connect/connect-to-nx-cloud';
 
 export async function runOne(
   cwd: string,
@@ -28,7 +31,7 @@ export async function runOne(
     (TargetDependencyConfig | string)[]
   > = {},
   extraOptions = {
-    excludeTaskDependencies: false,
+    excludeTaskDependencies: args.excludeTaskDependencies,
     loadDotEnvFiles: process.env.NX_LOAD_DOT_ENV_FILES !== 'false',
   } as {
     excludeTaskDependencies: boolean;
@@ -37,7 +40,6 @@ export async function runOne(
 ): Promise<void> {
   performance.mark('code-loading:end');
   performance.measure('code-loading', 'init-local', 'code-loading:end');
-  workspaceConfigurationCheck();
 
   const nxJson = readNxJson();
   const projectGraph = await createProjectGraphAsync();
@@ -55,17 +57,22 @@ export async function runOne(
     nxJson
   );
 
-  if (nxArgs.verbose) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
+  const { projects, projectName } = getProjects(projectGraph, opts.project);
+
   if (nxArgs.help) {
-    await (await import('./run')).printTargetRunHelp(opts, workspaceRoot);
+    await (
+      await handleImport('./run.js', __dirname)
+    ).printTargetRunHelp(
+      {
+        ...opts,
+        project: projectName,
+      },
+      workspaceRoot
+    );
     process.exit(0);
   }
 
   await connectToNxCloudIfExplicitlyAsked(nxArgs);
-
-  const { projects } = getProjects(projectGraph, opts.project);
 
   if (nxArgs.graph) {
     const projectNames = projects.map((t) => t.name);
@@ -89,27 +96,57 @@ export async function runOne(
       { nxJson },
       nxArgs,
       overrides,
-      opts.project,
+      projectName,
       extraTargetDependencies,
       extraOptions
     );
+    await output.drain();
     process.exit(status);
   }
 }
 
-function getProjects(projectGraph: ProjectGraph, project: string): any {
-  if (!projectGraph.nodes[project]) {
-    output.error({
-      title: `Cannot find project '${project}'`,
-    });
-    process.exit(1);
+function getProjects(
+  projectGraph: ProjectGraph,
+  projectName: string
+): {
+  projectName: string;
+  projects: ProjectGraphProjectNode[];
+  projectsMap: Record<string, ProjectGraphProjectNode>;
+} {
+  if (projectGraph.nodes[projectName]) {
+    return {
+      projectName: projectName,
+      projects: [projectGraph.nodes[projectName]],
+      projectsMap: {
+        [projectName]: projectGraph.nodes[projectName],
+      },
+    };
+  } else {
+    const projects = findMatchingProjects([projectName], projectGraph.nodes);
+    if (projects.length === 1) {
+      const projectName = projects[0];
+      const project = projectGraph.nodes[projectName];
+      return {
+        projectName,
+        projects: [project],
+        projectsMap: {
+          [project.data.name]: project,
+        },
+      };
+    } else if (projects.length > 1) {
+      output.error({
+        title: `Multiple projects matched:`,
+        bodyLines:
+          projects.length > 100 ? [...projects.slice(0, 100), '...'] : projects,
+      });
+      process.exit(1);
+    }
   }
-  let projects = [projectGraph.nodes[project]];
-  let projectsMap = {
-    [project]: projectGraph.nodes[project],
-  };
 
-  return { projects, projectsMap };
+  output.error({
+    title: `Cannot find project '${projectName}'`,
+  });
+  process.exit(1);
 }
 
 const targetAliases = {
@@ -120,7 +157,9 @@ const targetAliases = {
   t: 'test',
 };
 
-function parseRunOneOptions(
+const PROJECT_TARGET_CONFIG = 'project:target:configuration';
+
+export function parseRunOneOptions(
   cwd: string,
   parsedArgs: { [k: string]: any },
   projectGraph: ProjectGraph,
@@ -137,19 +176,33 @@ function parseRunOneOptions(
   let target;
   let configuration;
 
-  if (parsedArgs['project:target:configuration']?.indexOf(':') > -1) {
+  if (
+    typeof parsedArgs[PROJECT_TARGET_CONFIG] === 'string' &&
+    parsedArgs[PROJECT_TARGET_CONFIG].lastIndexOf(':') > 0
+  ) {
     // run case
     [project, target, configuration] = splitTarget(
-      parsedArgs['project:target:configuration'],
-      projectGraph
+      parsedArgs[PROJECT_TARGET_CONFIG],
+      projectGraph,
+      { currentProject: defaultProjectName }
     );
-    // this is to account for "nx npmsript:dev"
+    // this is to account for "nx npmscript:dev"
     if (project && !target && defaultProjectName) {
       target = project;
       project = defaultProjectName;
     }
-  } else {
-    target = parsedArgs.target ?? parsedArgs['project:target:configuration'];
+  } else if (parsedArgs.target) {
+    target = parsedArgs.target;
+  } else if (typeof parsedArgs[PROJECT_TARGET_CONFIG] === 'string') {
+    // If project:target:configuration exists but has no colon, check if it's a project with run target
+    if (
+      projectGraph.nodes[parsedArgs[PROJECT_TARGET_CONFIG]]?.data?.targets?.run
+    ) {
+      target = 'run';
+      project = parsedArgs[PROJECT_TARGET_CONFIG];
+    } else {
+      target = parsedArgs[PROJECT_TARGET_CONFIG];
+    }
   }
   if (parsedArgs.project) {
     project = parsedArgs.project;
@@ -157,6 +210,7 @@ function parseRunOneOptions(
   if (!project && defaultProjectName) {
     project = defaultProjectName;
   }
+
   if (!project || !target) {
     throw new Error(`Both project and target have to be specified`);
   }
@@ -171,7 +225,7 @@ function parseRunOneOptions(
 
   const res = { project, target, configuration, parsedArgs };
   delete parsedArgs['c'];
-  delete parsedArgs['project:target:configuration'];
+  delete parsedArgs[PROJECT_TARGET_CONFIG];
   delete parsedArgs['configuration'];
   delete parsedArgs['prod'];
   delete parsedArgs['project'];

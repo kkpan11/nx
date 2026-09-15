@@ -1,4 +1,24 @@
+import {
+  formatFiles,
+  GeneratorCallback,
+  logger,
+  readNxJson,
+  readProjectConfiguration,
+  runTasksInSerial,
+  Tree,
+  updateNxJson,
+} from '@nx/devkit';
+import { findTargetDefault, upsertTargetDefault } from '@nx/devkit/internal';
+import { initGenerator as jsInitGenerator } from '@nx/js';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import { JestPluginOptions } from '../../plugins/plugin';
+import {
+  findRootJestPreset,
+  getPresetExt,
+} from '../../utils/config/config-file';
 import { jestInitGenerator } from '../init/init';
+import { assertSupportedJestVersion } from '../../utils/assert-supported-jest-version';
+import { warnJestExecutorGenerating } from '../../utils/deprecation';
 import { checkForTestTarget } from './lib/check-for-test-target';
 import { createFiles } from './lib/create-files';
 import { createJestConfig } from './lib/create-jest-config';
@@ -7,23 +27,11 @@ import { updateTsConfig } from './lib/update-tsconfig';
 import { updateVsCodeRecommendedExtensions } from './lib/update-vscode-recommended-extensions';
 import { updateWorkspace } from './lib/update-workspace';
 import { JestProjectSchema, NormalizedJestProjectSchema } from './schema';
-import {
-  formatFiles,
-  Tree,
-  GeneratorCallback,
-  readProjectConfiguration,
-  readNxJson,
-  runTasksInSerial,
-} from '@nx/devkit';
-import { initGenerator as jsInitGenerator } from '@nx/js';
-import { JestPluginOptions } from '../../plugins/plugin';
-import { getPresetExt } from '../../utils/config/config-file';
 
 const schemaDefaults = {
   setupFile: 'none',
   babelJest: false,
   supportTsx: false,
-  skipSetupFile: false,
   skipSerializers: false,
   testEnvironment: 'jsdom',
 } as const;
@@ -58,17 +66,14 @@ function normalizeOptions(
     options.skipSerializers = true;
   }
 
-  if (options.skipSetupFile) {
-    // setupFile is always 'none'
-    options.setupFile = schemaDefaults.setupFile;
-  }
-
   const project = readProjectConfiguration(tree, options.project);
 
   return {
     ...schemaDefaults,
     ...options,
+    keepExistingVersions: options.keepExistingVersions ?? true,
     rootProject: project.root === '.' || project.root === '',
+    isTsSolutionSetup: isUsingTsSolutionSetup(tree),
   };
 }
 
@@ -80,7 +85,14 @@ export async function configurationGeneratorInternal(
   tree: Tree,
   schema: JestProjectSchema
 ): Promise<GeneratorCallback> {
+  assertSupportedJestVersion(tree);
+
   const options = normalizeOptions(tree, schema);
+
+  // we'll only add the vscode recommended extension if the jest preset does
+  // not exist, which most likely means this is a first run, in the cases it's
+  // not a first run, we'll skip adding it but it's not a critical thing to do
+  const shouldAddVsCodeRecommendations = findRootJestPreset(tree) === null;
 
   const tasks: GeneratorCallback[] = [];
 
@@ -96,7 +108,10 @@ export async function configurationGeneratorInternal(
   checkForTestTarget(tree, options);
   createFiles(tree, options, presetExt);
   updateTsConfig(tree, options);
-  updateVsCodeRecommendedExtensions(tree);
+
+  if (shouldAddVsCodeRecommendations) {
+    updateVsCodeRecommendedExtensions(tree);
+  }
 
   const nxJson = readNxJson(tree);
   const hasPlugin = nxJson.plugins?.some((p) => {
@@ -110,8 +125,31 @@ export async function configurationGeneratorInternal(
       );
     }
   });
+
   if (!hasPlugin || options.addExplicitTargets) {
+    warnJestExecutorGenerating();
     updateWorkspace(tree, options);
+  }
+
+  if (options.isTsSolutionSetup) {
+    ignoreTestOutput(tree);
+
+    // in the TS solution setup, the test target depends on the build outputs
+    // so we need to setup the task pipeline accordingly
+    const nxJson = readNxJson(tree) ?? {};
+    // A bare `target` locator matches only the unfiltered generic entry, so we
+    // extend the workspace-wide baseline rather than a project-scoped one.
+    const existing = findTargetDefault(nxJson.targetDefaults, {
+      target: options.targetName,
+    });
+    const dependsOn = Array.from(
+      new Set([...(existing?.dependsOn ?? []), '^build'])
+    );
+    upsertTargetDefault(tree, nxJson, {
+      target: options.targetName,
+      dependsOn,
+    });
+    updateNxJson(tree, nxJson);
   }
 
   if (!schema.skipFormat) {
@@ -119,6 +157,20 @@ export async function configurationGeneratorInternal(
   }
 
   return runTasksInSerial(...tasks);
+}
+
+function ignoreTestOutput(tree: Tree): void {
+  if (!tree.exists('.gitignore')) {
+    logger.warn(`Couldn't find a root .gitignore file to update.`);
+  }
+
+  let content = tree.read('.gitignore', 'utf-8');
+  if (/^test-output$/gm.test(content)) {
+    return;
+  }
+
+  content = `${content}\ntest-output\n`;
+  tree.write('.gitignore', content);
 }
 
 export default configurationGenerator;

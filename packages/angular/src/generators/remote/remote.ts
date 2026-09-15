@@ -1,27 +1,42 @@
 import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+} from '@nx/devkit/internal';
+import { isTypedLintingEnabled } from '@nx/eslint/internal';
+import {
   addDependenciesToPackageJson,
   formatFiles,
   getProjects,
+  readProjectConfiguration,
   runTasksInSerial,
+  stripIndents,
   Tree,
+  updateProjectConfiguration,
 } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
+import { swcHelpersVersion } from '@nx/js/internal';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
 import { E2eTestRunner } from '../../utils/test-runners';
 import { applicationGenerator } from '../application/application';
+import convertToRspack from '../convert-to-rspack/convert-to-rspack';
 import { setupMf } from '../setup-mf/setup-mf';
-import { findNextAvailablePort, updateSsrSetup } from './lib';
-import type { Schema } from './schema';
-import { swcHelpersVersion } from '@nx/js/src/utils/versions';
 import { addMfEnvToTargetDefaultInputs } from '../utils/add-mf-env-to-inputs';
+import { assertRspackIsCSR } from '../utils/assert-mf-utils';
+import { assertNotUsingTsSolutionSetup } from '../utils/validations';
+import { getInstalledAngularVersionInfo } from '../utils/version-utils';
+import { findNextAvailablePort, updateSsrSetup, validateOptions } from './lib';
+import type { Schema } from './schema';
 
-export async function remote(tree: Tree, options: Schema) {
-  return await remoteInternal(tree, {
-    projectNameAndRootFormat: 'derived',
-    ...options,
-  });
-}
+export async function remote(tree: Tree, schema: Schema) {
+  assertSupportedAngularVersion(tree);
+  assertNotUsingTsSolutionSetup(tree, 'remote');
+  validateOptions(tree, schema);
+  // TODO: Replace with Rspack when confidence is high enough
+  schema.bundler ??= 'webpack';
+  const isRspack = schema.bundler === 'rspack';
+  assertRspackIsCSR(schema.bundler, schema.ssr ?? false);
+  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
+  schema.zoneless ??= angularMajorVersion >= 21 ? true : false;
 
-export async function remoteInternal(tree: Tree, schema: Schema) {
   const { typescriptConfiguration = true, ...options }: Schema = schema;
   options.standalone = options.standalone ?? true;
 
@@ -32,16 +47,24 @@ export async function remoteInternal(tree: Tree, schema: Schema) {
     );
   }
 
-  const { projectName: remoteProjectName, projectNameAndRootFormat } =
+  await ensureRootProjectName(options, 'application');
+  const { projectName: remoteProjectName } =
     await determineProjectNameAndRootOptions(tree, {
       name: options.name,
       projectType: 'application',
       directory: options.directory,
-      projectNameAndRootFormat: options.projectNameAndRootFormat,
-      callingGenerator: '@nx/angular:remote',
     });
-  options.projectNameAndRootFormat = projectNameAndRootFormat;
 
+  const REMOTE_NAME_REGEX = '^[a-zA-Z_$][a-zA-Z_$0-9]*$';
+  const remoteNameRegex = new RegExp(REMOTE_NAME_REGEX);
+  if (!remoteNameRegex.test(remoteProjectName)) {
+    throw new Error(
+      stripIndents`Invalid remote name: ${remoteProjectName}. Remote project names must:
+       - Start with a letter, dollar sign ($) or underscore (_)
+       - Followed by any valid character (letters, digits, underscores, or dollar signs)
+      The regular expression used is ${REMOTE_NAME_REGEX}.`
+    );
+  }
   const port = options.port ?? findNextAvailablePort(tree);
 
   const appInstallTask = await applicationGenerator(tree, {
@@ -69,7 +92,7 @@ export async function remoteInternal(tree: Tree, schema: Schema) {
     standalone: options.standalone,
     prefix: options.prefix,
     typescriptConfiguration,
-    setParserOptionsProject: options.setParserOptionsProject,
+    enableTypedLinting: isTypedLintingEnabled(options),
   });
 
   const installTasks = [appInstallTask];
@@ -91,11 +114,30 @@ export async function remoteInternal(tree: Tree, schema: Schema) {
       typescriptConfiguration,
       standalone: options.standalone,
       skipPackageJson: options.skipPackageJson,
+      zoneless: options.zoneless,
     });
     installTasks.push(ssrInstallTask);
   }
 
   addMfEnvToTargetDefaultInputs(tree);
+
+  if (isRspack) {
+    await convertToRspack(tree, {
+      project: remoteProjectName,
+      skipInstall: options.skipPackageJson,
+      skipFormat: true,
+    });
+  }
+
+  const project = readProjectConfiguration(tree, remoteProjectName);
+  project.targets.serve ??= {};
+  project.targets.serve.options ??= {};
+  if (options.host) {
+    project.targets.serve.dependsOn ??= [];
+    project.targets.serve.dependsOn.push(`${options.host}:serve`);
+  }
+  project.targets.serve.options.port = port;
+  updateProjectConfiguration(tree, remoteProjectName, project);
 
   if (!options.skipFormat) {
     await formatFiles(tree);

@@ -6,9 +6,9 @@ import type { Observable } from 'rxjs';
 import { readNxJson } from '../../config/nx-json';
 import { Executor, ExecutorContext } from '../../config/misc-interfaces';
 import { retrieveProjectConfigurations } from '../../project-graph/utils/retrieve-workspace-files';
-import { readProjectConfigurationsFromRootMap } from '../../project-graph/utils/project-configuration-utils';
+import { readProjectConfigurationsFromRootMap } from '../../project-graph/utils/project-configuration/project-nodes-manager';
 import { ProjectsConfigurations } from '../../config/workspace-json-project-json';
-import { loadNxPlugins } from '../../project-graph/plugins/internal-api';
+import { getPluginsSeparated } from '../../project-graph/plugins/get-plugins';
 
 /**
  * Convert an Nx Executor into an Angular Devkit Builder
@@ -20,30 +20,25 @@ export function convertNxExecutor(executor: Executor) {
     const promise = async () => {
       const nxJsonConfiguration = readNxJson(builderContext.workspaceRoot);
 
-      const [plugins, cleanup] = await loadNxPlugins(
-        nxJsonConfiguration.plugins,
-        builderContext.workspaceRoot
-      );
+      const separatedPlugins = await getPluginsSeparated(nxJsonConfiguration);
       const projectsConfigurations: ProjectsConfigurations = {
         version: 2,
         projects: readProjectConfigurationsFromRootMap(
           (
             await retrieveProjectConfigurations(
-              plugins,
+              separatedPlugins,
               builderContext.workspaceRoot,
               nxJsonConfiguration
             )
           ).projects
         ),
       };
-      cleanup();
       const context: ExecutorContext = {
         root: builderContext.workspaceRoot,
         projectName: builderContext.target.project,
         targetName: builderContext.target.target,
         target: builderContext.target.target,
         configurationName: builderContext.target.configuration,
-        workspace: { ...nxJsonConfiguration, ...projectsConfigurations },
         projectsConfigurations,
         nxJsonConfiguration,
         cwd: process.cwd(),

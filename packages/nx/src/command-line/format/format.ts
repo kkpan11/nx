@@ -1,18 +1,5 @@
-import { exec, execSync } from 'node:child_process';
 import * as path from 'node:path';
 import * as yargs from 'yargs';
-import { FileData, calculateFileChanges } from '../../project-graph/file-utils';
-import {
-  NxArgs,
-  getProjectRoots,
-  parseFiles,
-  splitArgsIntoNxArgsAndOverrides,
-} from '../../utils/command-line-utils';
-import { fileExists, readJsonFile, writeJsonFile } from '../../utils/fileutils';
-import { getIgnoreObject } from '../../utils/ignore';
-
-import type { SupportInfo } from 'prettier';
-import * as prettier from 'prettier';
 import { readNxJson } from '../../config/configuration';
 import { ProjectGraph } from '../../config/project-graph';
 import {
@@ -20,55 +7,97 @@ import {
   getRootTsConfigPath,
 } from '../../plugins/js/utils/typescript';
 import { filterAffected } from '../../project-graph/affected/affected-project-graph';
+import { calculateFileChanges } from '../../project-graph/file-utils';
 import { createProjectGraphAsync } from '../../project-graph/project-graph';
-import { allFileData } from '../../utils/all-file-data';
 import { chunkify } from '../../utils/chunkify';
+import {
+  getProjectRoots,
+  NxArgs,
+  parseFiles,
+  splitArgsIntoNxArgsAndOverrides,
+} from '../../utils/command-line-utils';
+import { fileExists, readJsonFile, writeJsonFile } from '../../utils/fileutils';
+import {
+  detectFormatter,
+  type FormatterType,
+  resolveFormatterBin,
+} from '../../utils/formatters';
+import { checkWithOxfmt, writeWithOxfmt } from '../../utils/formatters/oxfmt';
+import {
+  checkWithPrettier,
+  filterToPrettierSupportedFiles,
+  writeWithPrettier,
+} from '../../utils/formatters/prettier';
+import { getIgnoreObject } from '../../utils/ignore';
 import { sortObjectByKeys } from '../../utils/object-sort';
 import { output } from '../../utils/output';
-import { readModulePackageJson } from '../../utils/package-json';
 import { workspaceRoot } from '../../utils/workspace-root';
-
-const PRETTIER_PATH = getPrettierPath();
 
 export async function format(
   command: 'check' | 'write',
   args: yargs.Arguments
 ): Promise<void> {
+  const formatterType = detectFormatter(workspaceRoot);
+
+  if (!formatterType) {
+    output.warn({
+      title: 'No formatter configured.',
+      bodyLines: ['Install oxfmt or prettier to enable formatting.'],
+    });
+    return;
+  }
+
+  // Detection reads configuration only, so a workspace can be configured for a
+  // formatter that is not installed - a fresh clone, `--omit=dev` CI, a pruned
+  // node_modules. Resolving now turns a raw MODULE_NOT_FOUND into something
+  // actionable.
+  try {
+    resolveFormatterBin[formatterType]();
+  } catch {
+    output.error({
+      title: `${formatterType} is configured for this workspace but is not installed.`,
+      bodyLines: [
+        `Install "${formatterType}" and try again, or remove its configuration to disable "nx format:${command}".`,
+      ],
+    });
+    process.exit(1);
+  }
+
   const { nxArgs } = splitArgsIntoNxArgsAndOverrides(
     args,
     'affected',
     { printWarnings: false },
     readNxJson()
   );
-  const patterns = (await getPatterns({ ...args, ...nxArgs } as any)).map(
-    // prettier removes one of the \
-    // prettier-ignore
-    (p) => `"${p.replace(/\$/g, "\\\$")}"`
-  );
 
-  // Chunkify the patterns array to prevent crashing the windows terminal
+  const patterns = await getPatterns(formatterType, {
+    ...args,
+    ...nxArgs,
+  } as any);
+
+  // Chunkify the patterns array to prevent crashing the windows terminal.
   const chunkList: string[][] = chunkify(patterns);
 
   switch (command) {
     case 'write':
-      sortTsConfig();
+      if (nxArgs.sortRootTsconfigPaths) {
+        sortTsConfig();
+      }
       addRootConfigFiles(chunkList, nxArgs);
-      chunkList.forEach((chunk) => write(chunk));
+      chunkList.forEach((chunk) => write(formatterType, chunk));
       break;
     case 'check': {
       const filesWithDifferentFormatting = [];
       for (const chunk of chunkList) {
-        const files = await check(chunk);
+        const files = await check(formatterType, chunk);
         filesWithDifferentFormatting.push(...files);
       }
       if (filesWithDifferentFormatting.length > 0) {
         if (nxArgs.verbose) {
           output.error({
-            title:
-              'The following files are not formatted correctly based on your Prettier configuration',
+            title: 'The following files are not formatted correctly',
             bodyLines: [
               '- Run "nx format:write" and commit the resulting diff to fix these files.',
-              '- Please note, Prettier does not support a native way to diff the output of its check logic (https://github.com/prettier/prettier/issues/6885).',
               '',
               ...filesWithDifferentFormatting,
             ],
@@ -84,9 +113,9 @@ export async function format(
 }
 
 async function getPatterns(
+  formatterType: FormatterType,
   args: NxArgs & { libsAndApps: boolean; _: string[] }
 ): Promise<string[]> {
-  const graph = await createProjectGraphAsync({ exitOnError: true });
   const allFilesPattern = ['.'];
 
   if (args.all) {
@@ -95,38 +124,31 @@ async function getPatterns(
 
   try {
     if (args.projects && args.projects.length > 0) {
+      const graph = await createProjectGraphAsync({ exitOnError: true });
       return getPatternsFromProjects(args.projects, graph);
     }
 
     const p = parseFiles(args);
 
-    // In prettier v3 the getSupportInfo result is a promise
-    const supportedExtensions = new Set(
-      (
-        await (prettier.getSupportInfo() as Promise<SupportInfo> | SupportInfo)
-      ).languages
-        .flatMap((language) => language.extensions)
-        .filter((extension) => !!extension)
-        // Prettier supports ".swcrc" as a file instead of an extension
-        // So we add ".swcrc" as a supported extension manually
-        // which allows it to be considered for calculating "patterns"
-        .concat('.swcrc')
-    );
-
-    const patterns = p.files
+    // Deleted files still show up in the changed-file set, and neither
+    // formatter should be handed a path that is no longer there.
+    let patterns = p.files
       .map((f) => path.relative(workspaceRoot, f))
-      .filter((f) => fileExists(f) && supportedExtensions.has(path.extname(f)));
+      .filter((f) => fileExists(f));
+
+    if (formatterType === 'prettier') {
+      // oxfmt needs no equivalent filter - it silently skips file types it
+      // does not handle, and its base args keep an all-skipped run green.
+      patterns = await filterToPrettierSupportedFiles(patterns);
+    }
 
     // exclude patterns in .nxignore or .gitignore
     const nonIgnoredPatterns = getIgnoreObject().filter(patterns);
 
-    return args.libsAndApps
-      ? await getPatternsFromApps(
-          nonIgnoredPatterns,
-          await allFileData(),
-          graph
-        )
-      : nonIgnoredPatterns;
+    if (args.libsAndApps) {
+      return getPatternsFromApps(nonIgnoredPatterns);
+    }
+    return nonIgnoredPatterns;
   } catch (err) {
     output.error({
       title:
@@ -138,19 +160,17 @@ async function getPatterns(
   }
 }
 
-async function getPatternsFromApps(
-  affectedFiles: string[],
-  allWorkspaceFiles: FileData[],
-  projectGraph: ProjectGraph
-): Promise<string[]> {
-  const graph = await createProjectGraphAsync({ exitOnError: true });
+async function getPatternsFromApps(affectedFiles: string[]): Promise<string[]> {
+  const graph = await createProjectGraphAsync({
+    exitOnError: true,
+  });
   const affectedGraph = await filterAffected(
     graph,
-    calculateFileChanges(affectedFiles, allWorkspaceFiles)
+    calculateFileChanges(affectedFiles)
   );
   return getPatternsFromProjects(
     Object.keys(affectedGraph.nodes),
-    projectGraph
+    affectedGraph
   );
 }
 
@@ -160,13 +180,10 @@ function addRootConfigFiles(chunkList: string[][], nxArgs: NxArgs): void {
   }
   const chunk = [];
   const addToChunkIfNeeded = (file: string) => {
-    if (chunkList.every((c) => !c.includes(`"${file}"`))) {
+    if (chunkList.every((c) => !c.includes(file))) {
       chunk.push(file);
     }
   };
-  // if (workspaceJsonPath) {
-  //   addToChunkIfNeeded(workspaceJsonPath);
-  // }
   ['nx.json', getRootTsConfigFileName()]
     .filter(Boolean)
     .forEach(addToChunkIfNeeded);
@@ -183,57 +200,49 @@ function getPatternsFromProjects(
   return getProjectRoots(projects, projectGraph);
 }
 
-function write(patterns: string[]) {
-  if (patterns.length > 0) {
-    const [swcrcPatterns, regularPatterns] = patterns.reduce(
-      (result, pattern) => {
-        result[pattern.includes('.swcrc') ? 0 : 1].push(pattern);
-        return result;
-      },
-      [[], []] as [swcrcPatterns: string[], regularPatterns: string[]]
-    );
+function write(formatterType: FormatterType, patterns: string[]): void {
+  if (patterns.length === 0) {
+    return;
+  }
 
-    execSync(
-      `node "${PRETTIER_PATH}" --write --list-different ${regularPatterns.join(
-        ' '
-      )}`,
-      {
-        stdio: [0, 1, 2],
-      }
-    );
-
-    if (swcrcPatterns.length > 0) {
-      execSync(
-        `node "${PRETTIER_PATH}" --write --list-different ${swcrcPatterns.join(
-          ' '
-        )} --parser json`,
-        {
-          stdio: [0, 1, 2],
-        }
-      );
+  switch (formatterType) {
+    case 'oxfmt':
+      writeWithOxfmt(patterns);
+      break;
+    case 'prettier':
+      writeWithPrettier(patterns);
+      break;
+    default: {
+      // Without this, an unhandled formatter makes `nx format:write` exit 0
+      // having formatted nothing, while `check()` throws - the two halves of
+      // the same command disagreeing.
+      const unhandled: never = formatterType;
+      throw new Error(`Unhandled formatter: ${unhandled}`);
     }
   }
 }
 
-async function check(patterns: string[]): Promise<string[]> {
+async function check(
+  formatterType: FormatterType,
+  patterns: string[]
+): Promise<string[]> {
   if (patterns.length === 0) {
     return [];
   }
-  return new Promise((resolve) => {
-    exec(
-      `node "${PRETTIER_PATH}" --list-different ${patterns.join(' ')}`,
-      { encoding: 'utf-8' },
-      (error, stdout) => {
-        if (error) {
-          // The command failed so there are files with different formatting. Prettier writes them to stdout, newline separated.
-          resolve(stdout.trim().split('\n'));
-        } else {
-          // The command succeeded so there are no files with different formatting
-          resolve([]);
-        }
-      }
-    );
-  });
+
+  switch (formatterType) {
+    case 'oxfmt':
+      return checkWithOxfmt(patterns);
+    case 'prettier':
+      return checkWithPrettier(patterns);
+    default: {
+      // `strict: false` does not make a missing case an error on its own, but
+      // it does reject this assignment - so adding a formatter fails to compile
+      // here instead of returning undefined into a caller that spreads it.
+      const unhandled: never = formatterType;
+      throw new Error(`Unhandled formatter: ${unhandled}`);
+    }
+  }
 }
 
 function sortTsConfig() {
@@ -246,9 +255,4 @@ function sortTsConfig() {
   } catch (e) {
     // catch noop
   }
-}
-
-function getPrettierPath() {
-  const { bin } = readModulePackageJson('prettier').packageJson;
-  return require.resolve(path.join('prettier', bin as string));
 }

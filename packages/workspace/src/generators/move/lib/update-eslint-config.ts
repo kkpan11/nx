@@ -15,8 +15,12 @@ export function updateEslintConfig(
   if (
     !tree.exists('.eslintrc.json') &&
     !tree.exists('eslint.config.js') &&
+    !tree.exists('eslint.config.cjs') &&
+    !tree.exists('eslint.config.mjs') &&
     !tree.exists('.eslintrc.base.json') &&
-    !tree.exists('eslint.base.config.js')
+    !tree.exists('eslint.base.config.js') &&
+    !tree.exists('eslint.base.config.cjs') &&
+    !tree.exists('eslint.base.config.mjs')
   ) {
     return;
   }
@@ -24,7 +28,7 @@ export function updateEslintConfig(
     const {
       updateRelativePathsInConfig,
       // nx-ignore-next-line
-    } = require('@nx/eslint/src/generators/utils/eslint-file');
+    } = require('@nx/eslint/internal');
     updateRelativePathsInConfig(
       tree,
       project.root,

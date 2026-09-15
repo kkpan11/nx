@@ -1,9 +1,9 @@
 import { logger, names, readProjectConfiguration, Tree } from '@nx/devkit';
-
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
+import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/internal';
 
 import { assertValidStyle } from '../../../utils/assertion';
 import { NormalizedSchema, Schema } from '../schema';
+import { getProjectType } from '@nx/js/internal';
 
 export async function normalizeOptions(
   tree: Tree,
@@ -16,20 +16,14 @@ export async function normalizeOptions(
     directory,
     fileName,
     filePath,
+    fileExtension,
+    fileExtensionType,
     project: projectName,
   } = await determineArtifactNameAndDirectoryOptions(tree, {
-    artifactType: 'component',
-    callingGenerator: '@nx/react:component',
+    path: options.path,
     name: options.name,
-    directory: options.directory,
-    derivedDirectory: options.derivedDirectory ?? options.directory,
-    flat: options.flat,
-    nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-    project: options.project,
+    allowedFileExtensions: ['js', 'jsx', 'ts', 'tsx'],
     fileExtension: 'tsx',
-    fileName: options.fileName,
-    pascalCaseFile: options.pascalCaseFiles,
-    pascalCaseDirectory: options.pascalCaseDirectory,
   });
 
   const project = readProjectConfiguration(tree, projectName);
@@ -42,11 +36,10 @@ export async function normalizeOptions(
     projectType,
   } = project;
 
-  const styledModule = /^(css|scss|less|none)$/.test(options.style)
-    ? null
-    : options.style;
-
-  if (options.export && projectType === 'application') {
+  if (
+    options.export &&
+    getProjectType(tree, projectRoot, projectType) === 'application'
+  ) {
     logger.warn(
       `The "--export" option should not be used with applications and will do nothing.`
     );
@@ -62,13 +55,15 @@ export async function normalizeOptions(
 
   return {
     ...options,
-    projectName,
     directory,
-    styledModule,
+    projectName,
     hasStyles: options.style !== 'none',
     className,
     fileName,
     filePath,
-    projectSourceRoot: projectSourceRoot ?? projectRoot,
+    projectRoot,
+    projectSourceRoot,
+    fileExtension,
+    fileExtensionType,
   };
 }

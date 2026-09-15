@@ -1,12 +1,16 @@
 import type { Tree } from '@nx/devkit';
+import { joinPathFragments, names } from '@nx/devkit';
+import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/internal';
+import { getModuleTypeSeparator } from '../../utils/artifact-types';
+import { validateClassName } from '../../utils/validations';
 import type { NormalizedSchema, Schema } from '../schema';
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
-import { names } from '@nx/devkit';
 
 export async function normalizeOptions(
   tree: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
+  options.typeSeparator ??= '-';
+
   const {
     artifactName: name,
     directory,
@@ -14,19 +18,24 @@ export async function normalizeOptions(
     filePath,
     project: projectName,
   } = await determineArtifactNameAndDirectoryOptions(tree, {
-    artifactType: 'pipe',
-    callingGenerator: '@nx/angular:scam-pipe',
     name: options.name,
-    directory: options.directory ?? options.path,
-    flat: options.flat,
-    nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-    project: options.project,
+    path: options.path,
     suffix: 'pipe',
+    suffixSeparator: options.typeSeparator,
+    allowedFileExtensions: ['ts'],
+    fileExtension: 'ts',
   });
 
   const { className } = names(name);
   const { className: suffixClassName } = names('pipe');
   const symbolName = `${className}${suffixClassName}`;
+  validateClassName(symbolName);
+
+  const moduleTypeSeparator = getModuleTypeSeparator(tree);
+  const modulePath = joinPathFragments(
+    directory,
+    `${name}${moduleTypeSeparator}module.ts`
+  );
 
   return {
     ...options,
@@ -38,5 +47,6 @@ export async function normalizeOptions(
     name,
     symbolName,
     projectName,
+    modulePath,
   };
 }

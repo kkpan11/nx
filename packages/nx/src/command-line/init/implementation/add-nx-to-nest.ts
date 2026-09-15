@@ -1,7 +1,8 @@
-import * as enquirer from 'enquirer';
-import { unlinkSync, writeFileSync } from 'fs-extra';
+import { multiselectPrompt, textPrompt } from '../../../utils/prompt-helpers';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'path';
 import { InitArgs } from '../init-v1';
+import { recordInitWrite } from './format';
 import { NxJsonConfiguration } from '../../../config/nx-json';
 import { ProjectConfiguration } from '../../../config/workspace-json-project-json';
 import {
@@ -11,17 +12,22 @@ import {
 } from '../../../utils/fileutils';
 import { output } from '../../../utils/output';
 import { PackageJson } from '../../../utils/package-json';
-import { getPackageManagerCommand } from '../../../utils/package-manager';
+import {
+  detectPackageManager,
+  getPackageManagerCommand,
+} from '../../../utils/package-manager';
 import {
   addDepsToPackageJson,
   createNxJsonFile,
   initCloud,
   markRootPackageJsonAsNxProjectLegacy,
   runInstall,
+  setNeverConnectToCloud,
   updateGitIgnore,
 } from './utils';
 import { nxVersion } from '../../../utils/versions';
-import { connectExistingRepoToNxCloudPrompt } from '../../connect/connect-to-nx-cloud';
+import { connectExistingRepoToNxCloudPrompt } from '../../nx-cloud/connect/connect-to-nx-cloud';
+import { MessageOptionKey } from '../../../utils/ab-testing';
 
 type Options = Pick<InitArgs, 'nxCloud' | 'interactive' | 'cacheable'>;
 type NestCLIConfiguration = any;
@@ -66,50 +72,41 @@ export async function addNxToNest(options: Options, packageJson: PackageJson) {
 
   let cacheableOperations: string[];
   let scriptOutputs = {};
-  let useNxCloud: boolean;
+  let nxCloudChoice: MessageOptionKey;
 
   if (options.interactive && scripts.length > 0) {
     output.log({
       title:
         '🧑‍🔧 Please answer the following questions about the scripts found in your package.json in order to generate task runner configuration',
     });
-    cacheableOperations = (
-      await enquirer.prompt<{ cacheableOperations: string[] }>([
-        {
-          type: 'multiselect',
-          name: 'cacheableOperations',
-          message:
-            'Which of the following scripts are cacheable? (Produce the same output given the same input, e.g. build, test and lint usually are, serve and start are not)',
-          choices: scripts,
-          /**
-           * limit is missing from the interface but it limits the amount of options shown
-           */
-          limit: process.stdout.rows - 4, // 4 leaves room for the header above, the prompt and some whitespace
-        } as any,
-      ])
-    ).cacheableOperations;
+    cacheableOperations = await multiselectPrompt({
+      message:
+        'Which of the following scripts are cacheable? (Produce the same output given the same input, e.g. build, test and lint usually are, serve and start are not)',
+      choices: scripts,
+    });
 
     for (const scriptName of cacheableOperations) {
-      scriptOutputs[scriptName] = (
-        await enquirer.prompt([
-          {
-            type: 'input',
-            name: scriptName,
-            message: `Does the "${scriptName}" script create any outputs? If not, leave blank, otherwise provide a path (e.g. dist, lib, build, coverage)`,
-          },
-        ])
-      )[scriptName];
+      scriptOutputs[scriptName] = await textPrompt({
+        message: `Does the "${scriptName}" script create any outputs? If not, leave blank, otherwise provide a path (e.g. dist, lib, build, coverage)`,
+      });
     }
 
-    useNxCloud =
-      options.nxCloud ?? (await connectExistingRepoToNxCloudPrompt());
+    nxCloudChoice =
+      options.nxCloud === true
+        ? 'yes'
+        : options.nxCloud === false
+          ? 'skip'
+          : await connectExistingRepoToNxCloudPrompt();
   } else {
     cacheableOperations = options.cacheable ?? [];
-    useNxCloud =
-      options.nxCloud ??
-      (options.interactive
-        ? await connectExistingRepoToNxCloudPrompt()
-        : false);
+    nxCloudChoice =
+      options.nxCloud === true
+        ? 'yes'
+        : options.nxCloud === false
+          ? 'skip'
+          : options.interactive
+            ? await connectExistingRepoToNxCloudPrompt()
+            : 'skip';
   }
 
   createNxJsonFile(
@@ -119,10 +116,11 @@ export async function addNxToNest(options: Options, packageJson: PackageJson) {
     scriptOutputs
   );
 
-  const pmc = getPackageManagerCommand();
+  const packageManager = detectPackageManager(repoRoot);
+  const pmc = getPackageManagerCommand(packageManager);
 
   updateGitIgnore(repoRoot);
-  addDepsToPackageJson(repoRoot);
+  addDepsToPackageJson(repoRoot, packageManager);
   addNestPluginToPackageJson(repoRoot);
   markRootPackageJsonAsNxProjectLegacy(repoRoot, cacheableOperations, pmc);
 
@@ -136,11 +134,13 @@ export async function addNxToNest(options: Options, packageJson: PackageJson) {
 
   output.log({ title: '📦 Installing dependencies' });
 
-  runInstall(repoRoot);
+  runInstall(repoRoot, packageManager, pmc);
 
-  if (useNxCloud) {
+  if (nxCloudChoice === 'yes') {
     output.log({ title: '🛠️ Setting up Nx Cloud' });
-    initCloud(repoRoot, 'nx-init-nest');
+    await initCloud('nx-init-nest');
+  } else if (nxCloudChoice === 'never') {
+    setNeverConnectToCloud(repoRoot);
   }
 }
 
@@ -150,6 +150,7 @@ function addNestPluginToPackageJson(repoRoot: string) {
   json.devDependencies['@nx/nest'] = nxVersion;
   json.devDependencies['@nx/jest'] = nxVersion;
   writeJsonFile(path, json);
+  recordInitWrite(path);
 }
 
 function createProjectJson(
@@ -240,6 +241,7 @@ function createProjectJson(
   }
 
   writeJsonFile(path, json);
+  recordInitWrite(path);
 }
 
 function getJestOptions(
@@ -291,6 +293,7 @@ module.exports = {...nxPreset};
 `,
       'utf8'
     );
+    recordInitWrite(jestPresetPath);
     return true;
   }
 
@@ -325,11 +328,13 @@ function addJestTargets(
     `export default ${JSON.stringify(unitTestOptions, null, 2)}`,
     'utf8'
   );
+  recordInitWrite(unitTestConfigPath);
   writeFileSync(
     e2eTestConfigPath,
     `export default ${JSON.stringify(e2eTestOptions, null, 2)}`,
     'utf8'
   );
+  recordInitWrite(e2eTestConfigPath);
 
   projectJson.targets['test'] = {
     executor: '@nx/jest:jest',
@@ -365,6 +370,7 @@ function addNrwlJsPluginsConfig(repoRoot: string) {
   }
 
   writeJsonFile(path, json);
+  recordInitWrite(path);
 }
 
 function updatePackageJsonScripts(repoRoot: string, isJS: boolean) {
@@ -412,6 +418,7 @@ function updatePackageJsonScripts(repoRoot: string, isJS: boolean) {
   }
 
   writeJsonFile(path, json);
+  recordInitWrite(path);
 }
 
 function updateTsConfig(repoRoot: string, sourceRoot: string) {
@@ -425,6 +432,7 @@ function updateTsConfig(repoRoot: string, sourceRoot: string) {
   json.include.push(`${sourceRoot}/**/*.ts`);
 
   writeJsonFile(path, json);
+  recordInitWrite(path);
 }
 
 function removeFile(repoRoot: string, file: string) {

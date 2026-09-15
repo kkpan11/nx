@@ -1,11 +1,22 @@
-import type { Tree } from '@nx/devkit';
 import {
   addDependenciesToPackageJson,
   formatFiles,
   readProjectConfiguration,
+  runTasksInSerial,
+  type GeneratorCallback,
+  type Tree,
 } from '@nx/devkit';
-import type { Schema } from './schema';
-
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
+import {
+  moduleFederationEnhancedVersion,
+  nxVersion,
+  tsNodeVersion,
+  webpackMergeVersion,
+} from '../../utils/versions';
+import {
+  getInstalledAngularDevkitVersion,
+  versions,
+} from '../utils/version-utils';
 import {
   addCypressOnErrorWorkaround,
   addRemoteEntry,
@@ -14,24 +25,23 @@ import {
   fixBootstrap,
   generateWebpackConfig,
   getRemotesWithPorts,
+  moveAngularPluginToDependencies,
   normalizeOptions,
   removeDeadCodeFromRemote,
   setupHostIfDynamic,
-  setupTspathForRemote,
   setupServeTarget,
+  setupTspathForRemote,
   updateHostAppRoutes,
   updateTsConfig,
 } from './lib';
-import {
-  moduleFederationEnhancedVersion,
-  nxVersion,
-} from '../../utils/versions';
+import type { Schema } from './schema';
 
 export async function setupMf(tree: Tree, rawOptions: Schema) {
+  assertSupportedAngularVersion(tree);
   const options = normalizeOptions(tree, rawOptions);
   const projectConfig = readProjectConfiguration(tree, options.appName);
 
-  let installTask = () => {};
+  const tasks: GeneratorCallback[] = [];
   if (options.mfType === 'remote') {
     addRemoteToHost(tree, {
       appName: options.appName,
@@ -43,14 +53,19 @@ export async function setupMf(tree: Tree, rawOptions: Schema) {
     removeDeadCodeFromRemote(tree, options);
     setupTspathForRemote(tree, options);
     if (!options.skipPackageJson) {
-      installTask = addDependenciesToPackageJson(
-        tree,
-        {},
-        {
-          '@nx/web': nxVersion,
-          '@nx/webpack': nxVersion,
-          '@module-federation/enhanced': moduleFederationEnhancedVersion,
-        }
+      tasks.push(
+        addDependenciesToPackageJson(
+          tree,
+          {
+            '@module-federation/enhanced': moduleFederationEnhancedVersion,
+          },
+          {
+            '@nx/web': nxVersion,
+            '@nx/webpack': nxVersion,
+            'webpack-merge': webpackMergeVersion,
+            '@nx/module-federation': nxVersion,
+          }
+        )
       );
     }
   }
@@ -75,21 +90,65 @@ export async function setupMf(tree: Tree, rawOptions: Schema) {
       });
     }
     if (!options.skipPackageJson) {
-      installTask = addDependenciesToPackageJson(
-        tree,
-        {},
-        {
-          '@nx/webpack': nxVersion,
-          '@module-federation/enhanced': moduleFederationEnhancedVersion,
-        }
+      tasks.push(
+        addDependenciesToPackageJson(
+          tree,
+          {},
+          {
+            '@nx/webpack': nxVersion,
+            'webpack-merge': webpackMergeVersion,
+            '@module-federation/enhanced': moduleFederationEnhancedVersion,
+            '@nx/module-federation': nxVersion,
+          }
+        )
       );
     }
   }
 
   fixBootstrap(tree, projectConfig.root, options);
 
+  if (options.mfType === 'host' || options.federationType === 'dynamic') {
+    /**
+     * Host applications and dynamic federation applications generate runtime
+     * code that depends on the @nx/angular plugin. Ensure that the plugin is
+     * in the production dependencies.
+     */
+    moveAngularPluginToDependencies(tree);
+  }
+
   if (!options.skipE2E) {
     addCypressOnErrorWorkaround(tree, options);
+  }
+
+  if (!options.skipPackageJson && options.typescriptConfiguration) {
+    // Angular custom-webpack loads webpack.config.ts at build time. Node native
+    // TS strip can't resolve the extensionless `./module-federation.config`
+    // import under strict ESM, so loadTsFile needs ts-node as the fallback.
+    tasks.push(
+      addDependenciesToPackageJson(
+        tree,
+        {},
+        { 'ts-node': tsNodeVersion },
+        undefined,
+        true
+      )
+    );
+  }
+
+  if (!options.skipPackageJson) {
+    const angularDevkitVersion =
+      getInstalledAngularDevkitVersion(tree) ??
+      versions(tree).angularDevkitVersion;
+    // the executors used by MF require @angular-devkit/build-angular
+    tasks.push(
+      addDependenciesToPackageJson(
+        tree,
+        {},
+        { '@angular-devkit/build-angular': angularDevkitVersion },
+        undefined,
+        true
+      )
+    );
   }
 
   // format files
@@ -97,7 +156,7 @@ export async function setupMf(tree: Tree, rawOptions: Schema) {
     await formatFiles(tree);
   }
 
-  return installTask;
+  return runTasksInSerial(...tasks);
 }
 
 export default setupMf;

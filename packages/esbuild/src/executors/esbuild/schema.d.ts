@@ -1,11 +1,11 @@
-import { AssetGlob } from '@nx/js/src/utils/assets/assets';
+import { AssetGlob } from '@nx/js/internal';
 import * as esbuild from 'esbuild';
 
 type Compiler = 'babel' | 'swc';
 
 export interface EsBuildExecutorOptions {
   additionalEntryPoints?: string[];
-  assets: (AssetGlob | string)[];
+  assets?: (AssetGlob | string)[];
   bundle?: boolean;
   declaration?: boolean;
   declarationRootDir?: string;
@@ -13,6 +13,7 @@ export interface EsBuildExecutorOptions {
   esbuildOptions?: Record<string, any>;
   esbuildConfig?: string;
   external?: string[];
+  excludeFromExternal?: string[];
   format?: Array<'esm' | 'cjs'>;
   generatePackageJson?: boolean;
   main: string;
@@ -30,9 +31,14 @@ export interface EsBuildExecutorOptions {
   watch?: boolean;
 }
 
-export interface NormalizedEsBuildExecutorOptions
-  extends Omit<EsBuildExecutorOptions, 'esbuildOptions' | 'esbuildConfig'> {
+export interface NormalizedEsBuildExecutorOptions extends Omit<
+  EsBuildExecutorOptions,
+  'esbuildOptions' | 'esbuildConfig'
+> {
+  assets: (AssetGlob | string)[];
   singleEntry: boolean;
   external: string[];
-  userDefinedBuildOptions: esbuild.BuildOptions;
+  excludeFromExternal: string[];
+  userDefinedBuildOptions: esbuild.BuildOptions | undefined;
+  isTsSolutionSetup?: boolean;
 }

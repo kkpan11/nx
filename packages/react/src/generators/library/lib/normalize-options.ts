@@ -1,4 +1,8 @@
 import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+} from '@nx/devkit/internal';
+import {
   getProjects,
   joinPathFragments,
   logger,
@@ -6,14 +10,22 @@ import {
   readNxJson,
   Tree,
 } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
 import { assertValidStyle } from '../../../utils/assertion';
 import { NormalizedSchema, Schema } from '../schema';
+import {
+  normalizeLinterOption,
+  getProjectSourceRoot,
+  getProjectType,
+  isUsingTsSolutionSetup,
+} from '@nx/js/internal';
 
 export async function normalizeOptions(
   host: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
+  const isUsingTsSolutionConfig = isUsingTsSolutionSetup(host);
+
+  await ensureRootProjectName(options, 'library');
   const {
     projectName,
     names: projectNames,
@@ -24,8 +36,6 @@ export async function normalizeOptions(
     projectType: 'library',
     directory: options.directory,
     importPath: options.importPath,
-    projectNameAndRootFormat: options.projectNameAndRootFormat,
-    callingGenerator: '@nx/react:library',
   });
   const nxJson = readNxJson(host);
   const addPlugin =
@@ -34,9 +44,7 @@ export async function normalizeOptions(
 
   options.addPlugin ??= addPlugin;
 
-  const fileName = options.simpleName
-    ? projectNames.projectSimpleName
-    : projectNames.projectFileName;
+  const fileName = projectNames.projectFileName;
 
   const parsedTags = options.tags
     ? options.tags.split(',').map((s) => s.trim())
@@ -59,48 +67,62 @@ export async function normalizeOptions(
     }
   }
 
-  const normalized = {
-    ...options,
-    compiler: options.compiler ?? 'babel',
-    bundler,
-    fileName,
-    routePath: `/${projectNames.projectSimpleName}`,
-    name: projectName,
-    projectRoot,
-    parsedTags,
-    importPath,
-  } as NormalizedSchema;
-
-  // Libraries with a bundler or is publishable must also be buildable.
-  normalized.buildable = Boolean(
-    normalized.bundler !== 'none' || options.buildable || options.publishable
-  );
-
-  normalized.inSourceTests === normalized.minimal || normalized.inSourceTests;
+  let appMain: string | undefined;
+  let appSourceRoot: string | undefined;
 
   if (options.appProject) {
     const appProjectConfig = getProjects(host).get(options.appProject);
+    const appProjectType = getProjectType(
+      host,
+      appProjectConfig.root,
+      appProjectConfig.projectType
+    );
 
-    if (appProjectConfig.projectType !== 'application') {
+    if (appProjectType !== 'application') {
       throw new Error(
-        `appProject expected type of "application" but got "${appProjectConfig.projectType}"`
+        `appProject expected type of "application" but got "${appProjectType}"`
       );
     }
 
-    normalized.appMain =
+    appMain =
       appProjectConfig.targets.build?.options?.main ??
       findMainEntry(host, appProjectConfig.root);
-    normalized.appSourceRoot = normalizePath(appProjectConfig.sourceRoot);
+    appSourceRoot = normalizePath(getProjectSourceRoot(appProjectConfig, host));
 
     // TODO(jack): We should use appEntryFile instead of appProject so users can directly set it rather than us inferring it.
-    if (!normalized.appMain) {
+    if (!appMain) {
       throw new Error(
         `Could not locate project main for ${options.appProject}`
       );
     }
   }
 
-  assertValidStyle(normalized.style);
+  assertValidStyle(options.style);
+
+  const normalized: NormalizedSchema = {
+    ...options,
+    compiler: options.compiler ?? 'babel',
+    bundler,
+    fileName,
+    routePath: `/${projectNames.projectSimpleName}`,
+    name: isUsingTsSolutionConfig && !options.name ? importPath : projectName,
+    projectRoot,
+    parsedTags,
+    importPath,
+    useProjectJson: options.useProjectJson ?? !isUsingTsSolutionConfig,
+    isUsingTsSolutionConfig,
+    js: options.js ?? false,
+    unitTestRunner: options.unitTestRunner ?? 'none',
+    // Libraries with a bundler or that are publishable must also be buildable.
+    buildable: Boolean(
+      bundler !== 'none' || options.buildable || options.publishable
+    ),
+    appMain,
+    appSourceRoot,
+    // The React-specific ESLint shaping is guarded on `=== 'eslint'`, so an
+    // unresolved `undefined` would create a bare config with none of it.
+    linter: await normalizeLinterOption(host, options.linter),
+  };
 
   return normalized;
 }

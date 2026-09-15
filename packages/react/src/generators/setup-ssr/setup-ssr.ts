@@ -1,4 +1,3 @@
-import type * as ts from 'typescript';
 import {
   addDependenciesToPackageJson,
   applyChangesToString,
@@ -6,7 +5,6 @@ import {
   formatFiles,
   generateFiles,
   joinPathFragments,
-  type ProjectGraph,
   readCachedProjectGraph,
   readNxJson,
   readProjectConfiguration,
@@ -14,8 +12,13 @@ import {
   updateNxJson,
   updateProjectConfiguration,
 } from '@nx/devkit';
+import { upsertTargetDefault } from '@nx/devkit/internal';
+import { assertSupportedReactVersion } from '../../utils/assert-supported-react-version';
+import type * as ts from 'typescript';
 
-import type { Schema } from './schema';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
+import { join } from 'path';
+import { addStaticRouter } from '../../utils/ast-utils';
 import {
   corsVersion,
   expressVersion,
@@ -23,9 +26,7 @@ import {
   typesCorsVersion,
   typesExpressVersion,
 } from '../../utils/versions';
-import { addStaticRouter } from '../../utils/ast-utils';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
-import { join } from 'path';
+import type { Schema } from './schema';
 
 let tsModule: typeof import('typescript');
 
@@ -69,6 +70,8 @@ async function getProjectConfig(tree: Tree, projectName: string) {
 }
 
 export async function setupSsrGenerator(tree: Tree, options: Schema) {
+  assertSupportedReactVersion(tree);
+
   const projectConfig = await getProjectConfig(tree, options.project);
   const projectRoot = projectConfig.root;
   const appImportCandidates: AppComponentInfo[] = [
@@ -81,7 +84,7 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
     return {
       importPath,
       filePath: joinPathFragments(
-        projectConfig.sourceRoot || projectConfig.root,
+        getProjectSourceRoot(projectConfig, tree),
         `${importPath}.tsx`
       ),
     };
@@ -124,11 +127,20 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
     );
   }
 
+  if (projectConfig.targets.build.executor === '@nx/rspack:rspack') {
+    options.bundler = 'rspack';
+  } else if (projectConfig.targets.build.executor === '@nx/webpack:webpack') {
+    options.bundler = 'webpack';
+  }
+
   projectConfig.targets = {
     ...projectConfig.targets,
     server: {
       dependsOn: ['build'],
-      executor: '@nx/webpack:webpack',
+      executor:
+        options.bundler === 'rspack'
+          ? '@nx/rspack:rspack'
+          : '@nx/webpack:webpack',
       outputs: ['{options.outputPath}'],
       defaultConfiguration: 'production',
       options: {
@@ -140,7 +152,14 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
         compiler: 'babel',
         externalDependencies: 'all',
         outputHashing: 'none',
-        webpackConfig: joinPathFragments(projectRoot, 'webpack.config.js'),
+        ...(options.bundler === 'rspack'
+          ? { rspackConfig: joinPathFragments(projectRoot, 'rspack.config.js') }
+          : {
+              webpackConfig: joinPathFragments(
+                projectRoot,
+                'webpack.config.js'
+              ),
+            }),
       },
       configurations: {
         development: {
@@ -176,7 +195,10 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
       },
     },
     serve: {
-      executor: '@nx/webpack:ssr-dev-server',
+      executor:
+        options.bundler === 'rspack'
+          ? '@nx/rspack:ssr-dev-server'
+          : '@nx/webpack:ssr-dev-server',
       defaultConfiguration: 'development',
       options: {
         browserTarget: `${options.project}:build:development`,
@@ -210,12 +232,10 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
       'server',
     ];
   }
-  nxJson.targetDefaults ??= {};
-  nxJson.targetDefaults['server'] ??= {};
-  nxJson.targetDefaults.server.cache = true;
 
   generateFiles(tree, join(__dirname, 'files'), projectRoot, {
     tmpl: '',
+    port: Number(options?.serverPort) || 4200,
     extraInclude:
       options.extraInclude?.length > 0
         ? `"${options.extraInclude.join('", "')}",`
@@ -240,6 +260,7 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
     tree.write(serverEntry, changes);
   }
 
+  upsertTargetDefault(tree, nxJson, { target: 'server', cache: true });
   updateNxJson(tree, nxJson);
 
   const installTask = addDependenciesToPackageJson(
@@ -252,7 +273,9 @@ export async function setupSsrGenerator(tree: Tree, options: Schema) {
     {
       '@types/express': typesExpressVersion,
       '@types/cors': typesCorsVersion,
-    }
+    },
+    undefined,
+    true
   );
 
   await formatFiles(tree);

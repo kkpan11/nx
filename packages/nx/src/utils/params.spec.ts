@@ -1,4 +1,4 @@
-import * as yargsParser from 'yargs-parser';
+import yargsParser from 'yargs-parser';
 import { logger } from './logger';
 import {
   applyVerbosity,
@@ -81,6 +81,20 @@ describe('params', () => {
       expect(options).toEqual({
         overriddenOpt: 'config value',
       });
+
+      expect(target.options).toEqual({
+        overriddenOpt: 'target value',
+      });
+      expect(
+        combineOptionsForExecutor(
+          {},
+          undefined,
+          target,
+          schema,
+          'proj',
+          process.cwd()
+        )
+      ).toEqual({ overriddenOpt: 'target value' });
     });
 
     it('should combine target, configuration, and passed options', () => {
@@ -184,6 +198,43 @@ describe('params', () => {
         'production',
         target,
         schema,
+        'proj',
+        process.cwd()
+      );
+
+      expect(options).toEqual({});
+    });
+
+    it('should not throw if missing required property of an optional object', () => {
+      const commandLineOpts = {};
+      const target: TargetConfiguration = {
+        executor: '@nx/do:stuff',
+        options: {},
+      };
+
+      const options = combineOptionsForExecutor(
+        commandLineOpts,
+        'production',
+        target,
+        {
+          properties: {
+            foo: {
+              type: 'object',
+              properties: {
+                bar: {
+                  description: 'The target server ',
+                  type: 'string',
+                },
+                baz: {
+                  type: 'string',
+                  default: 'qux',
+                },
+              },
+              required: ['bar'],
+            },
+          },
+          required: [],
+        },
         'proj',
         process.cwd()
       );
@@ -595,7 +646,9 @@ describe('params', () => {
 
     it('should be able to set defaults for underlying properties', () => {
       const opts = setDefaults(
-        {},
+        {
+          a: {},
+        },
         {
           properties: {
             a: {
@@ -798,6 +851,27 @@ describe('params', () => {
       ).toThrow("Required property 'a' is missing");
     });
 
+    it('should not throw if missing a required property of an optional object', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          {},
+          {
+            properties: {
+              a: {
+                type: 'object',
+                properties: {
+                  b: {
+                    type: 'boolean',
+                  },
+                },
+                required: ['b'],
+              },
+            },
+          }
+        )
+      ).not.toThrow();
+    });
+
     it('should throw if none of the oneOf conditions are met', () => {
       expect(() =>
         validateOptsAgainstSchema(
@@ -826,10 +900,10 @@ describe('params', () => {
           }
         )
       ).toThrowErrorMatchingInlineSnapshot(`
-        "Options did not match schema: {}.
+        [Error: Options did not match schema: {}.
         Please fix 1 of the following errors:
          - Required property 'a' is missing
-         - Required property 'b' is missing"
+         - Required property 'b' is missing]
       `);
     });
 
@@ -864,13 +938,13 @@ describe('params', () => {
           }
         )
       ).toThrowErrorMatchingInlineSnapshot(`
-        "Options did not match schema: {
+        [Error: Options did not match schema: {
           "a": true,
           "b": false
         }.
         Should only match one of 
          - {"required":["a"]}
-         - {"required":["b"]}"
+         - {"required":["b"]}]
       `);
     });
 
@@ -902,9 +976,9 @@ describe('params', () => {
           }
         )
       ).toThrowErrorMatchingInlineSnapshot(`
-        "Options did not match schema. Please fix any of the following errors:
+        [Error: Options did not match schema. Please fix any of the following errors:
          - Required property 'a' is missing
-         - Required property 'b' is missing"
+         - Required property 'b' is missing]
       `);
     });
 
@@ -962,13 +1036,20 @@ describe('params', () => {
     it('should throw if property name matching pattern is not valid', () => {
       expect(() =>
         validateOptsAgainstSchema(
-          { a: true, b: false },
+          {
+            a: true,
+            b: false,
+          },
           {
             properties: {
-              a: { type: 'boolean' },
+              a: {
+                type: 'boolean',
+              },
             },
             patternProperties: {
-              '^b$': { type: 'number' },
+              '^b$': {
+                type: 'number',
+              },
             },
             additionalProperties: false,
           }
@@ -976,63 +1057,6 @@ describe('params', () => {
       ).toThrow(
         "Property 'b' does not match the schema. 'false' should be a 'number'."
       );
-    });
-
-    it('should handle properties matching patternProperties schema', () => {
-      expect(() =>
-        validateOptsAgainstSchema(
-          { a: true, b: false },
-          {
-            properties: {
-              a: { type: 'boolean' },
-            },
-            patternProperties: {
-              '^b$': { type: 'boolean' },
-            },
-            additionalProperties: false,
-          }
-        )
-      ).not.toThrow();
-    });
-
-    it('should throw if additional property does not match schema', () => {
-      expect(() =>
-        validateOptsAgainstSchema(
-          { a: true, b: 'b', c: 'c' },
-          {
-            properties: {
-              a: { type: 'boolean' },
-            },
-            patternProperties: {
-              '^b$': { type: 'string' },
-            },
-            additionalProperties: {
-              type: 'number',
-            },
-          }
-        )
-      ).toThrow(
-        "Property 'c' does not match the schema. 'c' should be a 'number'."
-      );
-    });
-
-    it('should handle additional properties when they match the additionalProperties schema', () => {
-      expect(() =>
-        validateOptsAgainstSchema(
-          { a: true, b: 'b', c: 1, d: 2 },
-          {
-            properties: {
-              a: { type: 'boolean' },
-            },
-            patternProperties: {
-              '^b$': { type: 'string' },
-            },
-            additionalProperties: {
-              type: 'number',
-            },
-          }
-        )
-      ).not.toThrow();
     });
 
     it('should throw if found unsupported positional property', () => {
@@ -1101,12 +1125,20 @@ describe('params', () => {
         expect(() =>
           validateOptsAgainstSchema({ a: true }, schema)
         ).toThrowErrorMatchingInlineSnapshot(
-          `"Property 'a' does not match the schema. 'true' should be '3'."`
+          `
+          SchemaError {
+            "message": "Property 'a' does not match the schema. 'true' should be '3'.",
+          }
+        `
         );
         expect(() =>
           validateOptsAgainstSchema({ a: 123 }, schema)
         ).toThrowErrorMatchingInlineSnapshot(
-          `"Property 'a' does not match the schema. '123' should be '3'."`
+          `
+          SchemaError {
+            "message": "Property 'a' does not match the schema. '123' should be '3'.",
+          }
+        `
         );
       });
 
@@ -1128,7 +1160,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 123 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. '123' should be a 'string,boolean'."`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. '123' should be a 'string,boolean'.",
+            }
+          `
           );
         });
       });
@@ -1149,7 +1185,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 'xyz' }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 'xyz' should match the pattern '^a'."`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 'xyz' should match the pattern '^a'.",
+            }
+          `
           );
         });
 
@@ -1165,7 +1205,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 'a' }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 'a' (1 character(s)) should have at least 2 character(s)."`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 'a' (1 character(s)) should have at least 2 character(s).",
+            }
+          `
           );
           expect(() =>
             validateOptsAgainstSchema({ a: 'abc' }, schema)
@@ -1186,8 +1230,97 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 'xyz' }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 'xyz' should match the pattern '^a'."`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 'xyz' should match the pattern '^a'.",
+            }
+          `
           );
+        });
+      });
+
+      describe('null', () => {
+        it('should accept null when type is null', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: 'null',
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: null }, schema)
+          ).not.toThrow();
+        });
+
+        it('should reject null when type is not null', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: 'string',
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: null }, schema)
+          ).toThrow();
+        });
+
+        it('should accept null when type array includes null', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: ['string', 'null'],
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: null }, schema)
+          ).not.toThrow();
+        });
+
+        it('should accept string when type array includes string and null', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: ['string', 'null'],
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: 'test' }, schema)
+          ).not.toThrow();
+        });
+
+        it('should reject null when type array does not include null', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: ['string', 'boolean'],
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: null }, schema)
+          ).toThrow();
+        });
+
+        it('should accept null in nested objects when schema allows it', () => {
+          const schema = {
+            properties: {
+              a: {
+                type: 'object',
+                properties: {
+                  b: {
+                    type: ['string', 'null'],
+                  },
+                },
+              },
+            },
+          };
+          expect(() =>
+            validateOptsAgainstSchema({ a: { b: null } }, schema)
+          ).not.toThrow();
         });
       });
 
@@ -1207,7 +1340,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 5 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 5 should be a multiple of 3."`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 5 should be a multiple of 3.",
+            }
+          `
           );
         });
 
@@ -1223,7 +1360,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 2 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 2 should be at least 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 2 should be at least 3",
+            }
+          `
           );
           expect(() =>
             validateOptsAgainstSchema({ a: 3 }, schema)
@@ -1245,12 +1386,20 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 2 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 2 should be greater than 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 2 should be greater than 3",
+            }
+          `
           );
           expect(() =>
             validateOptsAgainstSchema({ a: 3 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 3 should be greater than 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 3 should be greater than 3",
+            }
+          `
           );
           expect(() =>
             validateOptsAgainstSchema({ a: 4 }, schema)
@@ -1275,7 +1424,11 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 4 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 4 should be at most 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 4 should be at most 3",
+            }
+          `
           );
         });
 
@@ -1294,12 +1447,20 @@ describe('params', () => {
           expect(() =>
             validateOptsAgainstSchema({ a: 3 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 3 should be less than 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 3 should be less than 3",
+            }
+          `
           );
           expect(() =>
             validateOptsAgainstSchema({ a: 4 }, schema)
           ).toThrowErrorMatchingInlineSnapshot(
-            `"Property 'a' does not match the schema. 4 should be less than 3"`
+            `
+            SchemaError {
+              "message": "Property 'a' does not match the schema. 4 should be less than 3",
+            }
+          `
           );
         });
       });
@@ -1495,6 +1656,132 @@ describe('params', () => {
       );
     });
 
+    it('should validate arrays with tuple items (items as array)', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { a: ['junit', { suiteName: 'MyApp' }] },
+          {
+            properties: {
+              a: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: [{ type: 'string' }, { type: 'object' }],
+              },
+            },
+          }
+        )
+      ).not.toThrow();
+    });
+
+    it('should throw when tuple item type does not match (items as array)', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { a: [123, { suiteName: 'MyApp' }] },
+          {
+            properties: {
+              a: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: [{ type: 'string' }, { type: 'object' }],
+              },
+            },
+          }
+        )
+      ).toThrow("Property 'a' does not match the schema.");
+    });
+
+    it('should pass when array length equals minItems', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { a: ['junit'] },
+          {
+            properties: {
+              a: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: [{ type: 'string' }, { type: 'object' }],
+              },
+            },
+          }
+        )
+      ).not.toThrow();
+    });
+
+    it('should throw when array length is below minItems', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { a: [] },
+          {
+            properties: {
+              a: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: [{ type: 'string' }, { type: 'object' }],
+              },
+            },
+          }
+        )
+      ).toThrow("Property 'a' does not match the schema.");
+    });
+
+    it('should throw when array length exceeds maxItems', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { a: ['junit', { suiteName: 'MyApp' }, 'html'] },
+          {
+            properties: {
+              a: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: [{ type: 'string' }, { type: 'object' }],
+              },
+            },
+          }
+        )
+      ).toThrow("Property 'a' does not match the schema.");
+    });
+
+    it('should validate reporters with oneOf including tuple items (issue scenario)', () => {
+      expect(() =>
+        validateOptsAgainstSchema(
+          { reporters: [['junit', { suiteName: 'MyApp' }]] },
+          {
+            properties: {
+              reporters: {
+                type: 'array',
+                items: {
+                  oneOf: [
+                    {
+                      anyOf: [{ type: 'string' }, { enum: ['junit', 'html'] }],
+                    },
+                    {
+                      type: 'array',
+                      minItems: 1,
+                      maxItems: 2,
+                      items: [
+                        {
+                          anyOf: [
+                            { type: 'string' },
+                            { enum: ['junit', 'html'] },
+                          ],
+                        },
+                        { type: 'object' },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          }
+        )
+      ).not.toThrow();
+    });
+
     it("should throw if the type doesn't match (objects)", () => {
       expect(() =>
         validateOptsAgainstSchema(
@@ -1542,7 +1829,7 @@ describe('params', () => {
 
   describe('warnDeprecations', () => {
     beforeEach(() => {
-      jest.spyOn(logger, 'warn').mockImplementation(() => {});
+      vi.spyOn(logger, 'warn').mockImplementation(() => {});
     });
 
     it('should not log a warning when an option marked as deprecated is not specified', () => {
@@ -1870,16 +2157,25 @@ describe('params', () => {
         }
       );
 
-      expect(prompts).toEqual([
-        {
-          message: 'What kind of pets do you have?',
-          name: 'pets',
-          type: 'multiselect',
-          choices: ['cat', 'dog', 'fish'],
-          limit: expect.any(Number),
-          validate: expect.any(Function),
-        },
-      ]);
+      // Limit is determined by terminal size
+      // deleting it to make the snapshot consistent
+      delete prompts[0].limit;
+
+      expect(prompts).toMatchInlineSnapshot(`
+        [
+          {
+            "choices": [
+              "cat",
+              "dog",
+              "fish",
+            ],
+            "message": "What kind of pets do you have?",
+            "name": "pets",
+            "type": "multiselect",
+            "validate": [Function],
+          },
+        ]
+      `);
     });
 
     describe('Project prompts', () => {

@@ -1,12 +1,19 @@
+import { POSTHOG_SNIPPET } from '@nx/nx-dev-feature-analytics';
 import type { Metadata, Viewport } from 'next';
-import { Header, Footer, AnnouncementBanner } from '@nx/nx-dev/ui-common';
-import AppRouterAnalytics from './app-router-analytics';
-import GlobalScripts from './global-scripts';
-
+import type { ReactNode } from 'react';
 import '../styles/main.css';
 
-// Metadata for the entire site
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : process.env.CONTEXT === 'deploy-preview' ||
+          process.env.CONTEXT === 'branch-deploy'
+        ? process.env.DEPLOY_PRIME_URL ||
+          process.env.DEPLOY_URL ||
+          'https://nx.dev'
+        : process.env.URL || 'https://nx.dev'
+  ),
   appleWebApp: { title: 'Nx' },
   applicationName: 'Nx',
   icons: [
@@ -37,9 +44,18 @@ export const metadata: Metadata = {
       rel: 'mask-icon',
     },
   ],
+  ...(process.env.NEXT_PUBLIC_NO_INDEX === 'true' && {
+    robots: {
+      index: false,
+      follow: false,
+      googleBot: {
+        index: false,
+        follow: false,
+      },
+    },
+  }),
 };
 
-// Viewport settings for the entire site
 export const viewport: Viewport = {
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#F8FAFC' },
@@ -49,20 +65,18 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const gaMeasurementId = 'UA-88380372-10';
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className="h-full scroll-smooth" suppressHydrationWarning>
-      <AppRouterAnalytics gaMeasurementId={gaMeasurementId} />
       <head>
         <meta
           name="msapplication-TileColor"
           content="#DA532C"
           key="windows-tile-color"
+        />
+        <script
+          data-cookieconsent="ignore"
+          dangerouslySetInnerHTML={{ __html: POSTHOG_SNIPPET }}
         />
         <script
           type="text/javascript"
@@ -79,12 +93,8 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="h-full bg-white text-slate-700 antialiased selection:bg-blue-500 selection:text-white dark:bg-slate-900 dark:text-slate-400 dark:selection:bg-sky-500">
-        <AnnouncementBanner />
-        <Header />
+      <body className="h-full bg-white text-zinc-700 antialiased selection:bg-blue-500 selection:text-white dark:bg-zinc-900 dark:text-zinc-400 dark:selection:bg-blue-500">
         {children}
-        <Footer />
-        <GlobalScripts gaMeasurementId={gaMeasurementId} />
       </body>
     </html>
   );

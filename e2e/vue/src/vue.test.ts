@@ -1,18 +1,32 @@
-import { cleanupProject, newProject, runCLI, uniq } from '@nx/e2e/utils';
+import {
+  cleanupProject,
+  killPorts,
+  newProject,
+  reservePort,
+  runCLI,
+  runE2ETests,
+  uniq,
+  updateFile,
+} from '@nx/e2e-utils';
 
 describe('Vue Plugin', () => {
   let proj: string;
 
   beforeAll(() => {
     proj = newProject({
-      packages: ['@nx/vue'],
-      unsetProjectNameAndRootFormat: false,
+      packages: [
+        '@nx/vue',
+        '@nx/vite',
+        '@nx/vitest',
+        '@nx/rsbuild',
+        '@nx/playwright',
+      ],
     });
   });
 
   afterAll(() => cleanupProject());
 
-  it('should serve application in dev mode', async () => {
+  it('should serve application in dev mode vite config', async () => {
     const app = uniq('app');
 
     runCLI(
@@ -26,12 +40,73 @@ describe('Vue Plugin', () => {
       `Successfully ran target build for project ${app}`
     );
 
-    // TODO: enable this when tests are passing again.
-    // if (runE2ETests()) {
-    //   const e2eResults = runCLI(`e2e ${app}-e2e --no-watch`);
-    //   expect(e2eResults).toContain('Successfully ran target e2e');
-    //   expect(await killPorts()).toBeTruthy();
-    // }
+    if (await runE2ETests('playwright')) {
+      const availablePort = await reservePort();
+
+      updateFile(`${app}-e2e/playwright.config.mts`, (content) => {
+        return content
+          .replace(
+            /const baseURL = process\.env\['BASE_URL'\] \|\| '[^']*';/,
+            `const baseURL = process.env['BASE_URL'] || 'http://localhost:${availablePort}';`
+          )
+          .replace(/url: '[^']*'/, `url: 'http://localhost:${availablePort}'`);
+      });
+
+      updateFile(`${app}/vite.config.mts`, (content) => {
+        return content.replace(
+          /preview:\s*{[^}]*}/,
+          `preview: {
+    port: ${availablePort},
+    host: 'localhost',
+  }`
+        );
+      });
+
+      const e2eResults = runCLI(`e2e ${app}-e2e`);
+      expect(e2eResults).toContain('Successfully ran target e2e');
+      expect(await killPorts(availablePort)).toBeTruthy();
+    }
+  }, 200_000);
+
+  it('should serve application in dev mode with rsbuild', async () => {
+    const app = uniq('app');
+
+    runCLI(
+      `generate @nx/vue:app ${app} --bundler=rsbuild --unitTestRunner=vitest --e2eTestRunner=playwright`
+    );
+    let result = runCLI(`test ${app}`);
+    expect(result).toContain(`Successfully ran target test for project ${app}`);
+
+    result = runCLI(`build ${app}`);
+    expect(result).toContain(
+      `Successfully ran target build for project ${app}`
+    );
+
+    if (await runE2ETests('playwright')) {
+      const availablePort = await reservePort();
+
+      updateFile(`${app}-e2e/playwright.config.mts`, (content) => {
+        return content
+          .replace(
+            /const baseURL = process\.env\['BASE_URL'\] \|\| '[^']*';/,
+            `const baseURL = process.env['BASE_URL'] || 'http://localhost:${availablePort}';`
+          )
+          .replace(/url: '[^']*'/, `url: 'http://localhost:${availablePort}'`);
+      });
+
+      updateFile(`${app}/rsbuild.config.ts`, (content) => {
+        return content.replace(
+          /server:\s*{[^}]*}/,
+          `server: {
+    port: ${availablePort},
+  }`
+        );
+      });
+
+      const e2eResults = runCLI(`e2e ${app}-e2e`);
+      expect(e2eResults).toContain('Successfully ran target e2e');
+      expect(await killPorts(availablePort)).toBeTruthy();
+    }
   }, 200_000);
 
   it('should build library', async () => {

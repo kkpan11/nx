@@ -1,22 +1,26 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface ApplicationGeneratorOptions {
-  name: string;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
+  directory: string;
+  name?: string;
   frontendProject?: string;
-  linter?: Linter;
+  linter?: LinterType;
+  formatter?: 'none' | 'prettier' | 'oxfmt';
   skipFormat?: boolean;
   skipPackageJson?: boolean;
-  standaloneConfig?: boolean;
   tags?: string;
-  unitTestRunner?: 'jest' | 'none';
+  unitTestRunner?: 'jest' | 'vitest' | 'none';
   e2eTestRunner?: 'jest' | 'none';
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   rootProject?: boolean;
   strict?: boolean;
   addPlugin?: boolean;
+  useTsSolution?: boolean;
+  useProjectJson?: boolean;
 }
 
 interface NormalizedOptions extends ApplicationGeneratorOptions {

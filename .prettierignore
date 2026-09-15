@@ -3,7 +3,7 @@ tmp
 /build
 node_modules
 /package.json
-/pnpm-lock.yaml
+pnpm-lock.yaml
 packages/workspace/src/generators/**/files/**/*.json
 packages/angular/src/schematics/**/files/**/*.json
 packages/angular/src/migrations/**/files/**/*.json
@@ -13,6 +13,7 @@ packages/express/src/schematics/**/files/**/*.json
 packages/nest/src/schematics/**/files/**/*.json
 packages/react/src/schematics/**/files/**/*.json
 packages/jest/src/schematics/**/files/**/*.json
+packages/gradle/project-graph/build/**/*.*
 packages/nx/src/plugins/js/lock-file/__fixtures__/**/*.*
 packages/**/schematics/**/files/**/*.html
 packages/**/generators/**/files/**/*.html
@@ -47,3 +48,18 @@ CODEOWNERS
 .pnpm-store
 
 /.nx/workspace-data
+/.nx/workflows/dynamic-changesets.yaml
+_files
+_solution
+
+# this file uses TS import attributes which the current prettier version does not support
+tools/documentation/create-embeddings/src/main.mts
+
+.nx/self-healing
+
+# Inlined from `@yarnpkg/parser` keep as is
+packages/nx/src/utils/yarn-syml/syml-grammar.js
+
+# Generated on Netlify builds; reformatting invalidates the sha256 digests in
+# index.json (see astro-docs/scripts/sync-agent-skills.mjs)
+astro-docs/public/.well-known/agent-skills

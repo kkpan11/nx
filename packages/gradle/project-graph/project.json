@@ -1,0 +1,28 @@
+{
+  "name": ":gradle-project-graph",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "targets": {
+    "publish-staging": {
+      "command": "./gradlew :gradle-project-graph:publish",
+      "cache": true,
+      "outputs": ["{projectRoot}/build/staging"]
+    },
+    "zip-staging": {
+      "command": "zip -r ../deployment.zip .",
+      "options": {
+        "cwd": "{projectRoot}/build/staging"
+      },
+      "inputs": ["{projectRoot}/build/staging"],
+      "outputs": ["{projectRoot}/build/deployment.zip"],
+      "dependsOn": ["publish-staging"]
+    },
+    "maven": {
+      "command": "npx ts-node publish-maven.ts --deploymentZipPath=build/deployment.zip",
+      "options": {
+        "cwd": "{projectRoot}"
+      },
+      "inputs": ["{projectRoot}/build/deployment.zip"],
+      "dependsOn": ["zip-staging"]
+    }
+  }
+}

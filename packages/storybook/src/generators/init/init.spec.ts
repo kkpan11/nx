@@ -3,7 +3,10 @@ import {
   type NxJsonConfiguration,
   type Tree,
   ProjectGraph,
+  updateNxJson,
+  readNxJson,
 } from '@nx/devkit';
+import { findTargetDefault } from '@nx/devkit/internal';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { initGenerator } from './init';
 
@@ -30,7 +33,10 @@ describe('@nx/storybook:init', () => {
       addPlugin: false,
     });
     const nxJson = readJson<NxJsonConfiguration>(tree, 'nx.json');
-    expect(nxJson.targetDefaults['build-storybook'].cache).toEqual(true);
+    const buildStorybookDefault = findTargetDefault(nxJson.targetDefaults, {
+      target: 'build-storybook',
+    });
+    expect(buildStorybookDefault?.cache).toEqual(true);
     delete process.env.NX_ADD_PLUGINS;
   });
 
@@ -55,5 +61,31 @@ describe('@nx/storybook:init', () => {
       addPlugin: true,
     });
     expect(tree.read('.gitignore', 'utf-8')).toMatchSnapshot();
+  });
+
+  it('should not duplicate cacheable operations in nx.json', async () => {
+    // ARRANGE
+    const nxJson = readNxJson(tree);
+    nxJson.tasksRunnerOptions ??= {};
+    nxJson.tasksRunnerOptions.default ??= {};
+    nxJson.tasksRunnerOptions.default.options ??= {};
+    nxJson.tasksRunnerOptions.default.options.cacheableOperations = [
+      'build-storybook',
+    ];
+    updateNxJson(tree, nxJson);
+
+    // ACT
+    await initGenerator(tree, {
+      addPlugin: false,
+    });
+
+    // ASSERT
+    const updatedNxJson = readNxJson(tree);
+    expect(updatedNxJson.tasksRunnerOptions.default.options.cacheableOperations)
+      .toMatchInlineSnapshot(`
+      [
+        "build-storybook",
+      ]
+    `);
   });
 });

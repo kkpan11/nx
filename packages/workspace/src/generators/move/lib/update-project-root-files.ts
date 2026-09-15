@@ -1,9 +1,13 @@
-import { updateJson, ProjectConfiguration, Tree } from '@nx/devkit';
-import { workspaceRoot } from '@nx/devkit';
+import {
+  updateJson,
+  ProjectConfiguration,
+  Tree,
+  workspaceRoot,
+} from '@nx/devkit';
 import * as path from 'path';
 import { extname, join } from 'path';
 import { NormalizedSchema } from '../schema';
-const allowedExt = ['.ts', '.js', '.json'];
+const allowedExt = ['.ts', '.js', '.json', '.cts', '.cjs'];
 
 /**
  * Updates the files in the root of the project
@@ -51,7 +55,11 @@ export function updateFilesForRootProjects(
     if (!allowedExt.includes(ext)) {
       continue;
     }
-    if (file === '.eslintrc.json' || file === 'eslint.config.js') {
+    if (
+      file === '.eslintrc.json' ||
+      file === 'eslint.config.js' ||
+      file === 'eslint.config.cjs'
+    ) {
       continue;
     }
 
@@ -104,7 +112,11 @@ export function updateFilesForNonRootProjects(
     if (!allowedExt.includes(ext)) {
       continue;
     }
-    if (file === '.eslintrc.json' || file === 'eslint.config.js') {
+    if (
+      file === '.eslintrc.json' ||
+      file === 'eslint.config.cjs' ||
+      file === 'eslint.config.js'
+    ) {
       continue;
     }
 

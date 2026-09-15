@@ -1,10 +1,11 @@
 import { runCLI } from 'jest';
-import { readConfig, readConfigs } from 'jest-config';
+import { readConfigs } from 'jest-config';
 import { utils as jestReporterUtils } from '@jest/reporters';
 import { addResult, makeEmptyAggregatedTestResult } from '@jest/test-result';
 import * as path from 'path';
 import { join } from 'path';
 import { JestExecutorOptions } from './schema';
+import schema from './schema.json';
 import { Config } from '@jest/types';
 import {
   ExecutorContext,
@@ -14,17 +15,29 @@ import {
 } from '@nx/devkit';
 import { getSummary } from './summary';
 import { readFileSync } from 'fs';
-import type { BatchResults } from 'nx/src/tasks-runner/batch/batch-messages';
+import { warnJestExecutorDeprecation } from '../../utils/deprecation';
+import { type BatchResults } from '@nx/devkit/internal';
 process.env.NODE_ENV ??= 'test';
 
 export async function jestExecutor(
   options: JestExecutorOptions,
   context: ExecutorContext
 ): Promise<{ success: boolean }> {
-  const config = await jestConfigParser(options, context);
+  warnJestExecutorDeprecation();
+
+  // Jest registers ts-node with module CJS https://github.com/SimenB/jest/blob/v29.6.4/packages/jest-config/src/readConfigFileAndSetRootDir.ts#L117-L119
+  // We want to support of ESM via 'module':'nodenext', we need to override the resolution until Jest supports it.
+  const existingValue = process.env['TS_NODE_COMPILER_OPTIONS'];
+  process.env['TS_NODE_COMPILER_OPTIONS'] = JSON.stringify({
+    ...(existingValue ? JSON.parse(existingValue) : {}),
+    moduleResolution: 'Node10',
+    module: 'commonjs',
+    customConditions: null,
+  });
+
+  const config = await parseJestConfig(options, context);
 
   const { results } = await runCLI(config, [options.jestConfig]);
-
   return { success: results.success };
 }
 
@@ -36,28 +49,20 @@ function getExtraArgs(
   for (const key of Object.keys(options)) {
     if (!schema.properties[key]) {
       extraArgs[key] = options[key];
+      process.argv.push(`--${key}=${options[key]}`);
     }
   }
 
   return extraArgs;
 }
 
-export async function jestConfigParser(
+export async function parseJestConfig(
   options: JestExecutorOptions,
   context: ExecutorContext,
   multiProjects = false
 ): Promise<Config.Argv> {
-  let jestConfig:
-    | {
-        transform: any;
-        globals: any;
-        setupFilesAfterEnv: any;
-      }
-    | undefined;
-
   // support passing extra args to jest cli supporting 3rd party plugins
   // like 'jest-runner-groups' --group arg
-  const schema = await import('./schema.json');
   const extraArgs = getExtraArgs(options, schema);
 
   const config: Config.Argv = {
@@ -84,7 +89,7 @@ export async function jestConfigParser(
     silent: options.silent,
     testLocationInResults: options.testLocationInResults,
     testNamePattern: options.testNamePattern,
-    testPathPattern: options.testPathPattern,
+    testPathPatterns: options.testPathPatterns,
     testPathIgnorePatterns: options.testPathIgnorePatterns,
     testTimeout: options.testTimeout,
     colors: options.colors,
@@ -99,17 +104,6 @@ export async function jestConfigParser(
 
   if (!multiProjects) {
     options.jestConfig = path.resolve(context.root, options.jestConfig);
-
-    jestConfig = (await readConfig(config, options.jestConfig)).projectConfig;
-  }
-
-  // for backwards compatibility
-  if (options.setupFile && !multiProjects) {
-    const setupFilesAfterEnvSet = new Set([
-      ...(jestConfig.setupFilesAfterEnv ?? []),
-      path.resolve(context.root, options.setupFile),
-    ]);
-    config.setupFilesAfterEnv = Array.from(setupFilesAfterEnvSet);
   }
 
   if (options.testFile) {
@@ -194,7 +188,7 @@ export async function batchJest(
       You can learn more about this requirement from Jest here: https://jestjs.io/docs/cli#--selectprojects-project1--projectn`
     );
   }
-  const parsedConfigs = await jestConfigParser(overrides, context, true);
+  const parsedConfigs = await parseJestConfig(overrides, context, true);
 
   const { globalConfig, results } = await runCLI(
     {

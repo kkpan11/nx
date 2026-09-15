@@ -3,7 +3,7 @@
  * we duplicate the helper functions from @nx/workspace in this file.
  */
 
-import * as chalk from 'chalk';
+import chalk from 'chalk';
 import { EOL } from 'os';
 import { isCI } from './ci/is-ci';
 
@@ -34,7 +34,9 @@ if (isCI()) {
   (chalk as any).level = 0;
 }
 
-class CLIOutput {
+export class CLIOutput {
+  private outstream = this.real ? process.stdout : new FakeStdout();
+  constructor(private real = true) {}
   /**
    * Longer dash character which forms more of a continuous line when place side to side
    * with itself, unlike the standard dash character
@@ -64,7 +66,7 @@ class CLIOutput {
   dim = chalk.dim;
 
   private writeToStdOut(str: string) {
-    process.stdout.write(str);
+    this.outstream.write(str);
   }
 
   private writeOutputTitle({
@@ -103,6 +105,14 @@ class CLIOutput {
 
   addNewline() {
     this.writeToStdOut(EOL);
+  }
+
+  /**
+   * Write lines directly without CLI prefix/badge.
+   * Used for banner output when no title is needed.
+   */
+  writeLines(lines: string[]) {
+    lines.forEach((line) => this.writeToStdOut(`${line}${EOL}`));
   }
 
   addVerticalSeparator(color = 'gray') {
@@ -165,8 +175,6 @@ class CLIOutput {
     });
 
     this.writeOptionalOutputBody(bodyLines);
-
-    this.addNewline();
   }
 
   logSingleLine(message: string) {
@@ -192,6 +200,21 @@ class CLIOutput {
 
     this.addNewline();
   }
+
+  getOutput() {
+    return this.outstream.toString();
+  }
 }
 
 export const output = new CLIOutput();
+
+class FakeStdout {
+  private content = '';
+  write(str: string) {
+    this.content += str;
+  }
+
+  toString() {
+    return this.content;
+  }
+}

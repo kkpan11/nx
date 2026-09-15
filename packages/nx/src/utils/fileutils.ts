@@ -1,18 +1,15 @@
 import { parseJson, serializeJson } from './json';
 import type { JsonParseOptions, JsonSerializeOptions } from './json';
 import {
-  createReadStream,
-  createWriteStream,
   PathLike,
   readFileSync,
   writeFileSync,
   mkdirSync,
   statSync,
   existsSync,
-} from 'fs';
+} from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'path';
-import * as tar from 'tar-stream';
-import { createGunzip } from 'zlib';
 
 export interface JsonReadOptions extends JsonParseOptions {
   /**
@@ -58,6 +55,11 @@ interface YamlReadOptions {
    * Compatibility with JSON.parse behaviour. If true, then duplicate keys in a mapping will override values rather than throwing an error.
    */
   json?: boolean;
+  /**
+   * Resolves only the tags every YAML parser must support, so every scalar stays
+   * a string instead of `true` or `12`.
+   */
+  failsafe?: boolean;
 }
 
 /**
@@ -71,8 +73,13 @@ export function readYamlFile<T extends object = any>(
   options?: YamlReadOptions
 ): T {
   const content = readFileSync(path, 'utf-8');
-  const { load } = require('@zkochan/js-yaml');
-  return load(content, { ...options, filename: path }) as T;
+  const { load, FAILSAFE_SCHEMA } = require('@zkochan/js-yaml');
+  const { failsafe, ...loadOptions } = options ?? {};
+  return load(content, {
+    ...loadOptions,
+    ...(failsafe ? { schema: FAILSAFE_SCHEMA } : {}),
+    filename: path,
+  }) as T;
 }
 
 /**
@@ -93,6 +100,26 @@ export function writeJsonFile<T extends object = object>(
     ? `${serializedJson}\n`
     : serializedJson;
   writeFileSync(path, content, { encoding: 'utf-8' });
+}
+
+/**
+ * Serializes the given data to JSON and writes it to a file asynchronously.
+ *
+ * @param path A path to a file.
+ * @param data data which should be serialized to JSON and written to the file
+ * @param options JSON serialize options
+ */
+export async function writeJsonFileAsync<T extends object = object>(
+  path: string,
+  data: T,
+  options?: JsonWriteOptions
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const serializedJson = serializeJson(data, options);
+  const content = options?.appendNewLine
+    ? `${serializedJson}\n`
+    : serializedJson;
+  await writeFile(path, content, { encoding: 'utf-8' });
 }
 
 /**
@@ -130,52 +157,6 @@ export function isRelativePath(path: string): boolean {
     path.startsWith('./') ||
     path.startsWith('../')
   );
-}
-
-/**
- * Extracts a file from a given tarball to the specified destination.
- * @param tarballPath The path to the tarball from where the file should be extracted.
- * @param file The path to the file inside the tarball.
- * @param destinationFilePath The destination file path.
- * @returns True if the file was extracted successfully, false otherwise.
- */
-export async function extractFileFromTarball(
-  tarballPath: string,
-  file: string,
-  destinationFilePath: string
-) {
-  return new Promise<string>((resolve, reject) => {
-    mkdirSync(dirname(destinationFilePath), { recursive: true });
-    var tarExtractStream = tar.extract();
-    const destinationFileStream = createWriteStream(destinationFilePath);
-
-    let isFileExtracted = false;
-    tarExtractStream.on('entry', function (header, stream, next) {
-      if (header.name === file) {
-        stream.pipe(destinationFileStream);
-        stream.on('end', () => {
-          isFileExtracted = true;
-        });
-        destinationFileStream.on('close', () => {
-          resolve(destinationFilePath);
-        });
-      }
-
-      stream.on('end', function () {
-        next();
-      });
-
-      stream.resume();
-    });
-
-    tarExtractStream.on('finish', function () {
-      if (!isFileExtracted) {
-        reject();
-      }
-    });
-
-    createReadStream(tarballPath).pipe(createGunzip()).pipe(tarExtractStream);
-  });
 }
 
 export function readFileIfExisting(path: string) {

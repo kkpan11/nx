@@ -6,7 +6,10 @@ import {
   ProjectGraph,
   ProjectGraphProjectNode,
 } from '../../../config/project-graph';
-import { PackageJson } from '../../../utils/package-json';
+import {
+  getDependencyVersionFromPackageJson,
+  PackageJson,
+} from '../../../utils/package-json';
 import { existsSync } from 'fs';
 import { workspaceRoot } from '../../../utils/workspace-root';
 import { readNxJson } from '../../../config/configuration';
@@ -38,15 +41,16 @@ export function createPackageJson(
     root?: string;
     isProduction?: boolean;
     helperDependencies?: string[];
+    skipPackageManager?: boolean;
+    skipOverrides?: boolean;
   } = {},
   fileMap: ProjectFileMap = null
 ): PackageJson {
   const projectNode = graph.nodes[projectName];
   const isLibrary = projectNode.type === 'lib';
+  const root = options.root ?? workspaceRoot;
 
-  const rootPackageJson: PackageJson = readJsonFile(
-    join(options.root ?? workspaceRoot, 'package.json')
-  );
+  const rootPackageJson: PackageJson = readJsonFile(join(root, 'package.json'));
 
   const npmDeps = findProjectsNpmDependencies(
     projectNode,
@@ -66,7 +70,7 @@ export function createPackageJson(
     version: '0.0.1',
   };
   const projectPackageJsonPath = join(
-    options.root ?? workspaceRoot,
+    root,
     projectNode.data.root,
     'package.json'
   );
@@ -97,11 +101,31 @@ export function createPackageJson(
     version: string,
     section: 'devDependencies' | 'dependencies'
   ) => {
-    return (
-      packageJson[section][packageName] ||
-      (isLibrary && rootPackageJson[section]?.[packageName]) ||
-      version
+    // Try project package.json first (single section)
+    const projectVersion = getDependencyVersionFromPackageJson(
+      packageName,
+      root,
+      packageJson,
+      [section]
     );
+    if (projectVersion) {
+      return projectVersion;
+    }
+
+    // For libraries, fall back to root package.json (single section)
+    if (isLibrary) {
+      const rootVersion = getDependencyVersionFromPackageJson(
+        packageName,
+        root,
+        rootPackageJson,
+        [section]
+      );
+      if (rootVersion) {
+        return rootVersion;
+      }
+    }
+
+    return version;
   };
 
   Object.entries(npmDeps.dependencies).forEach(([packageName, version]) => {
@@ -181,7 +205,7 @@ export function createPackageJson(
     packageJson.peerDependenciesMeta
   );
 
-  if (rootPackageJson.packageManager) {
+  if (rootPackageJson.packageManager && !options.skipPackageManager) {
     if (
       packageJson.packageManager &&
       packageJson.packageManager !== rootPackageJson.packageManager
@@ -196,6 +220,88 @@ export function createPackageJson(
     }
     packageJson.packageManager = rootPackageJson.packageManager;
   }
+
+  // region Overrides/Resolutions
+
+  // npm
+  if (rootPackageJson.overrides && !options.skipOverrides) {
+    // npm throws EOVERRIDE when an override key is also a direct dependency
+    // (unless specs match). The pruned dist pins exact versions and already
+    // resolved everything via the lockfile, so drop those redundant overrides.
+    const mergedOverrides = {
+      ...rootPackageJson.overrides,
+      ...packageJson.overrides,
+    };
+    const overrides: typeof mergedOverrides = {};
+    let hasOverrides = false;
+    for (const name in mergedOverrides) {
+      if (
+        packageJson.dependencies?.[name] ||
+        packageJson.devDependencies?.[name] ||
+        packageJson.peerDependencies?.[name] ||
+        packageJson.optionalDependencies?.[name]
+      ) {
+        continue;
+      }
+      overrides[name] = mergedOverrides[name];
+      hasOverrides = true;
+    }
+    if (hasOverrides) {
+      packageJson.overrides = overrides;
+    } else {
+      delete packageJson.overrides;
+    }
+  }
+
+  // pnpm
+  if (rootPackageJson.pnpm?.overrides && !options.skipOverrides) {
+    packageJson.pnpm ??= {};
+    packageJson.pnpm.overrides = {
+      ...rootPackageJson.pnpm.overrides,
+      ...packageJson.pnpm.overrides,
+    };
+  }
+
+  // pnpm install configuration
+  const rootPnpm = rootPackageJson.pnpm;
+  if (rootPnpm) {
+    // string[] fields — copy from root
+    for (const field of [
+      'onlyBuiltDependencies',
+      'neverBuiltDependencies',
+      'ignoredOptionalDependencies',
+    ] as const) {
+      if (rootPnpm[field]) {
+        packageJson.pnpm ??= {};
+        packageJson.pnpm[field] = rootPnpm[field];
+      }
+    }
+
+    // object fields — merge with project-level overrides
+    if (rootPnpm.allowBuilds) {
+      packageJson.pnpm ??= {};
+      packageJson.pnpm.allowBuilds = {
+        ...rootPnpm.allowBuilds,
+        ...packageJson.pnpm.allowBuilds,
+      };
+    }
+    if (rootPnpm.supportedArchitectures) {
+      packageJson.pnpm ??= {};
+      packageJson.pnpm.supportedArchitectures = {
+        ...rootPnpm.supportedArchitectures,
+        ...packageJson.pnpm.supportedArchitectures,
+      };
+    }
+  }
+
+  // yarn
+  if (rootPackageJson.resolutions && !options.skipOverrides) {
+    packageJson.resolutions = {
+      ...rootPackageJson.resolutions,
+      ...packageJson.resolutions,
+    };
+  }
+  // endregion Overrides/Resolutions
 
   return packageJson;
 }
@@ -252,7 +358,8 @@ export function findProjectsNpmDependencies(
     seen,
     ignoredDependencies,
     dependencyInputs,
-    selfInputs
+    selfInputs,
+    false
   );
 
   return npmDeps;
@@ -266,7 +373,8 @@ function findAllNpmDeps(
   seen: Set<string>,
   ignoredDependencies: string[],
   dependencyPatterns: string[],
-  rootPatterns?: string[]
+  rootPatterns?: string[],
+  isTransitiveDependency = false
 ): void {
   if (seen.has(projectNode.name)) return;
 
@@ -275,7 +383,9 @@ function findAllNpmDeps(
   const projectFiles = filterUsingGlobPatterns(
     projectNode.data.root,
     projectFileMap[projectNode.name] || [],
-    rootPatterns ?? dependencyPatterns
+    isTransitiveDependency
+      ? ['{projectRoot}/**/*']
+      : (rootPatterns ?? dependencyPatterns)
   );
 
   const projectDependencies = new Set<string>();
@@ -317,7 +427,9 @@ function findAllNpmDeps(
           npmDeps,
           seen,
           ignoredDependencies,
-          dependencyPatterns
+          dependencyPatterns,
+          undefined,
+          true
         );
       }
     }

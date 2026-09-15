@@ -2,18 +2,18 @@ import { addDependenciesToPackageJson, Tree } from '@nx/devkit';
 import {
   babelCoreVersion,
   babelPresetReactVersion,
-  lessVersion,
   sassVersion,
   swcLoaderVersion,
   testingLibraryReactVersion,
+  testingLibraryDomVersion,
   tsLibVersion,
   typesNodeVersion,
-  typesReactDomVersion,
-  typesReactVersion,
+  reactRouterIsBotVersion,
 } from '../../../utils/versions';
 import { NormalizedSchema } from '../schema';
+import { getReactDependenciesVersionsToInstall } from '../../../utils/version-utils';
 
-export function installCommonDependencies(
+export async function installCommonDependencies(
   host: Tree,
   options: NormalizedSchema
 ) {
@@ -21,27 +21,36 @@ export function installCommonDependencies(
     return () => {};
   }
 
+  const reactDeps = await getReactDependenciesVersionsToInstall(host);
+
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {
+    '@types/react': reactDeps['@types/react'],
+    '@types/react-dom': reactDeps['@types/react-dom'],
     '@types/node': typesNodeVersion,
-    '@types/react': typesReactVersion,
-    '@types/react-dom': typesReactDomVersion,
+    ...(options.useReactRouter
+      ? {
+          '@react-router/dev': reactDeps['react-router'],
+        }
+      : {}),
   };
 
   if (options.bundler !== 'vite') {
     dependencies['tslib'] = tsLibVersion;
   }
 
+  if (options.useReactRouter) {
+    dependencies['react-router'] = reactDeps['react-router'];
+    dependencies['@react-router/node'] = reactDeps['react-router'];
+    dependencies['@react-router/serve'] = reactDeps['react-router'];
+    dependencies['isbot'] = reactRouterIsBotVersion;
+  }
+
   // Vite requires style preprocessors to be installed manually.
   // `@nx/webpack` installs them automatically for now.
   if (options.bundler === 'vite' || options.unitTestRunner === 'vitest') {
-    switch (options.style) {
-      case 'scss':
-        devDependencies['sass'] = sassVersion;
-        break;
-      case 'less':
-        devDependencies['less'] = lessVersion;
-        break;
+    if (options.style === 'scss') {
+      devDependencies['sass'] = sassVersion;
     }
   }
 
@@ -58,7 +67,14 @@ export function installCommonDependencies(
 
   if (options.unitTestRunner && options.unitTestRunner !== 'none') {
     devDependencies['@testing-library/react'] = testingLibraryReactVersion;
+    devDependencies['@testing-library/dom'] = testingLibraryDomVersion;
   }
 
-  return addDependenciesToPackageJson(host, {}, devDependencies);
+  return addDependenciesToPackageJson(
+    host,
+    dependencies,
+    devDependencies,
+    undefined,
+    true
+  );
 }

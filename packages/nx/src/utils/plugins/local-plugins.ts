@@ -1,15 +1,53 @@
-import * as chalk from 'chalk';
-import { output } from '../output';
-import type { PluginCapabilities } from './models';
-import { hasElements } from './shared';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { NxJsonConfiguration } from '../../config/nx-json';
+import { ProjectsConfigurations } from '../../config/workspace-json-project-json';
 import { readJsonFile } from '../fileutils';
 import { PackageJson } from '../package-json';
-import { ProjectsConfigurations } from '../../config/workspace-json-project-json';
-import { join } from 'path';
 import { workspaceRoot } from '../workspace-root';
-import { existsSync } from 'fs';
-import { getPluginCapabilities } from './plugin-capabilities';
-import { NxJsonConfiguration, readNxJson } from '../../config/nx-json';
+import {
+  PluginCapabilities,
+  getPluginCapabilities,
+} from './plugin-capabilities';
+
+/** A workspace-local plugin discovered cheaply (no JS load). */
+export interface LocalPluginWithGenerators {
+  /** Absolute path to the project root that hosts the plugin. */
+  dir: string;
+  /** The `generators` or `schematics` field value from the plugin's
+   *  package.json (a relative path to the collection JSON). */
+  field: string;
+}
+
+/**
+ * Sync, lightweight scan: for each given project root, read its package.json
+ * and yield it as a plugin if it declares a `generators`/`schematics`
+ * collection. Used by tab completion which cannot afford the heavier
+ * {@link getLocalWorkspacePlugins} (that one loads each plugin's JS to
+ * walk its capabilities).
+ *
+ * `projectRoots` are paths relative to `workspaceRoot`.
+ */
+export function findLocalPluginsWithGenerators(
+  projectRoots: Iterable<string>
+): Map<string, LocalPluginWithGenerators> {
+  const plugins = new Map<string, LocalPluginWithGenerators>();
+  for (const root of projectRoots) {
+    if (!root) continue;
+    const dir = join(workspaceRoot, root);
+    let pkg: PackageJson | null = null;
+    try {
+      pkg = readJsonFile(join(dir, 'package.json'));
+    } catch {
+      continue;
+    }
+    const field = pkg?.generators ?? pkg?.schematics;
+    if (pkg?.name && typeof field === 'string') {
+      plugins.set(pkg.name, { dir, field });
+    }
+  }
+  return plugins;
+}
 
 export async function getLocalWorkspacePlugins(
   projectsConfiguration: ProjectsConfigurations,
@@ -44,32 +82,4 @@ export async function getLocalWorkspacePlugins(
     }
   }
   return plugins;
-}
-
-export function listLocalWorkspacePlugins(
-  installedPlugins: Map<string, PluginCapabilities>
-) {
-  const bodyLines: string[] = [];
-
-  for (const [, p] of installedPlugins) {
-    const capabilities = [];
-    if (hasElements(p.executors)) {
-      capabilities.push('executors');
-    }
-    if (hasElements(p.generators)) {
-      capabilities.push('generators');
-    }
-    if (p.projectGraphExtension) {
-      capabilities.push('graph-extension');
-    }
-    if (p.projectInference) {
-      capabilities.push('project-inference');
-    }
-    bodyLines.push(`${chalk.bold(p.name)} (${capabilities.join()})`);
-  }
-
-  output.log({
-    title: `Local workspace plugins:`,
-    bodyLines: bodyLines,
-  });
 }

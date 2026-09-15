@@ -1,15 +1,14 @@
-import {
-  TargetConfiguration,
-  Tree,
-  readNxJson,
-  updateNxJson,
-} from '@nx/devkit';
+import { TargetConfiguration, Tree } from '@nx/devkit';
 import { CompilerOptions } from 'typescript';
 import { statSync } from 'fs';
 import { findNodes } from '@nx/js';
 import ts = require('typescript');
-import { major } from 'semver';
-import { join } from 'path';
+import { versions } from './versions';
+
+export {
+  storybookMajorVersion,
+  getInstalledStorybookVersion,
+} from './versions';
 
 export const Constants = {
   addonDependencies: ['@storybook/addons'],
@@ -19,49 +18,11 @@ export const Constants = {
   },
   jsonIndentLevel: 2,
   coreAddonPrefix: '@storybook/addon-',
-  uiFrameworks7: [
-    '@storybook/angular',
-    '@storybook/html-webpack5',
-    '@storybook/nextjs',
-    '@storybook/preact-webpack5',
-    '@storybook/react-webpack5',
-    '@storybook/react-vite',
-    '@storybook/server-webpack5',
-    '@storybook/svelte-webpack5',
-    '@storybook/svelte-vite',
-    '@storybook/sveltekit',
-    '@storybook/vue-webpack5',
-    '@storybook/vue-vite',
-    '@storybook/vue3-webpack5',
-    '@storybook/vue3-vite',
-    '@storybook/web-components-webpack5',
-    '@storybook/web-components-vite',
-  ],
 };
 type Constants = typeof Constants;
 
-export function storybookMajorVersion(): number | undefined {
-  try {
-    const storybookPackageVersion = require(join(
-      '@storybook/core-server',
-      'package.json'
-    )).version;
-    return major(storybookPackageVersion);
-  } catch {
-    return undefined;
-  }
-}
-
-export function getInstalledStorybookVersion(): string | undefined {
-  try {
-    const storybookPackageVersion = require(join(
-      '@storybook/core-server',
-      'package.json'
-    )).version;
-    return storybookPackageVersion;
-  } catch {
-    return undefined;
-  }
+export function getStorybookVersionToInstall(tree: Tree): string {
+  return versions(tree).storybookVersion;
 }
 
 export function safeFileDelete(tree: Tree, path: string): boolean {
@@ -136,22 +97,11 @@ export function findStorybookAndBuildTargetsAndCompiler(targets: {
     '@nx/angular:webpack-browser',
     '@nx/esbuild:esbuild',
     '@nx/next:build',
-    '@nrwl/js:babel',
-    '@nrwl/js:swc',
-    '@nrwl/js:tsc',
-    '@nrwl/webpack:webpack',
-    '@nrwl/rollup:rollup',
-    '@nrwl/web:rollup',
-    '@nrwl/vite:build',
-    '@nrwl/angular:ng-packagr-lite',
-    '@nrwl/angular:package',
-    '@nrwl/angular:webpack-browser',
-    '@nrwl/esbuild:esbuild',
-    '@nrwl/next:build',
     '@nxext/vite:build',
     '@angular-devkit/build-angular:application',
     '@angular-devkit/build-angular:browser',
     '@angular-devkit/build-angular:browser-esbuild',
+    '@angular/build:application',
   ];
 
   for (const target in targets) {
@@ -160,19 +110,15 @@ export function findStorybookAndBuildTargetsAndCompiler(targets: {
         targets[target].executor === '@angular-devkit/build-angular:browser' ||
         targets[target].executor ===
           '@angular-devkit/build-angular:browser-esbuild' ||
-        targets[target].executor === '@angular-devkit/build-angular:application'
+        targets[target].executor ===
+          '@angular-devkit/build-angular:application' ||
+        targets[target].executor === '@angular/build:application'
       ) {
         /**
-         * Not looking for '@nx/angular:ng-packagr-lite' or any other
-         * @nx/angular:* executors.
-         * Only looking for '@angular-devkit/build-angular:browser'
-         * because the '@nx/angular:ng-packagr-lite' executor
-         * (and maybe the other custom executors)
-         * does not support styles and extra options, so the user
-         * will be forced to switch to build-storybook to add extra options.
-         *
-         * So we might as well use the build-storybook by default to
-         * avoid any errors.
+         * Only the official Angular application/browser builders. The
+         * '@nx/angular:*' executors (ng-packagr-lite and friends) do not
+         * support styles and extra options, so a project on one of those is
+         * better served by build-storybook, which can carry those options.
          */
         returnObject.ngBuildTarget = target;
       } else if (targets[target].executor.includes('vite')) {
@@ -185,14 +131,12 @@ export function findStorybookAndBuildTargetsAndCompiler(targets: {
       returnObject.compiler = targets[target].options?.compiler;
     } else if (
       targets[target].executor === '@storybook/angular:start-storybook' ||
-      targets[target].executor === '@nrwl/storybook:storybook' ||
       targets[target].executor === '@nx/storybook:storybook'
     ) {
       returnObject.storybookTarget = target;
     } else if (
       targets[target].executor === '@storybook/angular:build-storybook' ||
-      targets[target].executor === '@nx/storybook:build' ||
-      targets[target].executor === '@nrwl/storybook:build'
+      targets[target].executor === '@nx/storybook:build'
     ) {
       returnObject.storybookBuildTarget = target;
     } else if (targets[target].options?.compiler) {
@@ -264,14 +208,4 @@ export function getTsSourceFile(host: Tree, path: string): ts.SourceFile {
   );
 
   return source;
-}
-
-export function pleaseUpgrade(): string {
-  return `
-    Storybook 6 is no longer maintained, and not supported in Nx. 
-    Please upgrade to Storybook 7.
-
-    Here is a guide on how to upgrade:
-    https://nx.dev/nx-api/storybook/generators/migrate-7
-    `;
 }

@@ -12,18 +12,21 @@ import {
 } from '../../utils/options-utils';
 import { ViteBuildExecutorOptions } from '../build/schema';
 import { VitePreviewServerExecutorOptions } from './schema';
+import schema from './schema.json';
 import { relative } from 'path';
 import { getBuildExtraArgs } from '../build/build.impl';
 import { loadViteDynamicImport } from '../../utils/executor-utils';
+import { warnVitePreviewServerExecutorDeprecation } from '../../utils/deprecation';
 
 export async function* vitePreviewServerExecutor(
   options: VitePreviewServerExecutorOptions,
   context: ExecutorContext
 ) {
+  warnVitePreviewServerExecutorDeprecation();
+
   process.env.VITE_CJS_IGNORE_WARNING = 'true';
   // Allows ESM to be required in CJS modules. Vite will be published as ESM in the future.
-  const { mergeConfig, preview, loadConfigFromFile } =
-    await loadViteDynamicImport();
+  const { mergeConfig, preview, resolveConfig } = await loadViteDynamicImport();
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
   const target = parseTargetString(options.buildTarget, context);
@@ -54,19 +57,31 @@ export async function* vitePreviewServerExecutor(
   );
 
   const { buildOptions, otherOptions: otherOptionsFromBuild } =
-    await getBuildExtraArgs(buildTargetOptions);
+    await getBuildExtraArgs({
+      ...buildTargetOptions,
+      ...{
+        // Enable watch mode by default for the build target.
+        watch: options.watch ?? true,
+      },
+    });
 
   const { previewOptions, otherOptions } = await getExtraArgs(
     options,
     configuration,
     otherOptionsFromBuild
   );
-  const resolved = await loadConfigFromFile(
+  const defaultMode =
+    otherOptions?.mode ?? otherOptionsFromBuild?.mode ?? 'production';
+
+  const resolved = await resolveConfig(
     {
-      mode: otherOptions?.mode ?? otherOptionsFromBuild?.mode ?? 'production',
-      command: 'build',
+      configFile: viteConfigPath,
+      mode: defaultMode,
     },
-    viteConfigPath
+    'build',
+    defaultMode,
+    process.env.NODE_ENV ?? defaultMode,
+    true
   );
 
   const outDir =
@@ -75,7 +90,7 @@ export async function* vitePreviewServerExecutor(
       offsetFromRoot(projectRoot),
       buildTargetOptions.outputPath
     ) ??
-    resolved?.config?.build?.outDir;
+    resolved?.build?.outDir;
 
   if (!outDir) {
     throw new Error(
@@ -108,7 +123,7 @@ export async function* vitePreviewServerExecutor(
     {
       // This should not be needed as it's going to be set in vite.config.ts
       // but leaving it here in case someone did not migrate correctly
-      root: resolved.config.root ?? root,
+      root: resolved.root ?? root,
       configFile: viteConfigPath,
     },
     {
@@ -205,7 +220,6 @@ async function getExtraArgs(
   otherOptions: Record<string, any>;
 }> {
   // support passing extra args to vite cli
-  const schema = await import('./schema.json');
   const extraArgs = {};
   for (const key of Object.keys(options)) {
     if (!schema.properties[key]) {

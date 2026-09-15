@@ -6,13 +6,20 @@ import {
   generateFiles,
   GeneratorCallback,
   joinPathFragments,
+  logger,
   readProjectConfiguration,
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
-import { hasWebpackPlugin } from '@nx/react/src/utils/has-webpack-plugin';
+import { hasWebpackPlugin } from '@nx/react/internal';
 
-import { nxVersion, reactNativeWebVersion } from '../../utils/versions';
+import {
+  nxVersion,
+  reactNativeWebVersion,
+  reactNativeSvgWebVersion,
+  typesReactDomVersion,
+  assertSupportedReactNativeVersion,
+} from '../../utils/versions';
 import { NormalizedSchema, normalizeSchema } from './lib/normalize-schema';
 import {
   createBuildTarget,
@@ -34,6 +41,8 @@ export async function webConfigurationGenerator(
   tree: Tree,
   options: WebConfigurationGeneratorSchema
 ) {
+  assertSupportedReactNativeVersion(tree);
+
   const normalizedSchema = normalizeSchema(tree, options);
 
   const tasks: GeneratorCallback[] = [];
@@ -45,14 +54,17 @@ export async function webConfigurationGenerator(
       {},
       {
         'react-native-web': reactNativeWebVersion,
-      }
+        'react-native-svg-web': reactNativeSvgWebVersion,
+      },
+      undefined,
+      true
     );
     tasks.push(installTask);
   }
 
   // apply webpack or vite init generator
-  const bundlerTask = await addBundlerConfiguration(tree, normalizedSchema);
-  tasks.push(bundlerTask);
+  const bundlerTasks = await addBundlerConfiguration(tree, normalizedSchema);
+  tasks.push(...bundlerTasks);
 
   // create files for webpack and vite config, index.html
   if (normalizedSchema.bundler === 'vite') {
@@ -71,9 +83,23 @@ export async function webConfigurationGenerator(
         ...normalizedSchema,
         tmpl: '',
         webpackPluginOptions: hasWebpackPlugin(tree)
-          ? createNxWebpackPluginOptions(normalizedSchema)
+          ? createNxWebpackPluginOptions(tree, normalizedSchema)
           : null,
       }
+    );
+  }
+
+  if (!options.skipPackageJson) {
+    tasks.push(
+      addDependenciesToPackageJson(
+        tree,
+        {},
+        {
+          '@types/react-dom': typesReactDomVersion,
+        },
+        undefined,
+        true
+      )
     );
   }
 
@@ -92,7 +118,7 @@ export async function webConfigurationGenerator(
 async function addBundlerConfiguration(
   tree: Tree,
   normalizedSchema: NormalizedSchema
-) {
+): Promise<GeneratorCallback[]> {
   if (normalizedSchema.bundler === 'vite') {
     const { viteConfigurationGenerator } = ensurePackage<
       typeof import('@nx/vite')
@@ -103,11 +129,13 @@ async function addBundlerConfiguration(
       project: normalizedSchema.project,
       newProject: true,
       includeVitest: false,
+      projectType: 'application',
       compiler: 'babel',
       skipFormat: true,
     });
-    return viteTask;
+    return [viteTask];
   } else {
+    let tasks: GeneratorCallback[] = [];
     const { webpackInitGenerator } = ensurePackage<
       typeof import('@nx/webpack')
     >('@nx/webpack', nxVersion);
@@ -116,15 +144,28 @@ async function addBundlerConfiguration(
       skipFormat: true,
       skipPackageJson: normalizedSchema.skipPackageJson,
     });
+    tasks.push(webpackInitTask);
+    if (!normalizedSchema.skipPackageJson) {
+      const {
+        ensureDependencies,
+      }: typeof import('@nx/webpack/internal') = require('@nx/webpack/internal');
+      tasks.push(ensureDependencies(tree, { uiFramework: 'react' }));
+    }
 
     if (!hasWebpackPlugin(tree)) {
+      // Mirrors warnWebpackExecutorGenerating from @nx/webpack/src/utils/deprecation.
+      // Inlined to avoid a cross-package import where react-native does not
+      // declare a TypeScript project reference to webpack.
+      logger.warn(
+        'Generating targets that use the deprecated `@nx/webpack:webpack` and `@nx/webpack:dev-server` executors. These executors will be removed in Nx v24. Run `nx g @nx/webpack:convert-to-inferred` next to migrate these targets to the `@nx/webpack/plugin` inferred plugin and prevent future generators from emitting executor targets. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.'
+      );
       const projectConfiguration = readProjectConfiguration(
         tree,
         normalizedSchema.project
       );
       projectConfiguration.targets = {
         ...projectConfiguration.targets,
-        build: createBuildTarget(normalizedSchema),
+        build: createBuildTarget(tree, normalizedSchema),
         serve: createServeTarget(normalizedSchema),
       };
       updateProjectConfiguration(
@@ -134,7 +175,7 @@ async function addBundlerConfiguration(
       );
     }
 
-    return webpackInitTask;
+    return tasks;
   }
 }
 

@@ -1,16 +1,38 @@
 import { TouchedProjectLocator } from '../affected-project-graph-models';
 import { minimatch } from 'minimatch';
+import { readNxJson } from '../../../config/nx-json';
 import { workspaceRoot } from '../../../utils/workspace-root';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { configurationGlobs } from '../../utils/retrieve-workspace-files';
-import { loadNxPlugins } from '../../plugins/internal-api';
+import { getGlobPatternsOfPlugins } from '../../utils/retrieve-workspace-files';
 import { combineGlobPatterns } from '../../../utils/globs';
+import { getPlugins } from '../../plugins/get-plugins';
 
 export const getTouchedProjectsFromProjectGlobChanges: TouchedProjectLocator =
-  async (touchedFiles, projectGraphNodes, nxJson): Promise<string[]> => {
-    const [plugins] = await loadNxPlugins(nxJson?.plugins ?? [], workspaceRoot);
-    const globPattern = combineGlobPatterns(configurationGlobs(plugins));
+  async (
+    touchedFiles,
+    projectGraphNodes,
+    _nxJson,
+    _packageJson,
+    _projectGraph,
+    projectDeletionAffectsAllProjects = true
+  ): Promise<string[]> => {
+    const globPattern = await (async () => {
+      // TODO: We need a quicker way to get patterns that should not
+      // require starting up plugin workers
+      if (process.env.NX_FORCE_REUSE_CACHED_GRAPH === 'true') {
+        return combineGlobPatterns([
+          '**/package.json',
+          '**/project.json',
+          'project.json',
+          'package.json',
+        ]);
+      }
+      const plugins = (await getPlugins(readNxJson(workspaceRoot))).filter(
+        (p) => !!p.createNodes
+      );
+      return combineGlobPatterns(getGlobPatternsOfPlugins(plugins));
+    })();
 
     const touchedProjects = new Set<string>();
     for (const touchedFile of touchedFiles) {
@@ -21,7 +43,10 @@ export const getTouchedProjectsFromProjectGlobChanges: TouchedProjectLocator =
         // If the file no longer exists on disk, then it was deleted
         if (!existsSync(join(workspaceRoot, touchedFile.file))) {
           // If any project has been deleted, we must assume all projects were affected
-          return Object.keys(projectGraphNodes);
+          if (projectDeletionAffectsAllProjects) {
+            return Object.keys(projectGraphNodes);
+          }
+          continue;
         }
 
         // Modified project config files are under a project's root, and implicitly

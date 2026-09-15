@@ -1,4 +1,5 @@
 import {
+  checkFilesExist,
   cleanupProject,
   killPorts,
   newProject,
@@ -6,7 +7,8 @@ import {
   runE2ETests,
   uniq,
   updateFile,
-} from '@nx/e2e/utils';
+  updateJson,
+} from '@nx/e2e-utils';
 
 describe('Next.js App Router', () => {
   let proj: string;
@@ -14,7 +16,7 @@ describe('Next.js App Router', () => {
   beforeAll(
     () =>
       (proj = newProject({
-        packages: ['@nx/next'],
+        packages: ['@nx/next', '@nx/eslint', '@nx/js', '@nx/playwright'],
       }))
   );
 
@@ -29,8 +31,18 @@ describe('Next.js App Router', () => {
     );
     runCLI(`generate @nx/js:lib ${jsLib} --no-interactive`);
 
+    // Turbopack interprets the TS source incorrectly assuming ESM despite package.json type stating module
+    // TODO(Colum): remove this when JS Lib generator switches to ESM
+    updateJson(`${jsLib}/package.json`, (json) => {
+      delete json.type;
+      return json;
+    });
+
+    checkFilesExist(`${appName}/src/app/page.tsx`);
+    checkFilesExist(`${appName}-e2e/src/example.spec.ts`);
+
     updateFile(
-      `apps/${appName}/src/app/page.tsx`,
+      `${appName}/src/app/page.tsx`,
       `
         import React from 'react';
         import { ${jsLib} } from '@${proj}/${jsLib}';
@@ -44,7 +56,7 @@ describe('Next.js App Router', () => {
     );
 
     updateFile(
-      `apps/${appName}-e2e/src/example.spec.ts`,
+      `${appName}-e2e/src/example.spec.ts`,
       `
       import { test, expect } from '@playwright/test';
 
@@ -60,12 +72,12 @@ describe('Next.js App Router', () => {
     const lintResults = runCLI(`lint ${appName}`);
     expect(lintResults).toContain('Successfully ran target lint');
 
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       const e2eResults = runCLI(
         `e2e ${appName}-e2e --configuration=production`
       );
       expect(e2eResults).toContain('Successfully ran target e2e for project');
-      expect(await killPorts()).toBeTruthy();
+      await killPorts();
     }
   }, 300_000);
 });

@@ -38,13 +38,13 @@ export function addUnitTestingSetup(tree: Tree, options: RemixLibraryOptions) {
   if (options.unitTestRunner === 'vitest') {
     const pathToVitestConfig = joinPathFragments(
       options.projectRoot,
-      `vite.config.ts`
+      `vite.config.mts`
     );
     updateVitestTestSetup(tree, pathToVitestConfig, './src/test-setup.ts');
   } else if (options.unitTestRunner === 'jest') {
     const pathToJestConfig = joinPathFragments(
       options.projectRoot,
-      `jest.config.ts`
+      `jest.config.cts`
     );
     updateJestTestSetup(tree, pathToJestConfig, './src/test-setup.ts');
   }
@@ -57,6 +57,8 @@ export function addUnitTestingSetup(tree: Tree, options: RemixLibraryOptions) {
       '@testing-library/react': testingLibraryReactVersion,
       '@testing-library/user-event': testingLibraryUserEventsVersion,
       '@remix-run/node': getRemixVersion(tree),
-    }
+    },
+    undefined,
+    true
   );
 }

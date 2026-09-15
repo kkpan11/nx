@@ -1,7 +1,3 @@
-import {
-  getRelativeProjectJsonSchemaPath,
-  updateProjectConfiguration,
-} from 'nx/src/generators/utils/project-configuration';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { convertToInferred } from './convert-to-inferred';
 import {
@@ -15,10 +11,12 @@ import {
   type Tree,
   updateNxJson,
   writeJson,
+  updateProjectConfiguration,
 } from '@nx/devkit';
 import { TempFs } from '@nx/devkit/internal-testing-utils';
 import { join } from 'node:path';
 import type { VitePluginOptions } from '../../plugins/plugin';
+import { getRelativeProjectJsonSchemaPath } from '@nx/devkit/internal';
 
 let fs: TempFs;
 
@@ -67,9 +65,8 @@ jest.mock('@nx/devkit', () => ({
         ) {
           // Re-order `targets` to appear after the `// target` comment.
           delete projectConfiguration.targets;
-          projectConfiguration[
-            '// targets'
-          ] = `to see all targets run: nx show project ${projectName} --web`;
+          projectConfiguration['// targets'] =
+            `to see all targets run: nx show project ${projectName} --web`;
           projectConfiguration.targets = {};
         } else {
           delete projectConfiguration['// targets'];
@@ -120,7 +117,6 @@ interface CreateViteTestProjectOptions {
   buildTargetName: string;
   serveTargetName: string;
   previewTargetName: string;
-  testTargetName: string;
   outputPath: string;
 }
 
@@ -130,7 +126,6 @@ const defaultCreateViteTestProjectOptions: CreateViteTestProjectOptions = {
   buildTargetName: 'build',
   serveTargetName: 'serve',
   previewTargetName: 'preview',
-  testTargetName: 'test',
   outputPath: '{workspaceRoot}/dist/myapp',
 };
 
@@ -163,12 +158,6 @@ function createTestProject(
           buildTarget: `${projectOpts.appName}:${projectOpts.buildTargetName}`,
         },
       },
-      [projectOpts.testTargetName]: {
-        executor: '@nx/vite:test',
-        options: {
-          configFile: `${projectOpts.appRoot}/vite.config.ts`,
-        },
-      },
     },
   };
 
@@ -195,7 +184,7 @@ export default defineConfig({
 
   // Uncomment this if you are using workers.
   // worker: {
-  //  plugins: [ nxViteTsPaths() ],
+  //   plugins: () => [ nxViteTsPaths() ],
   // },
 
   build: {
@@ -333,7 +322,6 @@ describe('Vite - Convert Executors To Plugin', () => {
         plugin: '@nx/vite/plugin',
         options: {
           buildTargetName: 'build',
-          testTargetName: 'test',
           previewTargetName: 'preview',
           serveTargetName: 'serve',
         },
@@ -349,11 +337,6 @@ describe('Vite - Convert Executors To Plugin', () => {
       expect(updatedProject.targets).toMatchInlineSnapshot(`
         {
           "build-base": {
-            "options": {
-              "config": "./vite.config.ts",
-            },
-          },
-          "test": {
             "options": {
               "config": "./vite.config.ts",
             },
@@ -405,7 +388,6 @@ describe('Vite - Convert Executors To Plugin', () => {
           ['buildTargetName', 'build'],
           ['serveTargetName', 'serve'],
           ['previewTargetName', 'preview'],
-          ['testTargetName', 'test'],
         ].forEach(([targetOptionName, targetName]) => {
           expect(hasVitePlugin.options[targetOptionName]).toEqual(targetName);
         });
@@ -431,11 +413,6 @@ describe('Vite - Convert Executors To Plugin', () => {
               "config": "./vite.config.ts",
             },
           },
-          "test": {
-            "options": {
-              "config": "./vite.config.ts",
-            },
-          },
         }
       `);
 
@@ -452,7 +429,6 @@ describe('Vite - Convert Executors To Plugin', () => {
           ['buildTargetName', 'bundle'],
           ['serveTargetName', 'serve'],
           ['previewTargetName', 'preview'],
-          ['testTargetName', 'test'],
         ].forEach(([targetOptionName, targetName]) => {
           expect(hasVitePlugin.options[targetOptionName]).toEqual(targetName);
         });
@@ -487,7 +463,6 @@ describe('Vite - Convert Executors To Plugin', () => {
           buildTargetName: 'build',
           serveTargetName: 'serve',
           previewTargetName: 'preview',
-          testTargetName: 'test',
         },
       });
       updateNxJson(tree, nxJson);
@@ -496,21 +471,22 @@ describe('Vite - Convert Executors To Plugin', () => {
       await convertToInferred(tree, { skipFormat: true });
 
       // ASSERT
-      // project.json modifications
+      // project.json modifications: config shared across the migrated `bundle`
+      // projects is now centralized, so the project target is a pure deviation.
       const updatedProject = readProjectConfiguration(tree, project.name);
-      expect(updatedProject.targets).toMatchInlineSnapshot(`
-        {
-          "bundle": {
+      expect(updatedProject.targets).toMatchInlineSnapshot(`{}`);
+      // the shared config lives in nx.json targetDefaults instead
+      expect(readNxJson(tree).targetDefaults?.bundle).toMatchInlineSnapshot(`
+        [
+          {
+            "filter": {
+              "plugin": "@nx/vite/plugin",
+            },
             "options": {
               "config": "./vite.config.ts",
             },
           },
-          "test": {
-            "options": {
-              "config": "./vite.config.ts",
-            },
-          },
-        }
+        ]
       `);
 
       // nx.json modifications
@@ -527,7 +503,20 @@ describe('Vite - Convert Executors To Plugin', () => {
               "buildTargetName": "build",
               "previewTargetName": "preview",
               "serveTargetName": "serve",
-              "testTargetName": "test",
+            },
+            "plugin": "@nx/vite/plugin",
+          },
+          {
+            "include": [
+              "existing/**/*",
+            ],
+            "options": {
+              "buildTargetName": "build",
+              "devTargetName": "dev",
+              "previewTargetName": "preview",
+              "serveStaticTargetName": "serve-static",
+              "serveTargetName": "serve",
+              "typecheckTargetName": "typecheck",
             },
             "plugin": "@nx/vite/plugin",
           },
@@ -538,10 +527,11 @@ describe('Vite - Convert Executors To Plugin', () => {
             ],
             "options": {
               "buildTargetName": "bundle",
+              "devTargetName": "dev",
               "previewTargetName": "preview",
               "serveStaticTargetName": "serve-static",
               "serveTargetName": "serve",
-              "testTargetName": "test",
+              "typecheckTargetName": "typecheck",
             },
             "plugin": "@nx/vite/plugin",
           },
@@ -551,10 +541,11 @@ describe('Vite - Convert Executors To Plugin', () => {
             ],
             "options": {
               "buildTargetName": "build-base",
+              "devTargetName": "dev",
               "previewTargetName": "preview",
               "serveStaticTargetName": "serve-static",
               "serveTargetName": "serve",
-              "testTargetName": "test",
+              "typecheckTargetName": "typecheck",
             },
             "plugin": "@nx/vite/plugin",
           },
@@ -661,7 +652,6 @@ describe('Vite - Convert Executors To Plugin', () => {
           ['buildTargetName', 'build'],
           ['serveTargetName', 'serve'],
           ['previewTargetName', 'preview'],
-          ['testTargetName', 'test'],
         ].forEach(([targetOptionName, targetName]) => {
           expect(hasVitePlugin.options[targetOptionName]).toEqual(targetName);
         });
@@ -708,7 +698,6 @@ describe('Vite - Convert Executors To Plugin', () => {
           ['buildTargetName', 'build'],
           ['serveTargetName', 'serve'],
           ['previewTargetName', 'preview'],
-          ['testTargetName', 'test'],
         ].forEach(([targetOptionName, targetName]) => {
           expect(hasVitePlugin.options[targetOptionName]).toEqual(targetName);
         });

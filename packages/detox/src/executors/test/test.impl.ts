@@ -2,8 +2,9 @@ import {
   ExecutorContext,
   parseTargetString,
   readTargetOptions,
+  names,
 } from '@nx/devkit';
-import { names } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 
@@ -11,6 +12,7 @@ import { DetoxBuildOptions } from '../build/schema';
 import { runCliBuild } from '../build/build.impl';
 
 import { DetoxTestOptions } from './schema';
+import { warnDetoxExecutorsDeprecation } from '../../utils/deprecation';
 
 export interface DetoxTestOutput {
   success: boolean;
@@ -22,6 +24,8 @@ export default async function* detoxTestExecutor(
   options: DetoxTestOptions,
   context: ExecutorContext
 ): AsyncGenerator<DetoxTestOutput> {
+  warnDetoxExecutorsDeprecation();
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -71,7 +75,8 @@ function runCliTest(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

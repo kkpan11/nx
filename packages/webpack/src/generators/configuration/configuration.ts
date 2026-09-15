@@ -1,3 +1,4 @@
+import { addBuildTargetDefaults } from '@nx/devkit/internal';
 import {
   formatFiles,
   GeneratorCallback,
@@ -15,8 +16,10 @@ import { webpackInitGenerator } from '../init/init';
 import { ConfigurationGeneratorSchema } from './schema';
 import { WebpackExecutorOptions } from '../../executors/webpack/schema';
 import { hasPlugin } from '../../utils/has-plugin';
-import { addBuildTargetDefaults } from '@nx/devkit/src/generators/add-build-target-defaults';
+import { warnWebpackExecutorGenerating } from '../../utils/deprecation';
+import { TS_SOLUTION_SETUP_TSCONFIG_INPUT } from '@nx/js/internal';
 import { ensureDependencies } from '../../utils/ensure-dependencies';
+import { assertSupportedWebpackVersion } from '../../utils/versions';
 
 export function configurationGenerator(
   tree: Tree,
@@ -29,6 +32,8 @@ export async function configurationGeneratorInternal(
   tree: Tree,
   options: ConfigurationGeneratorSchema
 ) {
+  assertSupportedWebpackVersion(tree);
+
   const tasks: GeneratorCallback[] = [];
   const nxJson = readNxJson(tree);
   const addPluginDefault =
@@ -50,6 +55,7 @@ export async function configurationGeneratorInternal(
   checkForTargetConflicts(tree, options);
 
   if (!hasPlugin(tree)) {
+    warnWebpackExecutorGenerating();
     addBuildTarget(tree, options);
     if (options.devServer) {
       addServeTarget(tree, options);
@@ -112,8 +118,8 @@ const { join } = require('path');
 module.exports = {
   output: {
     path: join(__dirname, '${offsetFromRoot(project.root)}${
-            buildOptions.outputPath
-          }'),
+      buildOptions.outputPath
+    }'),
   },
   plugins: [
     new NxAppWebpackPlugin({
@@ -133,6 +139,7 @@ const { composePlugins, withNx, withWeb } = require('@nx/webpack');
 module.exports = composePlugins(withNx(), withWeb(), (config) => {
   // Update the webpack config as needed here.
   // e.g. \`config.plugins.push(new MyPlugin())\`
+  config.output.clean = true;
   return config;
 });
 `
@@ -148,8 +155,8 @@ const { join } = require('path');
 module.exports = {
   output: {
     path: join(__dirname, '${offsetFromRoot(project.root)}${
-            buildOptions.outputPath
-          }'),
+      buildOptions.outputPath
+    }'),
   },
   plugins: [
     new NxAppWebpackPlugin({
@@ -169,6 +176,7 @@ const { composePlugins, withNx } = require('@nx/webpack');
 module.exports = composePlugins(withNx(), (config) => {
   // Update the webpack config as needed here.
   // e.g. \`config.plugins.push(new MyPlugin())\`
+  config.output.clean = true;
   return config;
 });
 `
@@ -177,7 +185,9 @@ module.exports = composePlugins(withNx(), (config) => {
 }
 
 function addBuildTarget(tree: Tree, options: ConfigurationGeneratorSchema) {
-  addBuildTargetDefaults(tree, '@nx/webpack:webpack');
+  addBuildTargetDefaults(tree, '@nx/webpack:webpack', 'build', [
+    TS_SOLUTION_SETUP_TSCONFIG_INPUT,
+  ]);
 
   const project = readProjectConfiguration(tree, options.project);
   const buildOptions: WebpackExecutorOptions = {

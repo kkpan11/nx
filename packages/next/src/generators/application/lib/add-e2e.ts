@@ -1,23 +1,38 @@
 import {
+  getE2EWebServerInfo,
+  readTargetDefaultsForTarget,
+  type PackageJson,
+} from '@nx/devkit/internal';
+import { isTypedLintingEnabled } from '@nx/eslint/internal';
+import {
   addProjectConfiguration,
   ensurePackage,
-  getPackageManagerCommand,
   joinPathFragments,
   readNxJson,
   Tree,
+  GeneratorCallback,
+  writeJson,
 } from '@nx/devkit';
-import { Linter } from '@nx/eslint';
-
+import { webStaticServeGenerator } from '@nx/web';
 import { nxVersion } from '../../../utils/versions';
 import { NormalizedSchema } from './normalize-options';
-import { webStaticServeGenerator } from '@nx/web';
 
-export async function addE2e(host: Tree, options: NormalizedSchema) {
+export async function addE2e(
+  host: Tree,
+  options: NormalizedSchema
+): Promise<GeneratorCallback> {
   const nxJson = readNxJson(host);
   const hasPlugin = nxJson.plugins?.some((p) =>
     typeof p === 'string'
       ? p === '@nx/next/plugin'
       : p.plugin === '@nx/next/plugin'
+  );
+
+  const e2eWebServerInfo = await getNextE2EWebServerInfo(
+    host,
+    options.projectName,
+    joinPathFragments(options.appProjectRoot, 'next.config.js'),
+    options.addPlugin
   );
 
   if (options.e2eTestRunner === 'cypress') {
@@ -34,44 +49,87 @@ export async function addE2e(host: Tree, options: NormalizedSchema) {
       });
     }
 
-    addProjectConfiguration(host, options.e2eProjectName, {
-      root: options.e2eProjectRoot,
-      sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
-      targets: {},
-      tags: [],
-      implicitDependencies: [options.projectName],
-    });
+    const packageJson: PackageJson = {
+      name: options.e2eProjectName,
+      version: '0.0.1',
+      private: true,
+    };
 
-    return configurationGenerator(host, {
+    if (!options.useProjectJson) {
+      packageJson.nx = {
+        implicitDependencies: [options.projectName],
+      };
+    } else {
+      addProjectConfiguration(host, options.e2eProjectName, {
+        root: options.e2eProjectRoot,
+        projectType: 'application',
+        sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
+        targets: {},
+        tags: [],
+        implicitDependencies: [options.projectName],
+      });
+    }
+
+    if (!options.useProjectJson || options.isTsSolutionSetup) {
+      writeJson(
+        host,
+        joinPathFragments(options.e2eProjectRoot, 'package.json'),
+        packageJson
+      );
+    }
+
+    const e2eTask = await configurationGenerator(host, {
       ...options,
-      linter: Linter.EsLint,
       project: options.e2eProjectName,
       directory: 'src',
       skipFormat: true,
-      devServerTarget: `${options.projectName}:${options.e2eWebServerTarget}`,
-      baseUrl: options.e2eWebServerAddress,
+      devServerTarget: e2eWebServerInfo.e2eDevServerTarget,
+      baseUrl: e2eWebServerInfo.e2eWebServerAddress,
       jsx: true,
-      webServerCommands: hasPlugin
-        ? {
-            default: `nx run ${options.projectName}:${options.e2eWebServerTarget}`,
-          }
-        : undefined,
-      ciWebServerCommand: hasPlugin
-        ? `nx run ${options.projectName}:serve-static`
-        : undefined,
+      enableTypedLinting: isTypedLintingEnabled(options),
+      webServerCommands: {
+        default: e2eWebServerInfo.e2eWebServerCommand,
+      },
+      ciWebServerCommand: e2eWebServerInfo.e2eCiWebServerCommand,
+      ciBaseUrl: e2eWebServerInfo.e2eCiBaseUrl,
     });
+
+    return e2eTask;
   } else if (options.e2eTestRunner === 'playwright') {
     const { configurationGenerator } = ensurePackage<
       typeof import('@nx/playwright')
     >('@nx/playwright', nxVersion);
-    addProjectConfiguration(host, options.e2eProjectName, {
-      root: options.e2eProjectRoot,
-      sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
-      targets: {},
-      tags: [],
-      implicitDependencies: [options.projectName],
-    });
-    return configurationGenerator(host, {
+
+    const packageJson: PackageJson = {
+      name: options.e2eProjectName,
+      version: '0.0.1',
+      private: true,
+    };
+
+    if (!options.useProjectJson) {
+      packageJson.nx = {
+        implicitDependencies: [options.projectName],
+      };
+    } else {
+      addProjectConfiguration(host, options.e2eProjectName, {
+        root: options.e2eProjectRoot,
+        projectType: 'application',
+        sourceRoot: joinPathFragments(options.e2eProjectRoot, 'src'),
+        targets: {},
+        tags: [],
+        implicitDependencies: [options.projectName],
+      });
+    }
+
+    if (!options.useProjectJson || options.isTsSolutionSetup) {
+      writeJson(
+        host,
+        joinPathFragments(options.e2eProjectRoot, 'package.json'),
+        packageJson
+      );
+    }
+
+    const e2eTask = await configurationGenerator(host, {
       rootProject: options.rootProject,
       project: options.e2eProjectName,
       skipFormat: true,
@@ -79,13 +137,52 @@ export async function addE2e(host: Tree, options: NormalizedSchema) {
       directory: 'src',
       js: false,
       linter: options.linter,
-      setParserOptionsProject: options.setParserOptionsProject,
-      webServerAddress: `http://127.0.0.1:${options.e2ePort}`,
-      webServerCommand: `${getPackageManagerCommand().exec} nx ${
-        options.e2eWebServerTarget
-      } ${options.projectName}`,
+      enableTypedLinting: isTypedLintingEnabled(options),
+      webServerAddress: e2eWebServerInfo.e2eCiBaseUrl,
+      webServerCommand: e2eWebServerInfo.e2eWebServerCommand,
       addPlugin: options.addPlugin,
     });
+
+    return e2eTask;
   }
   return () => {};
+}
+
+async function getNextE2EWebServerInfo(
+  tree: Tree,
+  projectName: string,
+  configFilePath: string,
+  isPluginBeingAdded: boolean
+) {
+  const nxJson = readNxJson(tree);
+  let e2ePort = isPluginBeingAdded ? 3000 : 4200;
+
+  const defaultServeTarget = isPluginBeingAdded ? 'dev' : 'serve';
+  const serveTargetOptions = readTargetDefaultsForTarget(
+    defaultServeTarget,
+    nxJson.targetDefaults
+  )?.options;
+
+  if (serveTargetOptions?.port) {
+    e2ePort = serveTargetOptions.port;
+  }
+
+  return getE2EWebServerInfo(
+    tree,
+    projectName,
+    {
+      plugin: '@nx/next/plugin',
+      serveTargetName: 'devTargetName',
+      serveStaticTargetName: 'startTargetName',
+      configFilePath,
+    },
+    {
+      defaultServeTargetName: defaultServeTarget,
+      defaultServeStaticTargetName: 'start',
+      defaultE2EWebServerAddress: `http://127.0.0.1:${e2ePort}`,
+      defaultE2ECiBaseUrl: `http://localhost:${e2ePort}`,
+      defaultE2EPort: e2ePort,
+    },
+    isPluginBeingAdded
+  );
 }

@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import {
   readNxJson,
@@ -22,9 +22,8 @@ describe('node app generator (legacy)', () => {
 
   it('should not skip the build target', async () => {
     await applicationGenerator(tree, {
-      name: 'my-node-app',
+      directory: 'my-node-app',
       bundler: 'webpack',
-      projectNameAndRootFormat: 'as-provided',
       addPlugin: false,
     });
     const project = readProjectConfiguration(tree, 'my-node-app');
@@ -32,7 +31,9 @@ describe('node app generator (legacy)', () => {
     expect(project.targets.build).toMatchInlineSnapshot(`
       {
         "configurations": {
-          "development": {},
+          "development": {
+            "outputHashing": "none",
+          },
           "production": {},
         },
         "defaultConfiguration": "production",
@@ -42,6 +43,7 @@ describe('node app generator (legacy)', () => {
             "my-node-app/src/assets",
           ],
           "compiler": "tsc",
+          "generatePackageJson": true,
           "main": "my-node-app/src/main.ts",
           "outputPath": "dist/my-node-app",
           "target": "node",

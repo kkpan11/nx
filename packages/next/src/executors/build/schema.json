@@ -6,6 +6,7 @@
   "title": "Next Build",
   "description": "Build a Next.js app.",
   "type": "object",
+  "x-deprecated": "The `@nx/next:build` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/next:convert-to-inferred` to migrate to the `@nx/next/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "properties": {
     "outputPath": {
       "type": "string",
@@ -58,6 +59,14 @@
       "default": false,
       "x-priority": "internal"
     },
+    "skipOverrides": {
+      "type": "boolean",
+      "description": "Do not add a `overrides` and `resolutions` entries to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
+    "skipPackageManager": {
+      "type": "boolean",
+      "description": "Do not add a `packageManager` entry to the generated package.json file."
+    },
     "debug": {
       "type": "boolean",
       "description": "Enable Next.js debug build logging"
@@ -74,6 +83,14 @@
       "type": "string",
       "description": "Change the build mode.",
       "enum": ["compile", "generate"]
+    },
+    "turbo": {
+      "type": "boolean",
+      "description": "Use Turbopack for building (Next.js 15 and below). In Next.js 16+, Turbopack is enabled by default."
+    },
+    "webpack": {
+      "type": "boolean",
+      "description": "Use webpack bundler instead of Turbopack (Next.js 16+ only). This flag is only applicable in Next.js 16 and above where Turbopack is the default."
     }
   },
   "required": ["outputPath"],

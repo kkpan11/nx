@@ -1,13 +1,15 @@
+import { LinterType } from '@nx/js';
+
 export interface Schema {
   name: string;
   path: string;
   remote: string;
   remoteDirectory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   e2eTestRunner?: 'cypress' | 'playwright' | 'none';
   host?: string;
-  linter?: Linter;
+  linter?: LinterType;
   skipFormat?: boolean;
   style?: SupportedStyles;
   unitTestRunner?: 'jest' | 'vitest' | 'none';
+  bundler?: 'rspack' | 'webpack';
 }

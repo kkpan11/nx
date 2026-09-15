@@ -2,6 +2,14 @@
   "name": "@nx/workspace",
   "version": "0.0.1",
   "private": false,
+  "type": "commonjs",
+  "files": [
+    "dist",
+    "!dist/tsconfig.tsbuildinfo",
+    "migrations.json",
+    "executors.json",
+    "generators.json"
+  ],
   "description": "The Workspace plugin contains executors and generators that are useful for any Nx workspace. It should be present in every Nx workspace and other plugins build on it.",
   "repository": {
     "type": "git",
@@ -19,8 +27,15 @@
     "Cypress",
     "CLI"
   ],
-  "main": "./index",
-  "typings": "./index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "tasks-runners/default": [
+        "dist/tasks-runners/default.d.ts"
+      ]
+    }
+  },
   "author": "Victor Savkin",
   "license": "MIT",
   "bugs": {
@@ -33,39 +48,46 @@
     "requirements": {},
     "migrations": "./migrations.json",
     "packageGroup": {
-      "@nrwl/js": "*",
-      "@nrwl/jest": "*",
-      "@nrwl/linter": "*",
-      "@nrwl/angular": "*",
-      "@nrwl/cypress": "*",
-      "@nrwl/detox": "*",
-      "@nrwl/devkit": "*",
-      "@nrwl/esbuild": "*",
-      "@nrwl/eslint-plugin-nx": "*",
-      "@nrwl/expo": "*",
-      "@nrwl/express": "*",
-      "@nrwl/nest": "*",
-      "@nrwl/next": "*",
-      "@nrwl/node": "*",
       "nx-cloud": "latest",
-      "@nrwl/nx-plugin": "*",
-      "@nrwl/react-native": "*",
-      "@nrwl/react": "*",
-      "@nrwl/rollup": "*",
-      "@nrwl/storybook": "*",
-      "@nrwl/tao": "*",
-      "@nrwl/vite": "*",
-      "@nrwl/web": "*",
-      "@nrwl/webpack": "*",
       "nx": "*"
+    },
+    "supportsOptionalMigrations": true
+  },
+  "exports": {
+    ".": {
+      "@nx/nx-source": "./index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./migrations.json": "./migrations.json",
+    "./generators.json": "./generators.json",
+    "./executors.json": "./executors.json",
+    "./tasks-runners/default": {
+      "@nx/nx-source": "./tasks-runners/default.ts",
+      "types": "./dist/tasks-runners/default.d.ts",
+      "default": "./dist/tasks-runners/default.js"
+    },
+    "./presets/*": {
+      "@nx/nx-source": "./presets/*.json",
+      "default": "./dist/presets/*.json"
+    },
+    "./presets/*.json": {
+      "@nx/nx-source": "./presets/*.json",
+      "default": "./dist/presets/*.json"
     }
   },
   "dependencies": {
-    "@nx/devkit": "file:../devkit",
-    "chalk": "^4.1.0",
-    "enquirer": "~2.3.6",
-    "tslib": "^2.3.0",
-    "yargs-parser": "21.1.1"
+    "@nx/devkit": "workspace:*",
+    "@zkochan/js-yaml": "catalog:",
+    "chalk": "catalog:",
+    "picomatch": "catalog:",
+    "semver": "catalog:",
+    "tslib": "catalog:typescript",
+    "yargs-parser": "catalog:"
+  },
+  "devDependencies": {
+    "nx": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

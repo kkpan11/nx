@@ -1,6 +1,6 @@
 import { Params } from 'react-router-dom';
-import { ProjectGraphService } from './project-graph-data-service/get-project-graph-data-service';
 import { AppConfig } from './app-config';
+import { ProjectGraphService } from './project-graph-data-service/get-project-graph-data-service';
 
 export async function fetchProjectGraph(
   projectGraphService: ProjectGraphService,

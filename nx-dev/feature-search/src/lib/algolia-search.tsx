@@ -1,14 +1,17 @@
-import { DocSearchModal, useDocSearchKeyboardEvents } from '@docsearch/react';
-import {
-  InternalDocSearchHit,
-  StoredDocSearchHit,
-} from '@docsearch/react/dist/esm/types';
+import * as docsearchReact from '@docsearch/react';
+// Note: InternalDocSearchHit and StoredDocSearchHit are not exported by @docsearch/react
+// import type {
+//   InternalDocSearchHit,
+//   StoredDocSearchHit,
+// } from '@docsearch/react';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/solid';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+
+const { DocSearchModal, useDocSearchKeyboardEvents } = docsearchReact;
 
 const ACTION_KEY_DEFAULT = ['Ctrl ', 'Control'];
 const ACTION_KEY_APPLE = ['⌘', 'Command'];
@@ -17,7 +20,7 @@ function Hit({
   hit,
   children,
 }: {
-  hit: InternalDocSearchHit | StoredDocSearchHit;
+  hit: any; // TODO: Import proper types when @docsearch/react exports them
   children: ReactNode;
 }): JSX.Element {
   return (
@@ -29,8 +32,10 @@ function Hit({
 
 export function AlgoliaSearch({
   tiny = false,
+  blogOnly = false,
 }: {
   tiny?: boolean;
+  blogOnly?: boolean;
 }): JSX.Element {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
@@ -87,15 +92,15 @@ export function AlgoliaSearch({
           type="button"
           ref={searchButtonRef}
           onClick={handleOpen}
-          className="flex w-full items-center rounded-md bg-white px-2 py-1.5 text-sm leading-4 ring-1 ring-slate-300 transition dark:bg-slate-700 dark:ring-slate-900"
+          className="flex w-full items-center rounded-md bg-white px-2 py-1.5 text-sm leading-4 ring-1 ring-zinc-300 transition dark:bg-zinc-700 dark:ring-zinc-900"
         >
           <MagnifyingGlassIcon className="h-4 w-4 flex-none" />
-          <span className="mx-3 inline-flex text-xs text-slate-300 md:text-sm dark:text-slate-400">
+          <span className="mx-3 inline-flex text-xs text-zinc-300 md:text-sm dark:text-zinc-400">
             Search
           </span>
           <span
             style={{ opacity: browserDetected ? '1' : '0' }}
-            className="ml-auto hidden flex-none rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-xs font-semibold text-slate-500 md:block dark:border-slate-700 dark:bg-slate-800/60"
+            className="ml-auto hidden flex-none rounded-md border border-zinc-200 bg-zinc-50 px-1 py-0.5 text-xs font-semibold text-zinc-500 md:block dark:border-zinc-700 dark:bg-zinc-800/60"
           >
             <span className="sr-only">Press </span>
             <kbd className="font-sans">
@@ -117,7 +122,7 @@ export function AlgoliaSearch({
         >
           <span
             style={{ opacity: browserDetected ? '1' : '0' }}
-            className="ml-auto block flex-none rounded-md border border-slate-200 bg-slate-50/60 px-1 py-0.5 text-xs font-semibold text-slate-400 transition hover:text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-500 dark:hover:text-slate-400"
+            className="ml-auto block flex-none rounded-md border border-zinc-200 bg-zinc-50/60 px-1 py-0.5 text-xs font-semibold text-zinc-400 transition hover:text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-500 dark:hover:text-zinc-400"
           >
             <span className="sr-only">Press </span>
             <kbd className="font-sans">
@@ -136,12 +141,14 @@ export function AlgoliaSearch({
         createPortal(
           <DocSearchModal
             searchParameters={{
-              facetFilters: ['language:en'],
+              facetFilters: blogOnly
+                ? ['language:en', 'hierarchy.lvl0:Nx | Blog']
+                : ['language:en'],
               hitsPerPage: 100,
               distinct: true,
             }}
             initialQuery={initialQuery}
-            placeholder="Search the docs"
+            placeholder={blogOnly ? 'Search blog posts' : 'Search the docs'}
             initialScrollY={window.scrollY}
             onClose={handleClose}
             indexName={`${process.env.NEXT_PUBLIC_SEARCH_INDEX}`}
@@ -153,6 +160,7 @@ export function AlgoliaSearch({
                 router.push(itemUrl);
               },
             }}
+            insights={true}
             hitComponent={Hit}
             transformItems={(items) => {
               return items.map((item, index) => {

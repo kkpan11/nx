@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use napi::bindgen_prelude::{Object, ToNapiValue};
-use napi::{sys, Env};
+use napi::{Env, sys};
 use std::collections::hash_map::RandomState;
 use std::ops::{Deref, DerefMut};
 
@@ -57,7 +57,7 @@ where
 {
     unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
         let env = Env::from(raw_env);
-        let mut obj = env.create_object()?;
+        let mut obj = Object::new(&env)?;
         for (k, v) in val.0.into_iter() {
             obj.set(k.as_ref(), v)?;
         }

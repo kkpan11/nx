@@ -1,10 +1,11 @@
+use mio::{Events, unix::SourceFd};
 use std::{
     io::{Read, Stdin, Write},
     os::fd::AsRawFd,
 };
-
-use mio::{unix::SourceFd, Events};
 use tracing::trace;
+
+use super::pseudo_terminal::WriterArc;
 
 pub fn handle_path_space(path: String) -> String {
     if path.contains(' ') {
@@ -14,7 +15,7 @@ pub fn handle_path_space(path: String) -> String {
     }
 }
 
-pub fn write_to_pty(stdin: &mut Stdin, writer: &mut impl Write) -> anyhow::Result<()> {
+pub fn write_to_pty(stdin: &mut Stdin, writer: WriterArc) -> anyhow::Result<()> {
     let mut buffer = [0; 1024];
 
     let mut poll = mio::Poll::new()?;
@@ -46,17 +47,15 @@ pub fn write_to_pty(stdin: &mut Stdin, writer: &mut impl Write) -> anyhow::Resul
                     // Read data from stdin
                     loop {
                         match stdin.read(&mut buffer) {
+                            Ok(0) => return Ok(()),
                             Ok(n) => {
+                                let mut writer = writer.lock();
                                 writer.write_all(&buffer[..n])?;
                                 writer.flush()?;
                             }
-                            Err(e) => {
-                                if e.kind() == std::io::ErrorKind::WouldBlock {
-                                    break;
-                                } else if e.kind() == std::io::ErrorKind::Interrupted {
-                                    continue;
-                                }
-                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Err(e) => return Err(e.into()),
                         }
                     }
                 }

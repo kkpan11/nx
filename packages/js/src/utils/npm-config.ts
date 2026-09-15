@@ -1,7 +1,7 @@
 import { exec } from 'child_process';
 import { existsSync } from 'fs';
-import { PackageJson } from 'nx/src/utils/package-json';
 import { join, relative } from 'path';
+import { PackageJson } from '@nx/devkit/internal';
 
 export async function parseRegistryOptions(
   cwd: string,
@@ -108,12 +108,9 @@ async function getNpmConfigValue(key: string, cwd: string): Promise<string> {
 async function execAsync(command: string, cwd: string): Promise<string> {
   // Must be non-blocking async to allow spinner to render
   return new Promise<string>((resolve, reject) => {
-    exec(command, { cwd }, (error, stdout, stderr) => {
+    exec(command, { cwd, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
-        return reject(error);
-      }
-      if (stderr) {
-        return reject(stderr);
+        return reject((stderr ? `${stderr}\n` : '') + error);
       }
       return resolve(stdout.trim());
     });

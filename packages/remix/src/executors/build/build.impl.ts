@@ -5,13 +5,13 @@ import {
   writeJsonFile,
   type ExecutorContext,
 } from '@nx/devkit';
-import { createLockFile, createPackageJson, getLockFileName } from '@nx/js';
-import { directoryExists } from '@nx/workspace/src/utilities/fileutils';
+import { createPackageJson, generatePrunedDeployOutput } from '@nx/js';
 import { fork } from 'child_process';
-import { copySync, mkdir, writeFileSync } from 'fs-extra';
-import { type PackageJson } from 'nx/src/utils/package-json';
+import { copySync, mkdir, statSync } from 'fs-extra';
 import { join } from 'path';
 import { type RemixBuildSchema } from './schema';
+import { warnRemixBuildExecutorDeprecation } from '../../utils/deprecation';
+import { type PackageJson } from '@nx/devkit/internal';
 
 function buildRemixBuildArgs(options: RemixBuildSchema) {
   const args = ['build'];
@@ -46,6 +46,8 @@ export default async function buildExecutor(
   options: RemixBuildSchema,
   context: ExecutorContext
 ) {
+  warnRemixBuildExecutorDeprecation();
+
   const projectRoot = context.projectGraph.nodes[context.projectName].data.root;
 
   try {
@@ -57,15 +59,23 @@ export default async function buildExecutor(
     return { success: false };
   }
 
-  if (!directoryExists(options.outputPath)) {
+  let outputIsDirectory = false;
+  try {
+    outputIsDirectory = statSync(options.outputPath).isDirectory();
+  } catch {
+    // path does not exist; will be created below
+  }
+  if (!outputIsDirectory) {
     mkdir(options.outputPath);
   }
+  const packageManager = detectPackageManager(context.root);
   let packageJson: PackageJson;
   if (options.generatePackageJson) {
     packageJson = createPackageJson(context.projectName, context.projectGraph, {
       target: context.targetName,
       root: context.root,
       isProduction: !options.includeDevDependenciesInPackageJson, // By default we remove devDependencies since this is a production build.
+      skipPackageManager: options.skipPackageManager,
     });
 
     // Update `package.json` to reflect how users should run the build artifacts
@@ -76,25 +86,19 @@ export default async function buildExecutor(
     }
 
     updatePackageJson(packageJson, context);
-    writeJsonFile(`${options.outputPath}/package.json`, packageJson);
   } else {
     packageJson = readJsonFile(join(projectRoot, 'package.json'));
   }
 
   if (options.generateLockfile) {
-    const packageManager = detectPackageManager(context.root);
-    const lockFile = createLockFile(
-      packageJson,
-      context.projectGraph,
-      packageManager
-    );
-    writeFileSync(
-      `${options.outputPath}/${getLockFileName(packageManager)}`,
-      lockFile,
-      {
-        encoding: 'utf-8',
-      }
-    );
+    generatePrunedDeployOutput(packageJson, context.projectGraph, projectRoot, {
+      outputDirectory: options.outputPath,
+      packageManager,
+      workspaceRoot: context.root,
+    });
+  }
+  if (options.generatePackageJson) {
+    writeJsonFile(`${options.outputPath}/package.json`, packageJson);
   }
 
   // If output path is different from source path, then copy over the config and public files.

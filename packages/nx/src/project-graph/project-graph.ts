@@ -1,5 +1,7 @@
 import { performance } from 'perf_hooks';
 
+import { join } from 'path';
+import { customDimensions, PERF_SPAN_SAMPLE_RATE } from '../analytics';
 import { readNxJson } from '../config/nx-json';
 import { ProjectGraph } from '../config/project-graph';
 import {
@@ -7,42 +9,65 @@ import {
   ProjectsConfigurations,
 } from '../config/workspace-json-project-json';
 import { daemonClient } from '../daemon/client/client';
-import { markDaemonAsDisabled, writeDaemonLogs } from '../daemon/tmp-dir';
+import { isOnDaemon } from '../daemon/is-on-daemon';
+import { sandboxSocketHint } from '../daemon/sandbox-socket-hint';
+import {
+  disableDaemonForThisProcess,
+  markDaemonAsDisabled,
+  writeDaemonLogs,
+} from '../daemon/tmp-dir';
+import { FileLock, IS_WASM } from '../native';
+import { workspaceDataDirectory } from '../utils/cache-directory';
+import { getCallSites } from '../utils/call-sites';
+import { DelayedSpinner } from '../utils/delayed-spinner';
 import { fileExists } from '../utils/fileutils';
+import { isSandbox } from '../utils/is-sandbox';
+import { logger } from '../utils/logger';
 import { output } from '../utils/output';
 import { stripIndents } from '../utils/strip-indents';
 import { workspaceRoot } from '../utils/workspace-root';
-import { buildProjectGraphUsingProjectFileMap } from './build-project-graph';
+import { refreshWorkspaceContext } from '../utils/workspace-context';
+import {
+  buildProjectGraphUsingProjectFileMap,
+  hydrateFileMap,
+} from './build-project-graph';
 import {
   AggregateProjectGraphError,
   isAggregateProjectGraphError,
   ProjectConfigurationsError,
   ProjectGraphError,
+  StaleProjectGraphCacheError,
 } from './error-types';
 import {
   readFileMapCache,
   readProjectGraphCache,
+  readSourceMapsCache,
   writeCache,
 } from './nx-deps-cache';
-import { loadNxPlugins } from './plugins/internal-api';
+import { getPlugins, getPluginsSeparated } from './plugins/get-plugins';
 import { ConfigurationResult } from './utils/project-configuration-utils';
 import {
   retrieveProjectConfigurations,
   retrieveWorkspaceFiles,
 } from './utils/retrieve-workspace-files';
+import { handleImport } from '../utils/handle-import';
 
 /**
  * Synchronously reads the latest cached copy of the workspace's ProjectGraph.
+ *
+ * @param {number} [minimumComputedAt] - The minimum timestamp that the cached ProjectGraph must have been computed at.
  * @throws {Error} if there is no cached ProjectGraph to read from
  */
-export function readCachedProjectGraph(): ProjectGraph {
-  const projectGraphCache: ProjectGraph = readProjectGraphCache();
+export function readCachedProjectGraph(
+  minimumComputedAt?: number
+): ProjectGraph {
+  const projectGraphCache = readProjectGraphCache(minimumComputedAt);
   if (!projectGraphCache) {
     const angularSpecificError = fileExists(`${workspaceRoot}/angular.json`)
       ? stripIndents`
       Make sure invoke 'node ./decorate-angular-cli.js' in your postinstall script.
       The decorated CLI will compute the project graph.
-      'ng --help' should say 'Smart Monorepos · Fast CI'.
+      'ng --help' should say 'Smart Monorepos · Fast Builds'.
       `
       : '';
 
@@ -90,16 +115,22 @@ export function readProjectsConfigurationFromProjectGraph(
 }
 
 export async function buildProjectGraphAndSourceMapsWithoutDaemon() {
+  preventRecursionInGraphConstruction();
+
   global.NX_GRAPH_CREATION = true;
   const nxJson = readNxJson();
+  refreshWorkspaceContext(workspaceRoot);
 
   performance.mark('retrieve-project-configurations:start');
   let configurationResult: ConfigurationResult;
   let projectConfigurationsError: ProjectConfigurationsError;
-  const [plugins, cleanup] = await loadNxPlugins(nxJson.plugins);
+  const separatedPlugins = await getPluginsSeparated(nxJson);
+  const plugins = separatedPlugins.specifiedPlugins.concat(
+    separatedPlugins.defaultPlugins
+  );
   try {
     configurationResult = await retrieveProjectConfigurations(
-      plugins,
+      separatedPlugins,
       workspaceRoot,
       nxJson
     );
@@ -116,8 +147,10 @@ export async function buildProjectGraphAndSourceMapsWithoutDaemon() {
   performance.mark('retrieve-project-configurations:end');
 
   performance.mark('retrieve-workspace-files:start');
-  const { allWorkspaceFiles, fileMap, rustReferences } =
-    await retrieveWorkspaceFiles(workspaceRoot, projectRootMap);
+  const { fileMap, rustReferences } = await retrieveWorkspaceFiles(
+    workspaceRoot,
+    projectRootMap
+  );
   performance.mark('retrieve-workspace-files:end');
 
   const cacheEnabled = process.env.NX_CACHE_PROJECT_GRAPH !== 'false';
@@ -131,7 +164,6 @@ export async function buildProjectGraphAndSourceMapsWithoutDaemon() {
       projects,
       externalNodes,
       fileMap,
-      allWorkspaceFiles,
       rustReferences,
       cacheEnabled ? readFileMapCache() : null,
       plugins,
@@ -147,14 +179,6 @@ export async function buildProjectGraphAndSourceMapsWithoutDaemon() {
     } else {
       throw e;
     }
-  } finally {
-    // When plugins are isolated we don't clean them up during
-    // a single run of the CLI. They are cleaned up when the CLI
-    // process exits. Cleaning them here could cause issues if pending
-    // promises are not resolved.
-    if (process.env.NX_ISOLATE_PLUGINS !== 'true') {
-      cleanup();
-    }
   }
 
   const { projectGraph, projectFileMapCache } = projectGraphResult;
@@ -167,12 +191,13 @@ export async function buildProjectGraphAndSourceMapsWithoutDaemon() {
     ...(projectGraphError?.errors ?? []),
   ];
 
+  if (cacheEnabled) {
+    writeCache(projectFileMapCache, projectGraph, sourceMaps, errors);
+  }
+
   if (errors.length > 0) {
     throw new ProjectGraphError(errors, projectGraph, sourceMaps);
   } else {
-    if (cacheEnabled) {
-      writeCache(projectFileMapCache, projectGraph);
-    }
     return { projectGraph, sourceMaps };
   }
 }
@@ -182,9 +207,6 @@ export function handleProjectGraphError(opts: { exitOnError: boolean }, e) {
     const isVerbose = process.env.NX_VERBOSE_LOGGING === 'true';
     if (e instanceof ProjectGraphError) {
       let title = e.message;
-      if (isVerbose) {
-        title += ' See errors below.';
-      }
 
       const bodyLines = isVerbose
         ? [e.stack]
@@ -194,7 +216,7 @@ export function handleProjectGraphError(opts: { exitOnError: boolean }, e) {
         title,
         bodyLines: bodyLines,
       });
-    } else {
+    } else if (typeof e.message === 'string') {
       const lines = e.message.split('\n');
       output.error({
         title: lines[0],
@@ -203,11 +225,29 @@ export function handleProjectGraphError(opts: { exitOnError: boolean }, e) {
       if (isVerbose) {
         console.error(e);
       }
+    } else {
+      console.error(e);
     }
     process.exit(1);
   } else {
     throw e;
   }
+}
+
+async function readCachedGraphAndHydrateFileMap(minimumComputedAt?: number) {
+  const graph = readCachedProjectGraph(minimumComputedAt);
+  const projectRootMap = Object.fromEntries(
+    Object.entries(graph.nodes).map(([project, { data }]) => [
+      data.root,
+      project,
+    ])
+  );
+  const { fileMap, rustReferences } = await retrieveWorkspaceFiles(
+    workspaceRoot,
+    projectRootMap
+  );
+  hydrateFileMap(fileMap, rustReferences);
+  return graph;
 }
 
 /**
@@ -237,9 +277,21 @@ export async function createProjectGraphAsync(
     resetDaemonClient: false,
   }
 ): Promise<ProjectGraph> {
-  const projectGraphAndSourceMaps = await createProjectGraphAndSourceMapsAsync(
-    opts
-  );
+  if (process.env.NX_FORCE_REUSE_CACHED_GRAPH === 'true') {
+    try {
+      // If no cached graph is found, we will fall through to the normal flow
+      const graph = await readCachedGraphAndHydrateFileMap();
+      return graph;
+    } catch (e) {
+      if (e instanceof ProjectGraphError) {
+        throw e;
+      }
+      logger.verbose('Unable to use cached project graph', e);
+    }
+  }
+
+  const projectGraphAndSourceMaps =
+    await createProjectGraphAndSourceMapsAsync(opts);
   return projectGraphAndSourceMaps.projectGraph;
 }
 
@@ -249,49 +301,146 @@ export async function createProjectGraphAndSourceMapsAsync(
     resetDaemonClient: false,
   }
 ) {
-  performance.mark('create-project-graph-async:start');
+  performance.mark('createProjectGraphAsync:start');
+
+  // If we're already on the daemon, return the in-memory graph directly
+  // instead of making an IPC call back to ourselves.
+  if (isOnDaemon()) {
+    const { currentProjectGraph, currentSourceMaps } = await handleImport(
+      '../daemon/server/project-graph-incremental-recomputation.js',
+      __dirname
+    );
+    if (currentProjectGraph) {
+      performance.mark('createProjectGraphAsync:end');
+      performance.measure('createProjectGraphAsync', {
+        start: 'createProjectGraphAsync:start',
+        end: 'createProjectGraphAsync:end',
+        detail: {
+          track: true,
+          ...(customDimensions && {
+            [customDimensions.projectCount]: Object.keys(
+              currentProjectGraph.nodes
+            ).length,
+            [customDimensions.sampleRate]: PERF_SPAN_SAMPLE_RATE,
+          }),
+        },
+      });
+      return {
+        projectGraph: currentProjectGraph,
+        sourceMaps: currentSourceMaps,
+      };
+    }
+  }
 
   if (!daemonClient.enabled()) {
+    const lock = !IS_WASM
+      ? new FileLock(join(workspaceDataDirectory, 'project-graph.lock'))
+      : null;
+    let locked = lock?.locked;
+    while (locked) {
+      logger.verbose(
+        'Waiting for graph construction in another process to complete'
+      );
+      const spinner = new DelayedSpinner(
+        'Waiting for graph construction in another process to complete'
+      );
+      const start = Date.now();
+      await lock.wait();
+      spinner.cleanup();
+
+      // Note: This will currently throw if any of the caches are missing...
+      // It would be nice if one of the processes that was waiting for the lock
+      // could pick up the slack and build the graph if it's missing, but
+      // we wouldn't want either of the below to happen:
+      // - All of the waiting processes to build the graph
+      // - Even one of the processes building the graph on a legitimate error
+
+      try {
+        // Ensuring that computedAt was after this process started
+        // waiting for the graph to complete, means that the graph
+        // was computed by the process was already working.
+        const graph = await readCachedGraphAndHydrateFileMap(start);
+
+        const sourceMaps = readSourceMapsCache();
+        if (!sourceMaps) {
+          throw new Error(
+            'The project graph was computed in another process, but the source maps are missing.'
+          );
+        }
+
+        return {
+          projectGraph: graph,
+          sourceMaps,
+        };
+      } catch (e) {
+        // If the error is that the cached graph is stale after unlock,
+        // the process that was working on the graph must have been canceled,
+        // so we will fall through to the normal flow to ensure
+        // its created by one of the processes that was waiting
+        if (!(e instanceof StaleProjectGraphCacheError)) {
+          throw e;
+        }
+      }
+      locked = lock.check();
+    }
+    lock?.lock();
     try {
       const res = await buildProjectGraphAndSourceMapsWithoutDaemon();
       performance.measure(
-        'create-project-graph-async >> retrieve-project-configurations',
+        'createProjectGraphAsync >> retrieve-project-configurations',
         'retrieve-project-configurations:start',
         'retrieve-project-configurations:end'
       );
       performance.measure(
-        'create-project-graph-async >> retrieve-workspace-files',
+        'createProjectGraphAsync >> retrieve-workspace-files',
         'retrieve-workspace-files:start',
         'retrieve-workspace-files:end'
       );
       performance.measure(
-        'create-project-graph-async >> build-project-graph-using-project-file-map',
+        'createProjectGraphAsync >> build-project-graph-using-project-file-map',
         'build-project-graph-using-project-file-map:start',
         'build-project-graph-using-project-file-map:end'
       );
-      performance.mark('create-project-graph-async:end');
-      performance.measure(
-        'create-project-graph-async',
-        'create-project-graph-async:start',
-        'create-project-graph-async:end'
-      );
+      performance.mark('createProjectGraphAsync:end');
+      performance.measure('createProjectGraphAsync', {
+        start: 'createProjectGraphAsync:start',
+        end: 'createProjectGraphAsync:end',
+        detail: {
+          track: true,
+          ...(customDimensions && {
+            [customDimensions.projectCount]: Object.keys(res.projectGraph.nodes)
+              .length,
+            [customDimensions.sampleRate]: PERF_SPAN_SAMPLE_RATE,
+          }),
+        },
+      });
       return res;
     } catch (e) {
       handleProjectGraphError(opts, e);
+    } finally {
+      lock?.unlock();
     }
   } else {
     try {
       const projectGraphAndSourceMaps =
         await daemonClient.getProjectGraphAndSourceMaps();
-      performance.mark('create-project-graph-async:end');
-      performance.measure(
-        'create-project-graph-async',
-        'create-project-graph-async:start',
-        'create-project-graph-async:end'
-      );
+      performance.mark('createProjectGraphAsync:end');
+      performance.measure('createProjectGraphAsync', {
+        start: 'createProjectGraphAsync:start',
+        end: 'createProjectGraphAsync:end',
+        detail: {
+          track: true,
+          ...(customDimensions && {
+            [customDimensions.projectCount]: Object.keys(
+              projectGraphAndSourceMaps.projectGraph.nodes
+            ).length,
+            [customDimensions.sampleRate]: PERF_SPAN_SAMPLE_RATE,
+          }),
+        },
+      });
       return projectGraphAndSourceMaps;
     } catch (e) {
-      if (e.message.indexOf('inotify_add_watch') > -1) {
+      if (e.message && e.message.indexOf('inotify_add_watch') > -1) {
         // common errors with the daemon due to OS settings (cannot watch all the files available)
         output.note({
           title: `Unable to start Nx Daemon due to the limited amount of inotify watches, continuing without the daemon.`,
@@ -300,21 +449,64 @@ export async function createProjectGraphAndSourceMapsAsync(
             'Nx Daemon is going to be disabled until you run "nx reset".',
           ],
         });
-        markDaemonAsDisabled();
+        markDaemonAsDisabled(e.message);
+        return buildProjectGraphAndSourceMapsWithoutDaemon();
+      }
+
+      if (e.daemonPermissionError) {
+        // Deliberately not disabled: unlike the inotify limit above, a socket
+        // owned by someone else stops being there when it is removed or the
+        // machine reboots, and disabling until `nx reset` would outlive the
+        // cause and hide the fix from anyone who followed the advice.
+        // The first line carries the errno, and it is the one token that tells
+        // the two causes apart: EACCES is a socket owned by someone else (delete
+        // it), EPERM is a sandbox refusing the connect syscall (allow unix
+        // sockets under the Nx socket root). The message hedges between exactly
+        // those two because it cannot tell them apart, and this branch does not
+        // call writeDaemonLogs, so dropping the line loses the errno for good.
+        const [summary, ...details] = e.message.split('\n');
+        output.note({
+          title: `${summary} Continuing without the daemon.`,
+          // The blank line after the summary separates paragraphs when the
+          // message is printed as one blob; as bodyLines it is a leading gap.
+          bodyLines: details[0] === '' ? details.slice(1) : details,
+        });
         return buildProjectGraphAndSourceMapsWithoutDaemon();
       }
 
       if (e.internalDaemonError) {
         const errorLogFile = writeDaemonLogs(e.message);
+        const sandboxed = isSandbox();
         output.warn({
           title: `Nx Daemon was not able to compute the project graph.`,
           bodyLines: [
             `Log file with the error: ${errorLogFile}`,
+            // Inline rather than left to the log file, which an agent will
+            // not open. This branch covers every internal daemon error,
+            // including ones a sandbox cannot explain, so the issue link stays
+            // either way.
+            ...(sandboxed ? sandboxSocketHint() : []),
             `Please file an issue at https://github.com/nrwl/nx`,
-            'Nx Daemon is going to be disabled until you run "nx reset".',
+            sandboxed
+              ? 'Nx Daemon is disabled for this command.'
+              : 'Nx Daemon is going to be disabled until you run "nx reset".',
           ],
         });
-        markDaemonAsDisabled();
+        // A sandbox refusal describes the environment, not the workspace. The
+        // on-disk marker would follow the checkout into an ordinary terminal
+        // and survive the user fixing their allowlist, since only `nx reset`
+        // clears it.
+        if (sandboxed) {
+          disableDaemonForThisProcess(e.message);
+        } else {
+          markDaemonAsDisabled(e.message);
+        }
+        // Both writes are only read through `isDaemonDisabled()`, which
+        // `enabled()` consults once and then memoizes. Without clearing that,
+        // every later daemon consumer in this process — task hashing, workspace
+        // context, sync generators — starts the daemon again and waits out the
+        // full connect budget, under a warning saying it is off.
+        daemonClient.reset();
         return buildProjectGraphAndSourceMapsWithoutDaemon();
       }
 
@@ -324,5 +516,59 @@ export async function createProjectGraphAndSourceMapsAsync(
         daemonClient.reset();
       }
     }
+  }
+}
+
+export function preventRecursionInGraphConstruction() {
+  const allFrames = getCallSites();
+
+  // Find the first occurrence of buildProjectGraphAndSourceMapsWithoutDaemon in the call stack.
+  // This represents the current invocation and should be skipped for the recursion check.
+  const firstOccurrenceIndex = allFrames.findIndex(
+    (f) =>
+      f.getFunctionName() === buildProjectGraphAndSourceMapsWithoutDaemon.name
+  );
+
+  let stackframes: NodeJS.CallSite[];
+
+  if (firstOccurrenceIndex !== -1) {
+    // Skip the current invocation frame and any consecutive frames with the same function name.
+    // Some runtimes (e.g. Bun) include extra async frames for the same call, which would
+    // otherwise cause a false positive loop detection.
+    let startIndex = firstOccurrenceIndex + 1;
+    while (
+      startIndex < allFrames.length &&
+      allFrames[startIndex].getFunctionName() ===
+        buildProjectGraphAndSourceMapsWithoutDaemon.name
+    ) {
+      startIndex++;
+    }
+    stackframes = allFrames.slice(startIndex);
+  } else {
+    // If buildProjectGraphAndSourceMapsWithoutDaemon is not in the stack (e.g., when called
+    // from daemon client), fall back to the original slice(2) behavior.
+    // preventRecursionInGraphConstruction -> callee -> ...
+    stackframes = allFrames.slice(2);
+  }
+
+  if (
+    stackframes.some((f) => {
+      const functionName = f.getFunctionName();
+      const fileName = f.getFileName() || '';
+      return (
+        functionName === buildProjectGraphAndSourceMapsWithoutDaemon.name ||
+        (['createNodes', 'createDependencies', 'createMetadata'].includes(
+          functionName || ''
+        ) &&
+          fileName.endsWith('plugin-worker.js'))
+      );
+    })
+  ) {
+    throw new Error(
+      `Project graph construction cannot be performed due to a loop detected in the call stack. This can happen if 'createProjectGraphAsync' is called directly or indirectly during project graph construction.\n` +
+        'To avoid this, you can add a check against "global.NX_GRAPH_CREATION" before calling "createProjectGraphAsync".\n' +
+        'Call stack:\n' +
+        stackframes.join('\n')
+    );
   }
 }

@@ -1,12 +1,25 @@
-import { Argv } from 'yargs';
+import { readNxJson } from '../../config/nx-json';
+import { shouldUseTui } from '../../tasks-runner/is-tui-enabled';
+import { NxArgs } from '../../utils/command-line-utils';
+import type { Argv, ParserConfigurationOptions } from 'yargs';
+import { availableParallelism, cpus } from 'node:os';
 
 interface ExcludeOptions {
   exclude: string[];
 }
 
-export function withExcludeOption(yargs: Argv): Argv<ExcludeOptions> {
+export const defaultYargsParserConfiguration: Partial<ParserConfigurationOptions> =
+  {
+    'strip-dashed': true,
+    'unknown-options-as-args': true,
+    'populate--': true,
+    'parse-numbers': false,
+    'parse-positional-numbers': false,
+  };
+
+export function withExcludeOption<T>(yargs: Argv<T>): Argv<T & ExcludeOptions> {
   return yargs.option('exclude', {
-    describe: 'Exclude certain projects from being processed',
+    describe: 'Exclude certain projects from being processed.',
     type: 'string',
     coerce: parseCSV,
   }) as any;
@@ -23,16 +36,50 @@ export interface RunOptions {
   nxBail: boolean;
   nxIgnoreCycles: boolean;
   skipNxCache: boolean;
+  skipRemoteCache: boolean;
   cloud: boolean;
   dte: boolean;
   batch: boolean;
   useAgents: boolean;
+  excludeTaskDependencies: boolean;
+  skipSync: boolean;
+}
+
+export interface TuiOptions {
+  tuiAutoExit: boolean | number;
+  tui: boolean;
+}
+
+export function withTuiOptions<T>(yargs: Argv<T>): Argv<T & TuiOptions> {
+  return yargs
+    .options('tuiAutoExit', {
+      describe:
+        'Whether or not to exit the TUI automatically after all tasks finish, and after how long. If set to `true`, the TUI will exit immediately. If set to `false` the TUI will not automatically exit. If set to a number, an interruptible countdown popup will be shown for that many seconds before the TUI exits.',
+      type: 'string',
+      coerce: (v) => coerceTuiAutoExit(v),
+    })
+    .option('tui', {
+      describe: 'Enable or disable the Nx Terminal UI.',
+      type: 'boolean',
+      conflicts: 'outputStyle',
+    })
+    .middleware((args) => {
+      if (args.tuiAutoExit !== undefined) {
+        process.env.NX_TUI_AUTO_EXIT = args.tuiAutoExit.toString();
+      } else if (process.env.NX_TUI_AUTO_EXIT) {
+        args.tuiAutoExit = coerceTuiAutoExit(
+          process.env.NX_TUI_AUTO_EXIT
+          // have to cast here because yarg's typings do not account for the
+          // coercion function
+        ) as unknown as string;
+      }
+    }) as Argv<T & TuiOptions>;
 }
 
 export function withRunOptions<T>(yargs: Argv<T>): Argv<T & RunOptions> {
   return withVerbose(withExcludeOption(yargs))
     .option('parallel', {
-      describe: 'Max number of parallel processes [default is 3]',
+      describe: 'Max number of parallel processes [default is 3].',
       type: 'string',
     })
     .option('maxParallel', {
@@ -40,11 +87,11 @@ export function withRunOptions<T>(yargs: Argv<T>): Argv<T & RunOptions> {
       hidden: true,
     })
     .options('runner', {
-      describe: 'This is the name of the tasks runner configured in nx.json',
+      describe: 'This is the name of the tasks runner configured in nx.json.',
       type: 'string',
     })
     .option('prod', {
-      describe: 'Use the production configuration',
+      describe: 'Use the production configuration.',
       type: 'boolean',
       default: false,
       hidden: true,
@@ -60,22 +107,43 @@ export function withRunOptions<T>(yargs: Argv<T>): Argv<T & RunOptions> {
         value === '' || value === 'true' || value === true
           ? true
           : value === 'false' || value === false
-          ? false
-          : value,
+            ? false
+            : value,
     })
     .option('nxBail', {
-      describe: 'Stop command execution after the first failed task',
+      describe: 'Stop command execution after the first failed task.',
       type: 'boolean',
-      default: false,
+    })
+    .middleware((args) => {
+      if (args.nxBail === undefined) {
+        args.nxBail = process.env.NX_BAIL === 'true';
+      }
     })
     .option('nxIgnoreCycles', {
-      describe: 'Ignore cycles in the task graph',
+      describe: 'Ignore cycles in the task graph.',
       type: 'boolean',
       default: false,
     })
     .options('skipNxCache', {
       describe:
-        'Rerun the tasks even when the results are available in the cache',
+        'Rerun the tasks even when the results are available in the cache.',
+      type: 'boolean',
+      default: false,
+      alias: 'disableNxCache',
+    })
+    .options('skipRemoteCache', {
+      type: 'boolean',
+      describe: 'Disables the remote cache.',
+      default: false,
+      alias: 'disableRemoteCache',
+    })
+    .options('excludeTaskDependencies', {
+      describe: 'Skips running dependent tasks first.',
+      type: 'boolean',
+      default: false,
+    })
+    .option('skipSync', {
+      describe: 'Skips running the sync generators associated with the tasks.',
       type: 'boolean',
       default: false,
     })
@@ -91,7 +159,7 @@ export function withRunOptions<T>(yargs: Argv<T>): Argv<T & RunOptions> {
       type: 'boolean',
       hidden: true,
       alias: 'agents',
-    }) as Argv<Omit<RunOptions, 'exclude' | 'batch'>> as any;
+    }) as Argv<Omit<RunOptions, 'batch'>> as any;
 }
 
 export function withTargetAndConfigurationOption(
@@ -99,7 +167,7 @@ export function withTargetAndConfigurationOption(
   demandOption = true
 ) {
   return withConfiguration(yargs).option('targets', {
-    describe: 'Tasks to run for affected projects',
+    describe: 'Tasks to run for affected projects.',
     type: 'string',
     alias: ['target', 't'],
     requiresArg: true,
@@ -112,66 +180,69 @@ export function withTargetAndConfigurationOption(
 export function withConfiguration(yargs: Argv) {
   return yargs.options('configuration', {
     describe:
-      'This is the configuration to use when performing tasks on projects',
+      'This is the configuration to use when performing tasks on projects.',
     type: 'string',
     alias: 'c',
   });
 }
 
-export function withVerbose(yargs: Argv) {
+export function withVerbose<T>(yargs: Argv<T>) {
   return yargs
     .option('verbose', {
       describe:
-        'Prints additional information about the commands (e.g., stack traces)',
+        'Prints additional information about the commands (e.g., stack traces).',
       type: 'boolean',
     })
     .middleware((args) => {
-      if (args.verbose) {
-        process.env.NX_VERBOSE_LOGGING = 'true';
-      }
+      args.verbose ??= process.env.NX_VERBOSE_LOGGING === 'true';
+      // If NX_VERBOSE_LOGGING=false and --verbose is passed, we want to set it to true favoring the arg
+      process.env.NX_VERBOSE_LOGGING = args.verbose.toString();
     });
 }
 
 export function withBatch(yargs: Argv) {
   return yargs.options('batch', {
     type: 'boolean',
-    describe: 'Run task(s) in batches for executors which support batches',
+    describe: 'Run task(s) in batches for executors which support batches.',
     coerce: (v) => {
-      return v || process.env.NX_BATCH_MODE === 'true';
+      if (v !== undefined) return v;
+      if (process.env.NX_BATCH_MODE === 'true') return true;
+      return undefined; // Let preferBatch decide
     },
-    default: false,
+    default: undefined,
   }) as any;
 }
 
 export function withAffectedOptions(yargs: Argv) {
   return withExcludeOption(yargs)
-    .parserConfiguration({
-      'strip-dashed': true,
-      'unknown-options-as-args': true,
-      'populate--': true,
-    })
+    .parserConfiguration(defaultYargsParserConfiguration)
     .option('files', {
       describe:
-        'Change the way Nx is calculating the affected command by providing directly changed files, list of files delimited by commas or spaces',
+        'Change the way Nx is calculating the affected command by providing directly changed files, list of files delimited by commas or spaces.',
       type: 'string',
       requiresArg: true,
       coerce: parseCSV,
     })
+    .option('stdin', {
+      describe:
+        'Change the way Nx is calculating the affected command by providing directly changed files from stdin, one file per line.',
+      type: 'boolean',
+    })
     .option('uncommitted', {
-      describe: 'Uncommitted changes',
+      describe: 'Uncommitted changes.',
       type: 'boolean',
     })
     .option('untracked', {
-      describe: 'Untracked changes',
+      describe: 'Untracked changes.',
       type: 'boolean',
     })
     .option('base', {
-      describe: 'Base of the current branch (usually main)',
+      describe: 'Base of the current branch (usually main).',
       type: 'string',
       requiresArg: true,
     })
     .option('head', {
-      describe: 'Latest commit of the current branch (usually HEAD)',
+      describe: 'Latest commit of the current branch (usually HEAD).',
       type: 'string',
       requiresArg: true,
     })
@@ -187,9 +258,27 @@ export function withAffectedOptions(yargs: Argv) {
     .implies('head', 'base')
     .conflicts({
       files: ['uncommitted', 'untracked', 'base', 'head'],
+      stdin: ['uncommitted', 'untracked', 'base', 'head'],
       untracked: ['uncommitted', 'files', 'base', 'head'],
       uncommitted: ['files', 'untracked', 'base', 'head'],
-    });
+    })
+    .middleware(async (args) => {
+      if (args.stdin) {
+        if (process.stdin.isTTY) {
+          throw new Error(
+            'The --stdin option requires piped input (e.g., `git diff --name-only | nx affected --stdin`). It cannot be used when stdin is a terminal.'
+          );
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(chunk);
+        }
+        const files = parseNewlines(Buffer.concat(chunks).toString());
+        if (Array.isArray(args.files)) files.push(...args.files);
+        else if (typeof args.files === 'string') files.push(args.files);
+        args.files = files as any; // Yargs types don't reflect the coerce option
+      }
+    }, true);
 }
 
 export interface RunManyOptions extends RunOptions {
@@ -204,17 +293,13 @@ export function withRunManyOptions<T>(
   yargs: Argv<T>
 ): Argv<T & RunManyOptions> {
   return withRunOptions(yargs)
-    .parserConfiguration({
-      'strip-dashed': true,
-      'unknown-options-as-args': true,
-      'populate--': true,
-    })
+    .parserConfiguration(defaultYargsParserConfiguration)
     .option('projects', {
       type: 'string',
       alias: 'p',
       coerce: parseCSV,
       describe:
-        'Projects to run. (comma/space delimited project names and/or patterns)',
+        'Projects to run. (comma/space delimited project names and/or patterns).',
     })
     .option('all', {
       describe:
@@ -240,37 +325,56 @@ export function withOverrides<T extends { _: Array<string | number> }>(
 }
 
 const allOutputStyles = [
+  'tui',
   'dynamic',
+  'dynamic-legacy',
   'static',
+  'static-failures-only',
   'stream',
   'stream-without-prefixes',
-  'compact',
 ] as const;
 
 export type OutputStyle = (typeof allOutputStyles)[number];
 
-export function withOutputStyleOption(
-  yargs: Argv,
+export function withOutputStyleOption<T>(
+  yargs: Argv<T>,
   choices: ReadonlyArray<OutputStyle> = [
+    'dynamic-legacy',
     'dynamic',
+    'tui',
     'static',
+    'static-failures-only',
     'stream',
     'stream-without-prefixes',
   ]
 ) {
-  return yargs.option('output-style', {
-    describe: `Defines how Nx emits outputs tasks logs
-
-| option | description |
-| --- | --- |
-| dynamic | use dynamic output life cycle, previous content is overwritten or modified as new outputs are added, display minimal logs by default, always show errors. This output format is recommended on your local development environments. |
-| static | uses static output life cycle, no previous content is rewritten or modified as new outputs are added. This output format is recommened for CI environments. |
-| stream | nx by default logs output to an internal output stream, enable this option to stream logs to stdout / stderr |
-| stream-without-prefixes | nx prefixes the project name the target is running on, use this option remove the project name prefix from output |
-`,
-    type: 'string',
-    choices,
-  });
+  return yargs
+    .option('outputStyle', {
+      describe: `Defines how Nx emits outputs tasks logs. **tui**: enables the Nx Terminal UI, recommended for local development environments. **dynamic-legacy**: use dynamic-legacy output life cycle, previous content is overwritten or modified as new outputs are added, display minimal logs by default, always show errors. This output format is recommended for local development environments where tui is not supported. **static**: uses static output life cycle, no previous content is rewritten or modified as new outputs are added, and every task prints its full output regardless of status. **static-failures-only**: same as **static**, but successful and cached tasks collapse to a single line, so only failing tasks (and, for a single-project run, the project you asked for) print their full output. This is what Nx uses by default in CI and other non-interactive environments. **stream**: nx by default logs output to an internal output stream, enable this option to stream logs to stdout / stderr. **stream-without-prefixes**: nx prefixes the project name the target is running on, use this option remove the project name prefix from output.`,
+      type: 'string',
+      choices,
+    })
+    .middleware([
+      (args) => {
+        if (
+          !args.outputStyle &&
+          process.env.NX_DEFAULT_OUTPUT_STYLE &&
+          choices.includes(process.env.NX_DEFAULT_OUTPUT_STYLE as OutputStyle)
+        ) {
+          args.outputStyle = process.env.NX_DEFAULT_OUTPUT_STYLE;
+        }
+      },
+      (args) => {
+        const useTui = shouldUseTui(readNxJson(), args as NxArgs);
+        if (useTui) {
+          // We have to set both of these because `check` runs after the normalization that
+          // handles the kebab-case'd args -> camelCase'd args translation.
+          (args as any)['output-style'] = 'tui';
+          (args as any).outputStyle = 'tui';
+        }
+        process.env.NX_TUI = useTui.toString();
+      },
+    ]) as Argv<T & { outputStyle: OutputStyle }>;
 }
 
 export function withRunOneOptions(yargs: Argv) {
@@ -281,17 +385,21 @@ export function withRunOneOptions(yargs: Argv) {
   const res = withRunOptions(
     withOutputStyleOption(withConfiguration(yargs), allOutputStyles)
   )
-    .parserConfiguration({
-      'strip-dashed': true,
-      'unknown-options-as-args': true,
-      'populate--': true,
-    })
+    .parserConfiguration(defaultYargsParserConfiguration)
     .option('project', {
-      describe: 'Target project',
+      describe: 'Target project.',
       type: 'string',
+      alias: 'p',
+    })
+    .option('target', {
+      describe:
+        'Target to run. Useful when the target name contains a colon, which conflicts with the positional `project:target:configuration` form.',
+      type: 'string',
+      alias: 't',
+      requiresArg: true,
     })
     .option('help', {
-      describe: 'Show Help',
+      describe: 'Show Help.',
       type: 'boolean',
     });
 
@@ -302,6 +410,13 @@ export function withRunOneOptions(yargs: Argv) {
       `Run "nx run myapp:mytarget --help" to see information about the executor's schema.`
     );
   }
+}
+
+export function parseNewlines(input: string): string[] {
+  if (!input) {
+    return [];
+  }
+  return input.split('\n').filter((line) => line.length > 0);
 }
 
 export function parseCSV(args: string[] | string): string[] {
@@ -318,4 +433,49 @@ export function parseCSV(args: string[] | string): string[] {
   return items.map((i) =>
     i.startsWith('"') && i.endsWith('"') ? i.slice(1, -1) : i
   );
+}
+
+export function readParallelFromArgsAndEnv(args: { [k: string]: any }) {
+  if (args['parallel'] === 'false' || args['parallel'] === false) {
+    return 1;
+  } else if (
+    args['parallel'] === 'true' ||
+    args['parallel'] === true ||
+    args['parallel'] === '' ||
+    // don't require passing --parallel if NX_PARALLEL is set, but allow overriding it
+    (process.env.NX_PARALLEL && args['parallel'] === undefined)
+  ) {
+    return concurrency(
+      args['maxParallel'] ||
+        args['max-parallel'] ||
+        process.env.NX_PARALLEL ||
+        '3'
+    );
+  } else if (args['parallel'] !== undefined) {
+    return concurrency(args['parallel']);
+  }
+}
+
+const coerceTuiAutoExit = (value: string) => {
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  const num = Number(value);
+  if (!Number.isNaN(num)) {
+    return num;
+  }
+  throw new Error(`Invalid value for --tui-auto-exit: ${value}`);
+};
+
+function concurrency(val: string | number) {
+  let parallel = typeof val === 'number' ? val : parseInt(val);
+
+  if (typeof val === 'string' && val.at(-1) === '%') {
+    const maxCores = availableParallelism?.() ?? cpus().length;
+    parallel = (maxCores * parallel) / 100;
+  }
+  return Math.max(1, Math.floor(parallel));
 }

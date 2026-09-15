@@ -11,17 +11,14 @@ import {
   isBuiltinModuleImport,
 } from './target-project-locator';
 
-jest.mock('@nx/devkit', () => ({
-  ...jest.requireActual<any>('@nx/devkit'),
+import { builtinModules } from 'node:module';
+
+vi.mock('nx/src/utils/workspace-root', () => ({
   workspaceRoot: '/root',
 }));
 
-jest.mock('nx/src/utils/workspace-root', () => ({
-  workspaceRoot: '/root',
-}));
-
-jest.mock('nx/src/plugins/js/utils/resolve-relative-to-dir', () => ({
-  resolveRelativeToDir: jest.fn().mockImplementation((pathOrPackage) => {
+vi.mock('nx/src/plugins/js/utils/resolve-relative-to-dir', () => ({
+  resolveRelativeToDir: vi.fn().mockImplementation((pathOrPackage) => {
     // We intentionally don't want to find this package on disk to test fallback behavior
     if (pathOrPackage.startsWith('@nx/nx-win32-x64-msvc')) {
       return null;
@@ -78,6 +75,10 @@ describe('TargetProjectLocator', () => {
             '@proj/proj1234-child/*': ['libs/proj1234-child/*'],
             '#hash-path': ['libs/hash-project/src/index.ts'],
             'parent-path/*': ['libs/parent-path/*'],
+            '@proj/feature-*': ['libs/features/*'],
+            '@proj/*/utils': ['libs/scope/*/utils'],
+            '@proj/*-util': ['libs/utils/*'],
+            '@configdir/*': ['${configDir}/src/*'],
           },
         },
       };
@@ -95,6 +96,14 @@ describe('TargetProjectLocator', () => {
         './node_modules/@proj/proj123-base/package.json': JSON.stringify({
           name: '@proj/proj123-base',
           version: '1.0.0',
+        }),
+        './node_modules/lodash/package.json': JSON.stringify({
+          name: 'lodash',
+          version: '3.0.0',
+        }),
+        './node_modules/lodash-4/package.json': JSON.stringify({
+          name: 'lodash',
+          version: '4.0.0',
         }),
       };
       vol.fromJSON(fsJson, '/root');
@@ -197,6 +206,47 @@ describe('TargetProjectLocator', () => {
             root: 'libs/parent-path/child-path',
           },
         },
+        'parent-pm-workspaces': {
+          name: 'parent-pm-workspaces',
+          type: 'lib',
+          data: { root: 'packages/parent-pm-workspaces' },
+        },
+        'child-pm-workspaces': {
+          name: 'child-pm-workspaces',
+          type: 'lib',
+          data: {
+            root: 'packages/child-pm-workspaces',
+            metadata: {
+              js: {
+                packageName: '@proj/child-pm-workspaces',
+                packageExports: undefined,
+                isInPackageManagerWorkspaces: true,
+                packageMain: 'index.ts',
+              },
+            },
+          },
+        },
+        users: {
+          name: 'users',
+          type: 'lib',
+          data: {
+            root: 'libs/features/users',
+          },
+        },
+        admin: {
+          name: 'admin',
+          type: 'lib',
+          data: {
+            root: 'libs/scope/admin',
+          },
+        },
+        'file-system': {
+          name: 'file-system',
+          type: 'lib',
+          data: {
+            root: 'libs/utils/file-system',
+          },
+        },
       };
       npmProjects = {
         'npm:@ng/core': {
@@ -263,6 +313,30 @@ describe('TargetProjectLocator', () => {
             packageName: '@proj/proj123-base',
           },
         },
+        'npm:lodash': {
+          name: 'npm:lodash',
+          type: 'npm',
+          data: {
+            version: '3.0.0',
+            packageName: 'lodash',
+          },
+        },
+        'npm:lodash@4.0.0': {
+          name: 'npm:lodash@4.0.0',
+          type: 'npm',
+          data: {
+            version: '4.0.0',
+            packageName: 'lodash',
+          },
+        },
+        'npm:lodash-4': {
+          name: 'npm:lodash-4',
+          type: 'npm',
+          data: {
+            packageName: 'lodash-4',
+            version: 'npm:lodash@4.0.0',
+          },
+        },
       };
 
       targetProjectLocator = new TargetProjectLocator(projects, npmProjects);
@@ -295,6 +369,36 @@ describe('TargetProjectLocator', () => {
       expect(res3).toEqual('proj2');
       expect(res4).toEqual('proj');
       expect(res5).toEqual('rootProj');
+    });
+
+    it('should be able to resolve a module by using relative paths within a nested project', () => {
+      // Test resolving "./" import from child-project (nested 1 level under parent-project)
+      const res1 = targetProjectLocator.findProjectFromImport(
+        './index.ts',
+        'libs/parent-path/child-path/src/index.ts'
+      );
+      expect(res1).toEqual('child-project');
+
+      // Test resolving "../" import from child-project back to parent-project
+      const res2 = targetProjectLocator.findProjectFromImport(
+        '../index.ts',
+        'libs/parent-path/child-path/index.ts'
+      );
+      expect(res2).toEqual('parent-project');
+
+      // Test resolving "./" import within the same nested project
+      const res3 = targetProjectLocator.findProjectFromImport(
+        './utils.ts',
+        'libs/parent-path/child-path/index.ts'
+      );
+      expect(res3).toEqual('child-project');
+
+      // Test resolving "./" import within the same nested project
+      const res4 = targetProjectLocator.findProjectFromImport(
+        './',
+        'libs/parent-path/child-path/module.ts'
+      );
+      expect(res4).toEqual('child-project');
     });
 
     it('should be able to resolve a module by using tsConfig paths', () => {
@@ -332,6 +436,29 @@ describe('TargetProjectLocator', () => {
       expect(proj2deep).toEqual('proj2');
     });
 
+    it('should resolve `${configDir}` path aliases relative to the importing project (as tsc does)', () => {
+      // importer in a nested project resolves to that project, not the root project
+      const fromNested = targetProjectLocator.findProjectFromImport(
+        '@configdir/foo',
+        'libs/proj/src/index.ts'
+      );
+      expect(fromNested).toEqual('proj');
+
+      // importer in a deeply nested project resolves to the nested project
+      const fromChild = targetProjectLocator.findProjectFromImport(
+        '@configdir/foo',
+        'libs/parent-path/child-path/src/index.ts'
+      );
+      expect(fromChild).toEqual('child-project');
+
+      // importer in the root project resolves to the root project
+      const fromRoot = targetProjectLocator.findProjectFromImport(
+        '@configdir/foo',
+        'index.ts'
+      );
+      expect(fromRoot).toEqual('rootProj');
+    });
+
     it('should be able to resolve nested files using tsConfig paths that have similar names', () => {
       const proj = targetProjectLocator.findProjectFromImport(
         '@proj/proj123/deep',
@@ -367,19 +494,33 @@ describe('TargetProjectLocator', () => {
     });
 
     it('should be able to resolve wildcard paths', () => {
-      const parentProject = targetProjectLocator.findProjectFromImport(
-        'parent-path',
-        'libs/proj1/index.ts'
-      );
-
-      expect(parentProject).toEqual('parent-project');
-
+      // 'parent-path/*': ['libs/parent-path/*'] => 'libs/parent-path/child-path'
       const childProject = targetProjectLocator.findProjectFromImport(
         'parent-path/child-path',
         'libs/proj1/index.ts'
       );
-
       expect(childProject).toEqual('child-project');
+
+      // '@proj/feature-*': ['libs/features/*'] => 'libs/features/users'
+      const usersProject = targetProjectLocator.findProjectFromImport(
+        '@proj/feature-users',
+        'libs/proj1/index.ts'
+      );
+      expect(usersProject).toEqual('users');
+
+      // '@proj/*/utils': ['libs/scope/*/utils'] => 'libs/scope/admin/utils'
+      const adminProject = targetProjectLocator.findProjectFromImport(
+        '@proj/admin/utils',
+        'libs/proj1/index.ts'
+      );
+      expect(adminProject).toEqual('admin');
+
+      // '@proj/*-util': ['libs/utils/*'] => 'libs/utils/file-system'
+      const fileSystemProject = targetProjectLocator.findProjectFromImport(
+        '@proj/file-system-util',
+        'libs/proj1/index.ts'
+      );
+      expect(fileSystemProject).toEqual('file-system');
     });
 
     it('should be able to resolve paths that start with a #', () => {
@@ -453,6 +594,109 @@ describe('TargetProjectLocator', () => {
         'libs/proj/index.ts'
       );
       expect(proj5).toEqual('proj5');
+    });
+
+    it('should prefer alias nodes when canonical package nodes also exist', () => {
+      const lodash = targetProjectLocator.findProjectFromImport(
+        'lodash',
+        'libs/proj/index.ts'
+      );
+      expect(lodash).toEqual('npm:lodash');
+
+      const lodash4 = targetProjectLocator.findProjectFromImport(
+        'lodash-4',
+        'libs/proj/index.ts'
+      );
+      expect(lodash4).toEqual('npm:lodash-4');
+    });
+
+    it('should resolve local packages linked using package manager workspaces', () => {
+      const targetProjectLocator = new TargetProjectLocator(
+        projects,
+        npmProjects
+      );
+      const result = targetProjectLocator.findProjectFromImport(
+        '@proj/child-pm-workspaces',
+        'packages/parent-pm-workspaces/index.ts'
+      );
+
+      expect(result).toEqual('child-pm-workspaces');
+    });
+
+    it('should convert relative file paths to absolute paths before TypeScript module resolution', async () => {
+      const typescriptModule =
+        await import('nx/src/plugins/js/utils/typescript');
+      const resolveModuleByImportSpy = vi
+        .spyOn(typescriptModule, 'resolveModuleByImport')
+        .mockReturnValue('/root/libs/proj/some-module.ts');
+
+      // Create a simple locator to test TypeScript resolution path
+      const simpleProjects: Record<string, ProjectGraphProjectNode> = {
+        proj: {
+          name: 'proj',
+          type: 'lib',
+          data: { root: 'libs/proj' },
+        },
+      };
+
+      const testLocator = new TargetProjectLocator(
+        simpleProjects,
+        {},
+        new Map()
+      );
+
+      // Test with a relative path - the method should convert it to absolute
+      // We use a unique package name that won't be found via npm resolution
+      (testLocator as any).resolveImportWithTypescript(
+        'package-that-is-installed-in-workspace-root',
+        'libs/proj/index.ts'
+      );
+
+      // Verify that resolveModuleByImport was called with an absolute path
+      // We only care that the second parameter (filePath) was converted to absolute
+      expect(resolveModuleByImportSpy).toHaveBeenCalled();
+      const [[importExpr, filePath]] = resolveModuleByImportSpy.mock.calls;
+      expect(importExpr).toBe('package-that-is-installed-in-workspace-root');
+      expect(filePath).toBe('/root/libs/proj/index.ts'); // relative path should be converted to absolute
+
+      resolveModuleByImportSpy.mockRestore();
+    });
+
+    it('should keep absolute file paths as-is for TypeScript module resolution', async () => {
+      const typescriptModule =
+        await import('nx/src/plugins/js/utils/typescript');
+      const resolveModuleByImportSpy = vi
+        .spyOn(typescriptModule, 'resolveModuleByImport')
+        .mockReturnValue('/root/libs/proj/some-module.ts');
+
+      const simpleProjects: Record<string, ProjectGraphProjectNode> = {
+        proj: {
+          name: 'proj',
+          type: 'lib',
+          data: { root: 'libs/proj' },
+        },
+      };
+
+      const testLocator = new TargetProjectLocator(
+        simpleProjects,
+        {},
+        new Map()
+      );
+
+      // Test with an absolute path - it should remain absolute
+      (testLocator as any).resolveImportWithTypescript(
+        'package-that-is-installed-in-workspace-root',
+        '/root/libs/proj/index.ts'
+      );
+
+      // Verify that resolveModuleByImport was called with the same absolute path
+      // We only care that the second parameter (filePath) remained absolute
+      expect(resolveModuleByImportSpy).toHaveBeenCalled();
+      const [[importExpr, filePath]] = resolveModuleByImportSpy.mock.calls;
+      expect(importExpr).toBe('package-that-is-installed-in-workspace-root');
+      expect(filePath).toBe('/root/libs/proj/index.ts');
+
+      resolveModuleByImportSpy.mockRestore();
     });
   });
 
@@ -762,9 +1006,10 @@ describe('TargetProjectLocator', () => {
     });
 
     it('should be able to resolve local project', () => {
-      jest
-        .spyOn(targetProjectLocator as any, 'resolveImportWithRequire')
-        .mockReturnValue('libs/proj1/index.ts');
+      vi.spyOn(
+        targetProjectLocator as any,
+        'resolveImportWithRequire'
+      ).mockReturnValue('libs/proj1/index.ts');
 
       const result1 = targetProjectLocator.findProjectFromImport(
         '@org/proj1',
@@ -772,14 +1017,48 @@ describe('TargetProjectLocator', () => {
       );
       expect(result1).toEqual('@org/proj1');
 
-      jest
-        .spyOn(targetProjectLocator as any, 'resolveImportWithRequire')
-        .mockReturnValue('libs/proj1/some/nested/file.ts');
+      vi.spyOn(
+        targetProjectLocator as any,
+        'resolveImportWithRequire'
+      ).mockReturnValue('libs/proj1/some/nested/file.ts');
       const result2 = targetProjectLocator.findProjectFromImport(
         '@org/proj1/some/nested/path',
         'libs/proj1/index.ts'
       );
       expect(result2).toEqual('@org/proj1');
+    });
+
+    it('should not match Windows node_modules paths to the workspace root project', () => {
+      const targetProjectLocator = new TargetProjectLocator(
+        {
+          ...projects,
+          root: {
+            name: 'root',
+            type: 'app',
+            data: {
+              root: '.',
+            },
+          },
+        },
+        {}
+      );
+
+      vi.spyOn(
+        targetProjectLocator as any,
+        'resolveImportWithRequire'
+      ).mockReturnValue('node_modules\\external-package\\index.js');
+
+      const result = targetProjectLocator.findProjectFromImport(
+        'external-package',
+        'libs/proj1/index.ts'
+      );
+
+      expect(result).toBeUndefined();
+      expect(
+        (targetProjectLocator as any).findProjectOfResolvedModule(
+          '..\\..\\node_modules\\external-package\\index.js'
+        )
+      ).toBeUndefined();
     });
 
     it('should be able to npm dependencies', () => {
@@ -861,13 +1140,306 @@ describe('TargetProjectLocator', () => {
       expect(result).toEqual('npm:@json2csv/plainjs');
     });
   });
+
+  describe('findNpmProjectFromImport', () => {
+    it('should resolve external node when the version does not match its own package.json (i.e. git remote) ', () => {
+      const projects = {
+        proj: {
+          name: 'proj',
+          type: 'lib' as const,
+          data: {
+            root: 'proj',
+          },
+        },
+      };
+      const npmProjects = {
+        'npm:foo': {
+          name: 'npm:foo' as const,
+          type: 'npm' as const,
+          data: {
+            version:
+              'git+ssh://git@github.com/example/foo.git#6f4b450fc642abba540535f0755c990b42a16026',
+            packageName: 'foo',
+          },
+        },
+      };
+
+      const targetProjectLocator = new TargetProjectLocator(
+        projects,
+        npmProjects,
+        new Map()
+      );
+      targetProjectLocator['readPackageJson'] = () => ({
+        name: 'foo',
+        version: '0.0.1',
+      });
+      const result = targetProjectLocator.findNpmProjectFromImport(
+        'lodash',
+        'proj/index.ts'
+      );
+
+      expect(result).toEqual('npm:foo');
+    });
+
+    it('should resolve a specific version of external node', () => {
+      const projects = {
+        proj: {
+          name: 'proj',
+          type: 'lib' as const,
+          data: {
+            root: 'proj',
+          },
+        },
+      };
+      const npmProjects = {
+        'npm:foo@0.0.1': {
+          name: 'npm:foo@0.0.1' as const,
+          type: 'npm' as const,
+          data: {
+            version: '0.0.1',
+            packageName: 'foo',
+          },
+        },
+      };
+
+      const targetProjectLocator = new TargetProjectLocator(
+        projects,
+        npmProjects,
+        new Map()
+      );
+      targetProjectLocator['readPackageJson'] = () => ({
+        name: 'foo',
+        version: '0.0.1',
+      });
+      const result = targetProjectLocator.findNpmProjectFromImport(
+        'lodash',
+        'proj/index.ts'
+      );
+
+      expect(result).toEqual('npm:foo@0.0.1');
+    });
+  });
+
+  describe('findDependencyInWorkspaceProjects', () => {
+    it.each`
+      exports
+      ${undefined}
+      ${'dist/index.js'}
+      ${{}}
+      ${{ '.': 'dist/index.js' }}
+      ${{ './subpath': './dist/subpath.js' }}
+      ${{ import: './dist/index.js', default: './dist/index.js' }}
+    `(
+      'should find "@org/pkg1" package as "pkg1" project when exports="$exports"',
+      ({ exports }) => {
+        let projects: Record<string, ProjectGraphProjectNode> = {
+          pkg1: {
+            name: 'pkg1',
+            type: 'lib' as const,
+            data: {
+              root: 'pkg1',
+              metadata: {
+                js: {
+                  packageName: '@org/pkg1',
+                  packageExports: exports,
+                  isInPackageManagerWorkspaces: true,
+                },
+              },
+            },
+          },
+        };
+
+        const targetProjectLocator = new TargetProjectLocator(
+          projects,
+          {},
+          new Map()
+        );
+        const result = targetProjectLocator.findDependencyInWorkspaceProjects(
+          '',
+          '@org/pkg1',
+          '*'
+        );
+
+        expect(result).toEqual('pkg1');
+      }
+    );
+
+    it('should not match "@org/pkg2" when there is no workspace project with that package name', () => {
+      let projects: Record<string, ProjectGraphProjectNode> = {
+        pkg1: {
+          name: 'pkg1',
+          type: 'lib' as const,
+          data: {
+            root: 'pkg1',
+            metadata: {
+              js: {
+                packageName: '@org/pkg1',
+                isInPackageManagerWorkspaces: true,
+              },
+            },
+          },
+        },
+      };
+
+      const targetProjectLocator = new TargetProjectLocator(
+        projects,
+        {},
+        new Map()
+      );
+      const result = targetProjectLocator.findDependencyInWorkspaceProjects(
+        '',
+        '@org/pkg2',
+        '*'
+      );
+
+      expect(result).toBeFalsy();
+    });
+  });
+
+  describe('findImportInWorkspaceProjects', () => {
+    it.each`
+      exports                                                      | importPath
+      ${'dist/index.js'}                                           | ${'@org/pkg1'}
+      ${{ '.': 'dist/index.js' }}                                  | ${'@org/pkg1'}
+      ${{ './subpath': './dist/subpath.js' }}                      | ${'@org/pkg1/subpath'}
+      ${{ './*': './dist/*.js' }}                                  | ${'@org/pkg1/subpath'}
+      ${{ './*': './dist/*.js' }}                                  | ${'@org/pkg1/subpath/extra-path'}
+      ${{ './*': './dist/foo/*/index.js' }}                        | ${'@org/pkg1/foo/subpath'}
+      ${{ './*': './dist/foo/*/index.js' }}                        | ${'@org/pkg1/foo/subpath/extra-path'}
+      ${{ './features/*.js': './dist/features/*.js' }}             | ${'@org/pkg1/features/some-file.js'}
+      ${{ import: './dist/index.js', default: './dist/index.js' }} | ${'@org/pkg1'}
+    `(
+      'should find "$importPath" as "pkg1" project when exports="$exports"',
+      ({ exports, importPath }) => {
+        let projects: Record<string, ProjectGraphProjectNode> = {
+          pkg1: {
+            name: 'pkg1',
+            type: 'lib' as const,
+            data: {
+              root: 'pkg1',
+              metadata: {
+                js: {
+                  packageName: '@org/pkg1',
+                  packageExports: exports,
+                  isInPackageManagerWorkspaces: true,
+                },
+              },
+            },
+          },
+        };
+
+        const targetProjectLocator = new TargetProjectLocator(
+          projects,
+          {},
+          new Map()
+        );
+        const result =
+          targetProjectLocator.findImportInWorkspaceProjects(importPath);
+
+        expect(result).toEqual('pkg1');
+      }
+    );
+
+    it.each`
+      exports                                                      | importPath
+      ${'dist/index.js'}                                           | ${'@org/pkg1'}
+      ${{ '.': 'dist/index.js' }}                                  | ${'@org/pkg1'}
+      ${{ './subpath': './dist/subpath.js' }}                      | ${'@org/pkg1/subpath'}
+      ${{ './*': './dist/*.js' }}                                  | ${'@org/pkg1/subpath'}
+      ${{ './*': './dist/*.js' }}                                  | ${'@org/pkg1/subpath/extra-path'}
+      ${{ './*': './dist/foo/*/index.js' }}                        | ${'@org/pkg1/foo/subpath'}
+      ${{ './*': './dist/foo/*/index.js' }}                        | ${'@org/pkg1/foo/subpath/extra-path'}
+      ${{ './features/*.js': './dist/features/*.js' }}             | ${'@org/pkg1/features/some-file.js'}
+      ${{ import: './dist/index.js', default: './dist/index.js' }} | ${'@org/pkg1'}
+    `(
+      'should not find "$importPath" as "pkg1" project when exports="$exports" and isInPackageManagerWorkspaces is false',
+      ({ exports, importPath }) => {
+        let projects: Record<string, ProjectGraphProjectNode> = {
+          pkg1: {
+            name: 'pkg1',
+            type: 'lib' as const,
+            data: {
+              root: 'pkg1',
+              metadata: {
+                js: {
+                  packageName: '@org/pkg1',
+                  packageExports: exports,
+                  isInPackageManagerWorkspaces: false,
+                },
+              },
+            },
+          },
+        };
+
+        const targetProjectLocator = new TargetProjectLocator(
+          projects,
+          {},
+          new Map()
+        );
+        const result =
+          targetProjectLocator.findImportInWorkspaceProjects(importPath);
+
+        expect(result).toBeFalsy();
+      }
+    );
+
+    it.each`
+      exports                                                      | importPath
+      ${undefined}                                                 | ${'@org/pkg1'}
+      ${{}}                                                        | ${'@org/pkg1'}
+      ${{ '.': 'dist/index.js' }}                                  | ${'@org/pkg1/subpath'}
+      ${{ './subpath/*': 'dist/subpath/*.js' }}                    | ${'@org/pkg1/foo'}
+      ${{ './subpath': './dist/subpath.js' }}                      | ${'@org/pkg1/subpath/extra-path'}
+      ${{ './feature': null }}                                     | ${'@org/pkg1/feature'}
+      ${{ import: './dist/index.js', default: './dist/index.js' }} | ${'@org/pkg1/subpath'}
+    `(
+      'should not match "$importPath" when exports="$exports"',
+      ({ exports, importPath }) => {
+        let projects: Record<string, ProjectGraphProjectNode> = {
+          pkg1: {
+            name: 'pkg1',
+            type: 'lib' as const,
+            data: {
+              root: 'pkg1',
+              metadata: {
+                js: {
+                  packageName: '@org/pkg1',
+                  packageExports: exports,
+                  isInPackageManagerWorkspaces: true,
+                },
+              },
+            },
+          },
+        };
+
+        const targetProjectLocator = new TargetProjectLocator(
+          projects,
+          {},
+          new Map()
+        );
+        const result =
+          targetProjectLocator.findImportInWorkspaceProjects(importPath);
+
+        expect(result).toBeFalsy();
+      }
+    );
+  });
 });
 
 describe('isBuiltinModuleImport()', () => {
-  it('should return true for all node builtin modules', () => {
-    const allBuiltinModules = require('node:module').builtinModules;
-    allBuiltinModules.forEach((builtinModule) => {
+  const withExclusions = builtinModules
+    .concat(
+      builtinModules.map((s) =>
+        // Node 24 includes node:sea, node:sqlite, etc. that already prefixes with `node:`.
+        s.startsWith('node:') ? s : 'node:' + s
+      )
+    )
+    .concat(['node:test', 'node:sqlite']);
+
+  it.each(withExclusions)(
+    `should return true for %s builtin module`,
+    (builtinModule) => {
       expect(isBuiltinModuleImport(builtinModule)).toBe(true);
-    });
-  });
+    }
+  );
 });

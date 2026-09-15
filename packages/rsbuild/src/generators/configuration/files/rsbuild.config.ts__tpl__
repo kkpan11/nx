@@ -1,0 +1,24 @@
+import { defineConfig } from '@rsbuild/core';
+
+export default defineConfig({
+    source: {
+        entry: {
+            index: '<%= entry %>'
+        },<% if (tsConfig) { %>
+        tsconfigPath: '<%= tsConfig %>',<% } %>
+    },
+    server: {
+        port: <%= devServerPort %>
+    },
+    output: {
+        target: '<%= target %>',<% if (useMjsOutput) { %>
+        // @rsbuild/core@2 emits ESM for Node targets. Emit .mjs so the
+        // output runs without a `"type": "module"` package.json.
+        filename: {
+            js: '[name].mjs',
+        },<% } %>
+        distPath: {
+            root: 'dist',
+        },
+    }
+});

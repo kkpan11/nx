@@ -1,17 +1,18 @@
 import { NxJsonConfiguration } from '@nx/devkit';
 import {
+  normalizePerformanceReport,
   cleanupProject,
   newProject,
   runCLI,
   runCommandAsync,
   uniq,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 expect.addSnapshotSerializer({
   serialize(str: string) {
     return (
-      str
+      normalizePerformanceReport(str)
         // Remove all output unique to specific projects to ensure deterministic snapshots
         .replaceAll(/my-pkg-\d+/g, '{project-name}')
         .replaceAll(
@@ -24,7 +25,7 @@ expect.addSnapshotSerializer({
         .replaceAll(/\d*B package\.json/g, 'XXXB package.json')
         .replaceAll(/size:\s*\d*\s?B/g, 'size: XXXB')
         .replaceAll(/\d*\.\d*\s?kB/g, 'XXX.XXX kb')
-        .replaceAll(/[a-fA-F0-9]{7}/g, '{COMMIT_SHA}')
+        .replaceAll(/\b[a-fA-F0-9]{7}\b/g, '{COMMIT_SHA}')
         .replaceAll(/Test @[\w\d]+/g, 'Test @{COMMIT_AUTHOR}')
         // Normalize the version title date.
         .replaceAll(/\(\d{4}-\d{2}-\d{2}\)/g, '(YYYY-MM-DD)')
@@ -46,7 +47,6 @@ describe('nx release create github release', () => {
 
   beforeAll(async () => {
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     });
 
@@ -115,7 +115,8 @@ describe('nx release create github release', () => {
     const result = runCLI('release patch -d --first-release --verbose');
 
     expect(
-      result.match(new RegExp(`NX   Pushing to git remote`, 'g')).length
+      result.match(new RegExp(`NX   Pushing to git remote "origin"`, 'g'))
+        .length
     ).toEqual(1);
     expect(
       result.match(new RegExp(`NX   Creating GitHub Release`, 'g')).length
@@ -125,7 +126,7 @@ describe('nx release create github release', () => {
     expect(result.match(new RegExp(`### 🚀 Features`, 'g')).length).toEqual(2);
     expect(result.match(new RegExp(`### 🩹 Fixes`, 'g')).length).toEqual(2);
     expect(
-      result.match(new RegExp(`#### ⚠️  Breaking Changes`, 'g')).length
+      result.match(new RegExp(`### ⚠️  Breaking Changes`, 'g')).length
     ).toEqual(2);
   });
 
@@ -149,7 +150,8 @@ describe('nx release create github release', () => {
     const result = runCLI('release -d --first-release --verbose');
 
     expect(
-      result.match(new RegExp(`NX   Pushing to git remote`, 'g')).length
+      result.match(new RegExp(`NX   Pushing to git remote "origin"`, 'g'))
+        .length
     ).toEqual(1);
     expect(
       result.match(new RegExp(`NX   Creating GitHub Release`, 'g')).length
@@ -159,7 +161,7 @@ describe('nx release create github release', () => {
     expect(result.match(new RegExp(`### 🚀 Features`, 'g')).length).toEqual(2);
     expect(result.match(new RegExp(`### 🩹 Fixes`, 'g')).length).toEqual(1);
     expect(
-      result.match(new RegExp(`#### ⚠️  Breaking Changes`, 'g')).length
+      result.match(new RegExp(`### ⚠️  Breaking Changes`, 'g')).length
     ).toEqual(1);
   });
 });

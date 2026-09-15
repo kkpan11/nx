@@ -1,45 +1,37 @@
 {
   "generators": {
-    "update-16-0-0-add-nx-packages": {
-      "cli": "nx",
-      "version": "16.0.0-beta.1",
-      "description": "Replace @nrwl/node with @nx/node",
-      "implementation": "./src/migrations/update-16-0-0-add-nx-packages/update-16-0-0-add-nx-packages"
-    },
-    "update-16-0-0-update-executor": {
-      "cli": "nx",
-      "version": "16.0.0-beta.5",
-      "description": "Replace @nrwl/node:webpack with @nx/node:webpack",
-      "implementation": "./src/migrations/update-16-0-0/update-webpack-executor"
-    },
-    "update-16-3-1-update-executor": {
-      "cli": "nx",
-      "version": "16.3.1-beta.0",
-      "description": "Replace @nrwl/node:webpack and @nx/node:webpack with @nx/webpack:webpack for all project targets",
-      "implementation": "./src/migrations/update-16-3-1/update-webpack-executor"
-    },
-    "update-16-4-0-replace-node-executor": {
-      "cli": "nx",
-      "version": "16.4.0-beta.8",
-      "description": "Replace @nx/node:node with @nx/js:node for all project targets",
-      "implementation": "./src/migrations/update-16-4-0/replace-node-executor"
+    "rewrite-node-internal-subpath-imports": {
+      "version": "23.0.0-beta.25",
+      "description": "Rewrites `@nx/node/src/*` subpath imports now that the `./src/*` subpath is no longer exposed by `@nx/node`'s exports map. Named imports/exports of public symbols are routed to `@nx/node` and the rest to the new `@nx/node/internal` entry; `require`, dynamic `import` and `jest.mock` calls reference the whole module and are routed to `@nx/node/internal`.",
+      "implementation": "./dist/src/migrations/update-23-0-0/rewrite-internal-subpath-imports"
     }
   },
   "packageJsonUpdates": {
-    "17.3.0": {
-      "version": "17.3.0-beta.3",
+    "22.0.2": {
+      "version": "22.0.2-beta.0",
+      "requires": {
+        "koa": ">=2.0.0 <3.0.0"
+      },
       "packages": {
-        "@types/node": {
-          "version": "18.16.9",
+        "koa": {
+          "version": "^3.0.3",
+          "alwaysAddToPackageJson": false
+        },
+        "@types/koa": {
+          "version": "^3.0.0",
           "alwaysAddToPackageJson": false
         }
       }
     },
-    "17.3.1": {
-      "version": "17.3.1-beta.0",
+    "22.6.0": {
+      "version": "22.6.0-beta.10",
+      "x-prompt": "Bump koa to ^3.1.2 to resolve CVE-2026-27959 (Host Header Injection)",
+      "requires": {
+        "koa": ">=3.0.0 <4.0.0"
+      },
       "packages": {
-        "axios": {
-          "version": "^1.6.0",
+        "koa": {
+          "version": "^3.1.2",
           "alwaysAddToPackageJson": false
         }
       }

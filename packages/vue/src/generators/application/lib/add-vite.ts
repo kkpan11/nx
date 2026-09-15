@@ -3,8 +3,10 @@ import {
   readProjectConfiguration,
   Tree,
   updateProjectConfiguration,
+  ensurePackage,
 } from '@nx/devkit';
 import { createOrEditViteConfig, viteConfigurationGenerator } from '@nx/vite';
+import { nxVersion } from '../../../utils/versions';
 
 import { NormalizedSchema } from '../schema';
 
@@ -33,6 +35,7 @@ export async function addVite(
       inSourceTests: options.inSourceTests,
       imports: [`import vue from '@vitejs/plugin-vue'`],
       plugins: ['vue()'],
+      useEsmExtension: true,
     },
     false
   );
@@ -46,4 +49,45 @@ export async function addVite(
   }
 
   return viteTask;
+}
+
+export async function addVitest(tree: Tree, options: NormalizedSchema) {
+  const tasks: GeneratorCallback[] = [];
+  ensurePackage('@nx/vitest', nxVersion);
+  // `require()` honors Module._initPaths (which ensurePackage updates); ESM
+  // dynamic `import()` doesn't, so it can't see the on-demand temp install.
+  const {
+    configurationGenerator,
+  }: typeof import('@nx/vitest/generators') = require('@nx/vitest/generators');
+
+  const vitestTask = await configurationGenerator(tree, {
+    uiFramework: 'none',
+    project: options.projectName,
+    coverageProvider: 'v8',
+    inSourceTests: options.inSourceTests,
+    skipFormat: true,
+    testEnvironment: 'jsdom',
+    addPlugin: options.addPlugin,
+    runtimeTsconfigFileName: 'tsconfig.app.json',
+    skipViteConfig: true,
+  });
+  tasks.push(vitestTask);
+
+  createOrEditViteConfig(
+    tree,
+    {
+      project: options.projectName,
+      includeLib: false,
+      includeVitest: true,
+      inSourceTests: options.inSourceTests,
+      imports: [`import vue from '@vitejs/plugin-vue'`],
+      plugins: ['vue()'],
+      useEsmExtension: true,
+    },
+    true,
+    undefined,
+    true
+  );
+
+  return tasks;
 }

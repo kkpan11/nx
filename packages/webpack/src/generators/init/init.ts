@@ -1,3 +1,4 @@
+import { addPlugin } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   createProjectGraphAsync,
@@ -6,9 +7,14 @@ import {
   readNxJson,
   Tree,
 } from '@nx/devkit';
-import { addPluginV1 } from '@nx/devkit/src/utils/add-plugin';
-import { createNodes } from '../../plugins/plugin';
-import { nxVersion, webpackCliVersion } from '../../utils/versions';
+import { createNodesV2 } from '../../plugins/plugin';
+import {
+  nxVersion,
+  webpackCliVersion,
+  webpackDevServerVersion,
+  webpackVersion,
+  assertSupportedWebpackVersion,
+} from '../../utils/versions';
 import { Schema } from './schema';
 
 export function webpackInitGenerator(tree: Tree, schema: Schema) {
@@ -16,6 +22,8 @@ export function webpackInitGenerator(tree: Tree, schema: Schema) {
 }
 
 export async function webpackInitGeneratorInternal(tree: Tree, schema: Schema) {
+  assertSupportedWebpackVersion(tree);
+
   const nxJson = readNxJson(tree);
   const addPluginDefault =
     process.env.NX_ADD_PLUGINS !== 'false' &&
@@ -23,11 +31,11 @@ export async function webpackInitGeneratorInternal(tree: Tree, schema: Schema) {
   schema.addPlugin ??= addPluginDefault;
 
   if (schema.addPlugin) {
-    await addPluginV1(
+    await addPlugin(
       tree,
       await createProjectGraphAsync(),
       '@nx/webpack/plugin',
-      createNodes,
+      createNodesV2,
       {
         buildTargetName: [
           'build',
@@ -50,6 +58,23 @@ export async function webpackInitGeneratorInternal(tree: Tree, schema: Schema) {
           'webpack-preview',
           'preview-webpack',
         ],
+        buildDepsTargetName: [
+          'build-deps',
+          'webpack:build-deps',
+          'webpack-build-deps',
+        ],
+        watchDepsTargetName: [
+          'watch-deps',
+          'webpack:watch-deps',
+          'webpack-watch-deps',
+        ],
+        serveStaticTargetName: [
+          'serve-static',
+          'webpack:serve-static',
+          'serve-static:webpack',
+          'webpack-serve-static',
+          'serve-static-webpack',
+        ],
       },
       schema.updatePackageScripts
     );
@@ -57,12 +82,18 @@ export async function webpackInitGeneratorInternal(tree: Tree, schema: Schema) {
 
   let installTask: GeneratorCallback = () => {};
   if (!schema.skipPackageJson) {
+    // webpack and webpack-dev-server are peer dependencies, so ensure they are
+    // installed (both the executor and inferred-plugin paths need them at the
+    // user's runtime).
     const devDependencies = {
       '@nx/webpack': nxVersion,
       '@nx/web': nxVersion,
+      webpack: webpackVersion,
+      'webpack-dev-server': webpackDevServerVersion,
     };
 
     if (schema.addPlugin) {
+      // The inferred plugin runs the `webpack-cli` binary.
       devDependencies['webpack-cli'] = webpackCliVersion;
     }
 
@@ -71,7 +102,7 @@ export async function webpackInitGeneratorInternal(tree: Tree, schema: Schema) {
       {},
       devDependencies,
       undefined,
-      schema.keepExistingVersions
+      schema.keepExistingVersions ?? true
     );
   }
 

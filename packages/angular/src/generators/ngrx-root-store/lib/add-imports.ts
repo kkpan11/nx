@@ -5,7 +5,7 @@ import {
   addProviderToAppConfig,
   addProviderToBootstrapApplication,
 } from '../../../utils/nx-devkit/ast-utils';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import { insertImport } from '@nx/js';
 import { NormalizedNgRxRootStoreGeneratorOptions } from './normalize-options';
 
@@ -181,15 +181,6 @@ export function addImportsToModule(
     sourceFile = addImport(sourceFile, 'EffectsModule', '@ngrx/effects');
   }
 
-  sourceFile = addRootStoreImport(
-    tree,
-    isParentStandalone,
-    sourceFile,
-    parentPath,
-    provideRootStore,
-    storeForRoot
-  );
-
   sourceFile = addRootEffectsImport(
     tree,
     isParentStandalone,
@@ -197,6 +188,25 @@ export function addImportsToModule(
     parentPath,
     provideRootEffects,
     effectsForEmptyRoot
+  );
+
+  if (options.addDevTools) {
+    sourceFile = addStoreDevTools(
+      tree,
+      sourceFile,
+      parentPath,
+      isParentStandalone,
+      addImport
+    );
+  }
+
+  sourceFile = addRootStoreImport(
+    tree,
+    isParentStandalone,
+    sourceFile,
+    parentPath,
+    provideRootStore,
+    storeForRoot
   );
 
   // this is just a heuristic
@@ -209,16 +219,6 @@ export function addImportsToModule(
       addImport,
       parentPath,
       storeRouterModule
-    );
-  }
-
-  if (options.addDevTools) {
-    sourceFile = addStoreDevTools(
-      tree,
-      sourceFile,
-      parentPath,
-      isParentStandalone,
-      addImport
     );
   }
 }

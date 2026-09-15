@@ -5,6 +5,7 @@
   "cli": "nx",
   "description": "Build storybook in production mode.",
   "type": "object",
+  "x-deprecated": "The `@nx/storybook:build` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/storybook:convert-to-inferred` to migrate to the `@nx/storybook/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "presets": [
     {
       "name": "Default minimum setup",
@@ -41,14 +42,6 @@
       "type": "boolean",
       "description": "Build a documentation-only site using addon-docs.",
       "default": false
-    },
-    "staticDir": {
-      "type": "array",
-      "description": "Directory where to load static files from, array of strings.",
-      "items": {
-        "type": "string"
-      },
-      "x-deprecated": "In Storybook 6.4 the `--static-dir` CLI flag has been replaced with the the `staticDirs` field in `.storybook/main.js`. It will be removed completely in Storybook 7.0."
     },
     "configDir": {
       "type": "string",

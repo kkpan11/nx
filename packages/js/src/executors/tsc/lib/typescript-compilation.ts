@@ -1,4 +1,4 @@
-import { createAsyncIterable } from '@nx/devkit/src/utils/async-iterable';
+import { createAsyncIterable } from '@nx/devkit/internal';
 import * as ts from 'typescript';
 import type { TransformerEntry } from '../../../utils/typescript/types';
 import { getCustomTrasformersFactory } from './get-custom-transformers-factory';
@@ -146,7 +146,6 @@ function* compileTS(
     {}
   );
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     project = solutionBuilder.getNextInvalidatedProject();
     if (!project) {
@@ -324,7 +323,8 @@ function compileTSWithWatch(
         logger.warn(
           `The project ${projectName} ` +
             `is using the deprecated "prepend" Typescript compiler option. ` +
-            `This option is not supported by the batch executor and it's ignored.`
+            `This option is not supported by the batch executor and it's ignored.`,
+          (project as any).project
         );
         continue;
       }

@@ -17,29 +17,33 @@ describe('replaceProjectConfigurationsWithPlugin', () => {
     tree.write('proj/file.txt', '');
     createNodes = [
       'proj/file.txt',
-      () => ({
-        projects: {
-          proj: {
-            root: 'proj',
-            targets: {
-              build: {
-                executor: 'nx:run-commands',
-                dependsOn: ['^build-base'],
-                inputs: ['default', '^default'],
-                outputs: ['{options.output}', '{projectRoot}/outputs'],
-                options: {
-                  configFile: 'file.txt',
-                },
-                configurations: {
-                  production: {
-                    configFile: 'file.prod.txt',
+      (configFiles) =>
+        configFiles.map((configFile) => [
+          configFile,
+          {
+            projects: {
+              proj: {
+                root: 'proj',
+                targets: {
+                  build: {
+                    executor: 'nx:run-commands',
+                    dependsOn: ['^build-base'],
+                    inputs: ['default', '^default'],
+                    outputs: ['{options.output}', '{projectRoot}/outputs'],
+                    options: {
+                      configFile: 'file.txt',
+                    },
+                    configurations: {
+                      production: {
+                        configFile: 'file.prod.txt',
+                      },
+                    },
                   },
                 },
               },
             },
           },
-        },
-      }),
+        ]),
     ];
   });
 

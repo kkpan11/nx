@@ -1,15 +1,17 @@
 import {
+  migrateProjectExecutorsToPlugin,
+  NoTargetsToMigrateError,
+  processTargetOutputs,
+  toProjectRelativePath,
+} from '@nx/devkit/internal';
+import {
   createProjectGraphAsync,
   formatFiles,
   type TargetConfiguration,
   type Tree,
 } from '@nx/devkit';
-import { migrateProjectExecutorsToPlugin } from '@nx/devkit/src/generators/plugin-migrations/executor-to-plugin-migrator';
-import {
-  processTargetOutputs,
-  toProjectRelativePath,
-} from '@nx/devkit/src/generators/plugin-migrations/plugin-migration-utils';
 import { createNodesV2, type CypressPluginOptions } from '../../plugins/plugin';
+import { assertSupportedCypressVersion } from '../../utils/assert-supported-cypress-version';
 import { addDevServerTargetToConfig } from './lib/add-dev-server-target-to-config';
 import { addExcludeSpecPattern } from './lib/add-exclude-spec-pattern';
 import { targetOptionsToCliMap } from './lib/target-options-map';
@@ -22,6 +24,8 @@ interface Schema {
 }
 
 export async function convertToInferred(tree: Tree, options: Schema) {
+  assertSupportedCypressVersion(tree);
+
   const projectGraph = await createProjectGraphAsync();
   const migratedProjects =
     await migrateProjectExecutorsToPlugin<CypressPluginOptions>(
@@ -46,7 +50,7 @@ export async function convertToInferred(tree: Tree, options: Schema) {
     );
 
   if (migratedProjects.size === 0) {
-    throw new Error('Could not find any targets to migrate.');
+    throw new NoTargetsToMigrateError();
   }
 
   if (!options.skipFormat) {
@@ -164,9 +168,8 @@ function handlePropertiesInOptions(
     if (target.configurations && configFilePath) {
       for (const configuration in target.configurations) {
         if (target.configurations[configuration]?.devServerTarget) {
-          webServerCommands[
-            configuration
-          ] = `npx nx run ${target.configurations[configuration].devServerTarget}`;
+          webServerCommands[configuration] =
+            `npx nx run ${target.configurations[configuration].devServerTarget}`;
           delete target.configurations[configuration].devServerTarget;
         }
       }

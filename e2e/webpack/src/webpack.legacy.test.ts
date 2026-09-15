@@ -4,12 +4,13 @@ import {
   killProcessAndPorts,
   newProject,
   readFile,
+  reservePort,
   runCLI,
   runCommandUntil,
   runE2ETests,
   uniq,
   updateFile,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { ChildProcess } from 'child_process';
 
 describe('Webpack Plugin (legacy)', () => {
@@ -21,14 +22,22 @@ describe('Webpack Plugin (legacy)', () => {
     originalAddPluginsEnv = process.env.NX_ADD_PLUGINS;
     process.env.NX_ADD_PLUGINS = 'false';
     newProject({
-      packages: ['@nx/react'],
-      unsetProjectNameAndRootFormat: false,
+      packages: [
+        '@nx/react',
+        '@nx/webpack',
+        '@nx/cypress',
+        '@nx/playwright',
+        '@nx/jest',
+        '@nx/vite',
+        '@nx/vitest',
+        '@nx/eslint',
+      ],
     });
     runCLI(
-      `generate @nx/react:app ${appName} --bundler webpack --e2eTestRunner=cypress --rootProject --no-interactive`
+      `generate @nx/react:app ${appName} --bundler webpack --e2eTestRunner=cypress --rootProject --no-interactive --unitTestRunner=jest --linter=eslint`
     );
     runCLI(
-      `generate @nx/react:lib ${libName} --unitTestRunner jest --no-interactive`
+      `generate @nx/react:lib ${libName} --unitTestRunner jest --no-interactive --linter=eslint`
     );
   });
 
@@ -44,14 +53,14 @@ describe('Webpack Plugin (legacy)', () => {
     // TODO: figure out why this test hangs in CI (maybe down to sudo prompt?)
     // expect(() => runCLI(`build ${appName}`)).not.toThrow();
 
-    // if (runE2ETests()) {
+    // if (await runE2ETests()) {
     //   runCLI(`e2e ${appName}-e2e --watch=false --verbose`);
     // }
   }, 500_000);
 
   it('should run serve-static', async () => {
     let process: ChildProcess;
-    const port = 8081;
+    const port = await reservePort();
 
     try {
       process = await runCommandUntil(
@@ -73,14 +82,19 @@ describe('Webpack Plugin (legacy)', () => {
   // Issue: https://github.com/nrwl/nx/issues/20179
   it('should allow main/styles entries to be spread within composePlugins() function (#20179)', () => {
     const appName = uniq('app');
-    runCLI(`generate @nx/web:app ${appName} --bundler webpack`);
-    updateFile(`apps/${appName}/src/main.ts`, `console.log('Hello');\n`);
+    runCLI(
+      `generate @nx/web:app ${appName} --bundler webpack --unitTestRunner=jest --linter=eslint`
+    );
+
+    checkFilesExist(`${appName}/src/main.ts`);
+    updateFile(`${appName}/src/main.ts`, `console.log('Hello');\n`);
 
     updateFile(
-      `apps/${appName}/webpack.config.js`,
+      `${appName}/webpack.config.js`,
       `
         const { composePlugins, withNx, withWeb } = require('@nx/webpack');
         module.exports = composePlugins(withNx(), withWeb(), (config) => {
+        config.output.clean = true;
           return {
             ...config,
             entry: {
@@ -105,25 +119,25 @@ describe('Webpack Plugin (legacy)', () => {
     }).toThrow();
   });
 
-  it('should support standard webpack config with executors', () => {
+  it('should support standard webpack config with executors', async () => {
     const appName = uniq('app');
     runCLI(
-      `generate @nx/web:app ${appName} --bundler webpack --e2eTestRunner=playwright`
+      `generate @nx/web:app ${appName} --bundler webpack --e2eTestRunner=playwright --unitTestRunner=jest --linter=eslint`
     );
     updateFile(
       `${appName}/src/main.ts`,
       `
-      document.querySelector('proj-root').innerHTML = '<h1>Welcome</h1>';
+      document.querySelector('proj-root')!.innerHTML = '<h1>Welcome</h1>';
     `
     );
     updateFile(
       `${appName}/webpack.config.js`,
       `
       const { join } = require('path');
-        const {NxWebpackPlugin} = require('@nx/webpack');
+        const {NxAppWebpackPlugin} = require('@nx/webpack/app-plugin');
         module.exports = {
           output: {
-            path: join(__dirname, '../dist/app9524918'),
+            path: join(__dirname, '../dist/${appName}'),
           },
           plugins: [
             new NxAppWebpackPlugin({
@@ -141,7 +155,7 @@ describe('Webpack Plugin (legacy)', () => {
       runCLI(`build ${appName} --outputHashing none`);
     }).not.toThrow();
 
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(() => {
         runCLI(`e2e ${appName}-e2e`);
       }).not.toThrow();
@@ -149,10 +163,10 @@ describe('Webpack Plugin (legacy)', () => {
   });
 
   describe('ConvertConfigToWebpackPlugin,', () => {
-    it('should convert withNx webpack config to a standard config using NxWebpackPlugin', () => {
+    it('should convert withNx webpack config to a standard config using NxWebpackPlugin', async () => {
       const appName = 'app3224373'; // Needs to be reserved so that the snapshot projectName matches
       runCLI(
-        `generate @nx/web:app ${appName} --bundler webpack --e2eTestRunner=playwright --projectNameAndRootFormat=as-provided`
+        `generate @nx/web:app ${appName} --bundler webpack --e2eTestRunner=playwright --unitTestRunner=vitest --linter=eslint`
       );
       updateFile(
         `${appName}/src/main.ts`,
@@ -181,7 +195,7 @@ describe('Webpack Plugin (legacy)', () => {
         runCLI(`build ${appName}`);
       }).not.toThrow();
 
-      if (runE2ETests()) {
+      if (await runE2ETests()) {
         expect(() => {
           runCLI(`e2e ${appName}-e2e`);
         }).not.toThrow();

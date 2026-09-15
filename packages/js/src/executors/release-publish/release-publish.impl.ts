@@ -1,12 +1,19 @@
-import { ExecutorContext, readJsonFile } from '@nx/devkit';
+import {
+  detectPackageManager,
+  getPackageManagerCommand,
+  ExecutorContext,
+  readJsonFile,
+} from '@nx/devkit';
 import { execSync } from 'child_process';
+import { statSync } from 'fs';
 import { env as appendLocalEnv } from 'npm-run-path';
 import { join } from 'path';
+import { isLocallyLinkedPackageVersion } from '../../utils/is-locally-linked-package-version';
 import { parseRegistryOptions } from '../../utils/npm-config';
+import { extractNpmPublishJsonData } from './extract-npm-publish-json-data';
 import { logTar } from './log-tar';
 import { PublishExecutorSchema } from './schema';
 import chalk = require('chalk');
-import { extractNpmPublishJsonData } from './extract-npm-publish-json-data';
 
 const LARGE_BUFFER = 1024 * 1000000;
 
@@ -22,10 +29,60 @@ function processEnv(color: boolean) {
   return env;
 }
 
+function isAlreadyPublishedPublishError(
+  stdoutData?: any,
+  stderr = '',
+  stdout = ''
+): boolean {
+  const error = stdoutData?.error;
+  const errorMessage = [
+    error?.summary,
+    error?.detail,
+    error?.message,
+    error?.body?.error,
+    stderr,
+    stdout,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    error?.code === 'EPUBLISHCONFLICT' ||
+    errorMessage.includes(
+      'You cannot publish over the previously published versions'
+    ) ||
+    (error?.code === 'E409' &&
+      errorMessage.includes('this package is already present'))
+  );
+}
+
 export default async function runExecutor(
   options: PublishExecutorSchema,
   context: ExecutorContext
 ) {
+  const pm = detectPackageManager();
+
+  // Check if npm is installed (needed for dist-tag management and as fallback for view command)
+  let isNpmInstalled = false;
+  try {
+    isNpmInstalled =
+      execSync('npm --version', {
+        encoding: 'utf-8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() !== '';
+  } catch {
+    // Allow missing npm only when using bun
+    if (pm !== 'bun') {
+      console.error(
+        `npm was not found in the current environment. This is only supported when using \`bun\` as a package manager, but your detected package manager is "${pm}"`
+      );
+      return {
+        success: false,
+      };
+    }
+  }
+
   /**
    * We need to check both the env var and the option because the executor may have been triggered
    * indirectly via dependsOn, in which case the env var will be set, but the option will not.
@@ -44,6 +101,50 @@ export default async function runExecutor(
   const packageJson = readJsonFile(packageJsonPath);
   const packageName = packageJson.name;
 
+  /**
+   * Whether or not dynamically replacing local dependency protocols (such as "workspace:*") is supported during `nx release publish` is
+   * dependent on the package manager the user is using.
+   *
+   * npm does not support the workspace protocol at all, and `npm publish` does not support dynamically updating locally linked packages
+   * during its packing phase, so we give the user a clear error message informing them of that.
+   *
+   * - `pnpm publish` provides ideal support, it has the possibility of providing JSON output consistent with npm
+   * - `bun publish`, provides very good support, including all the flags we need apart from the JSON output, so we just have to accept that
+   * it will look and feel different and print what it gives us and perform one bit of string manipulation for the dry-run case.
+   * - `yarn npm publish`, IS NOT YET SUPPORTED, and will be tricky because it does not support the majority of the flags we need. However, it
+   * does support replacing local dependency protocols with the correct version during its packing phase.
+   */
+  if (pm === 'npm' || pm === 'yarn') {
+    const depTypes = ['dependencies', 'devDependencies', 'peerDependencies'];
+    for (const depType of depTypes) {
+      const deps = packageJson[depType];
+      if (deps) {
+        for (const depName in deps) {
+          if (isLocallyLinkedPackageVersion(deps[depName])) {
+            if (pm === 'npm') {
+              console.error(
+                `Error: Cannot publish package "${packageName}" because it contains a local dependency protocol in its "${depType}", and your package manager is npm.
+
+Please update the local dependency on "${depName}" to be a valid semantic version (e.g. using \`nx release\`) before publishing, or switch to pnpm or bun as a package manager, which support dynamically replacing these protocols during publishing.`
+              );
+            } else if (pm === 'yarn') {
+              console.error(
+                `Error: Cannot publish package "${packageName}" because it contains a local dependency protocol in its "${depType}", and your package manager is yarn.
+
+Currently, yarn is not supported for this use case because its \`yarn npm publish\` command does not support the customization needed.
+
+Please update the local dependency on "${depName}" to be a valid semantic version (e.g. using \`nx release\`) before publishing, or switch to pnpm or bun as a package manager, which support dynamically replacing these protocols during publishing.`
+              );
+            }
+            return {
+              success: false,
+            };
+          }
+        }
+      }
+    }
+  }
+
   // If package and project name match, we can make log messages terser
   let packageTxt =
     packageName === context.projectName
@@ -57,6 +158,24 @@ export default async function runExecutor(
     return {
       success: true,
     };
+  }
+
+  /**
+   * If version data was provided by the nx release version step, check if this project
+   * actually had a new version resolved. If not (newVersion is null), there is nothing
+   * to publish, so we can skip this project entirely.
+   */
+  if (options.nxReleaseVersionData) {
+    const projectVersionData =
+      options.nxReleaseVersionData[context.projectName];
+    if (projectVersionData && projectVersionData.newVersion === null) {
+      console.warn(
+        `Skipped ${packageTxt}, because no new version was resolved for this project`
+      );
+      return {
+        success: true,
+      };
+    }
   }
 
   const warnFn = (message: string) => {
@@ -75,9 +194,14 @@ export default async function runExecutor(
     warnFn
   );
 
-  const npmViewCommandSegments = [
-    `npm view ${packageName} versions dist-tags --json --"${registryConfigKey}=${registry}"`,
-  ];
+  // Use bun info when bun is the package manager, otherwise use npm view
+  // (npm view works across npm/pnpm/yarn environments and is the established default)
+  const npmViewCommandSegments =
+    pm === 'bun'
+      ? ['bun info', packageName, `--json --"${registryConfigKey}=${registry}"`]
+      : [
+          `npm view ${packageName} versions dist-tags --json --"${registryConfigKey}=${registry}"`,
+        ];
   const npmDistTagAddCommandSegments = [
     `npm dist-tag add ${packageName}@${packageJson.version} ${tag} --"${registryConfigKey}=${registry}"`,
   ];
@@ -88,7 +212,7 @@ export default async function runExecutor(
    * request with.
    *
    * Therefore, so as to not produce misleading output in dry around dist-tags being altered, we do not
-   * perform the npm view step, and just show npm publish's dry-run output.
+   * perform the npm view step, and just show npm/pnpm publish's dry-run output.
    */
   if (!isDryRun && !options.firstRelease) {
     const currentVersion = packageJson.version;
@@ -97,9 +221,13 @@ export default async function runExecutor(
         env: processEnv(true),
         cwd: context.root,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
 
-      const resultJson = JSON.parse(result.toString());
+      // `npm view`/`bun info` can exit 0 with empty stdout when the package exists in the registry but has
+      // no published versions or dist-tags yet (e.g. GitHub packages). Treat empty output the samme as
+      // package not existing yet and continue to the publish step.
+      const resultJson = JSON.parse(result.toString().trim() || '{}');
       const distTags = resultJson['dist-tags'] || {};
       if (distTags[tag] === currentVersion) {
         console.warn(
@@ -110,94 +238,134 @@ export default async function runExecutor(
         };
       }
 
-      // If only one version of a package exists in the registry, versions will be a string instead of an array.
-      const versions = Array.isArray(resultJson.versions)
-        ? resultJson.versions
-        : [resultJson.versions];
+      if (isNpmInstalled) {
+        // If only one version of a package exists in the registry, versions will be a string instead of an array.
+        const versions = Array.isArray(resultJson.versions)
+          ? resultJson.versions
+          : [resultJson.versions];
 
-      if (versions.includes(currentVersion)) {
-        try {
-          if (!isDryRun) {
-            execSync(npmDistTagAddCommandSegments.join(' '), {
-              env: processEnv(true),
-              cwd: context.root,
-              stdio: 'ignore',
-            });
-            console.log(
-              `Added the dist-tag ${tag} to v${currentVersion} for registry ${registry}.\n`
-            );
-          } else {
-            console.log(
-              `Would add the dist-tag ${tag} to v${currentVersion} for registry ${registry}, but ${chalk.keyword(
-                'orange'
-              )('[dry-run]')} was set.\n`
-            );
-          }
-          return {
-            success: true,
-          };
-        } catch (err) {
+        if (versions.includes(currentVersion)) {
           try {
-            const stdoutData = JSON.parse(err.stdout?.toString() || '{}');
+            if (!isDryRun) {
+              execSync(npmDistTagAddCommandSegments.join(' '), {
+                env: processEnv(true),
+                cwd: context.root,
+                stdio: 'ignore',
+                windowsHide: true,
+              });
+              console.log(
+                `Added the dist-tag ${tag} to v${currentVersion} for registry ${registry}.\n`
+              );
+            } else {
+              console.log(
+                `Would add the dist-tag ${tag} to v${currentVersion} for registry ${registry}, but ${chalk.keyword(
+                  'orange'
+                )('[dry-run]')} was set.\n`
+              );
+            }
+            return {
+              success: true,
+            };
+          } catch (err) {
+            try {
+              const stdoutData = JSON.parse(err.stdout?.toString() || '{}');
 
-            // If the error is that the package doesn't exist, then we can ignore it because we will be publishing it for the first time in the next step
-            if (
-              !(
-                stdoutData.error?.code?.includes('E404') &&
-                stdoutData.error?.summary?.includes('no such package available')
-              ) &&
-              !(
-                err.stderr?.toString().includes('E404') &&
-                err.stderr?.toString().includes('no such package available')
-              )
-            ) {
-              console.error('npm dist-tag add error:');
-              if (stdoutData.error.summary) {
-                console.error(stdoutData.error.summary);
-              }
-              if (stdoutData.error.detail) {
-                console.error(stdoutData.error.detail);
-              }
+              // If the error is that the package doesn't exist, then we can ignore it because we will be publishing it for the first time in the next step
+              if (
+                !(
+                  stdoutData.error?.code?.includes('E404') &&
+                  stdoutData.error?.summary?.includes(
+                    'no such package available'
+                  )
+                ) &&
+                !(
+                  err.stderr?.toString().includes('E404') &&
+                  err.stderr?.toString().includes('no such package available')
+                )
+              ) {
+                console.error('npm dist-tag add error:');
+                // npm returns error.summary and error.detail
+                if (stdoutData.error?.summary) {
+                  console.error(stdoutData.error.summary);
+                }
+                if (stdoutData.error?.detail) {
+                  console.error(stdoutData.error.detail);
+                }
+                // pnpm returns error.code and error.message
+                if (stdoutData.error?.code && !stdoutData.error?.summary) {
+                  console.error(`Error code: ${stdoutData.error.code}`);
+                }
+                if (stdoutData.error?.message && !stdoutData.error?.summary) {
+                  console.error(stdoutData.error.message);
+                }
 
-              if (context.isVerbose) {
-                console.error('npm dist-tag add stdout:');
-                console.error(JSON.stringify(stdoutData, null, 2));
+                if (context.isVerbose) {
+                  console.error('npm dist-tag add stdout:');
+                  console.error(JSON.stringify(stdoutData, null, 2));
+                }
+                return {
+                  success: false,
+                };
               }
+            } catch (err) {
+              console.error(
+                'Something unexpected went wrong when processing the npm dist-tag add output\n',
+                err
+              );
               return {
                 success: false,
               };
             }
-          } catch (err) {
-            console.error(
-              'Something unexpected went wrong when processing the npm dist-tag add output\n',
-              err
-            );
-            return {
-              success: false,
-            };
           }
         }
       }
     } catch (err) {
-      const stdoutData = JSON.parse(err.stdout?.toString() || '{}');
-      // If the error is that the package doesn't exist, then we can ignore it because we will be publishing it for the first time in the next step
-      if (
-        !(
-          stdoutData.error?.code?.includes('E404') &&
-          stdoutData.error?.summary?.toLowerCase().includes('not found')
-        ) &&
-        !(
-          err.stderr?.toString().includes('E404') &&
-          err.stderr?.toString().toLowerCase().includes('not found')
-        )
-      ) {
-        console.error(
-          `Something unexpected went wrong when checking for existing dist-tags.\n`,
-          err
-        );
-        return {
-          success: false,
-        };
+      try {
+        const stdoutData = JSON.parse(err.stdout?.toString() || '{}');
+        // If the error is that the package doesn't exist, then we can ignore it because we will be publishing it for the first time in the next step
+        if (
+          !(
+            stdoutData.error?.code?.includes('E404') &&
+            stdoutData.error?.summary?.toLowerCase().includes('not found')
+          ) &&
+          !(
+            err.stderr?.toString().includes('E404') &&
+            err.stderr?.toString().toLowerCase().includes('not found')
+          ) &&
+          // bun uses plain '404' instead of 'E404'
+          !(
+            err.stderr?.toString().includes('404') &&
+            err.stderr?.toString().toLowerCase().includes('not found')
+          )
+        ) {
+          console.error(
+            `Something unexpected went wrong when checking for existing dist-tags.\n`,
+            err
+          );
+          return {
+            success: false,
+          };
+        }
+      } catch {
+        // JSON parse failed entirely — check stderr/stdout for plain 404
+        const stderrStr = err.stderr?.toString() || '';
+        const stdoutStr = err.stdout?.toString() || '';
+        if (
+          !(
+            (stderrStr.includes('404') &&
+              stderrStr.toLowerCase().includes('not found')) ||
+            (stdoutStr.includes('404') &&
+              stdoutStr.toLowerCase().includes('not found'))
+          )
+        ) {
+          console.error(
+            `Something unexpected went wrong when checking for existing dist-tags.\n`,
+            err
+          );
+          return {
+            success: false,
+          };
+        }
       }
     }
   }
@@ -208,46 +376,134 @@ export default async function runExecutor(
 
   /**
    * NOTE: If this is ever changed away from running the command at the workspace root and pointing at the package root (e.g. back
-   * to running from the package root directly), then special attention should be paid to the fact that npm publish will nest its
+   * to running from the package root directly), then special attention should be paid to the fact that npm/pnpm publish will nest its
    * JSON output under the name of the package in that case (and it would need to be handled below).
    */
-  const npmPublishCommandSegments = [
-    `npm publish "${packageRoot}" --json --"${registryConfigKey}=${registry}" --tag=${tag}`,
+  return runPublish({
+    pm,
+    options,
+    context,
+    packageRoot,
+    packageJson,
+    registry,
+    registryConfigKey,
+    tag,
+    isDryRun,
+    isNpmInstalled,
+    packageTxt,
+  });
+}
+
+interface RunPublishContext {
+  pm: ReturnType<typeof detectPackageManager>;
+  options: PublishExecutorSchema;
+  context: ExecutorContext;
+  packageRoot: string;
+  packageJson: any;
+  registry: string;
+  registryConfigKey: string;
+  tag: string;
+  isDryRun: boolean;
+  isNpmInstalled: boolean;
+  packageTxt: string;
+}
+
+function runPublish(ctx: RunPublishContext): { success: boolean } {
+  const {
+    pm,
+    options,
+    context,
+    packageRoot,
+    packageJson,
+    registry,
+    registryConfigKey,
+    tag,
+    isDryRun,
+    isNpmInstalled,
+    packageTxt,
+  } = ctx;
+  const pmCommand = getPackageManagerCommand(pm);
+  const publishCommandSegments = [
+    pmCommand.publish(packageRoot, registry, registryConfigKey, tag),
   ];
 
   if (options.otp) {
-    npmPublishCommandSegments.push(`--otp=${options.otp}`);
+    publishCommandSegments.push(`--otp=${options.otp}`);
+  }
+
+  if (options.access) {
+    publishCommandSegments.push(`--access=${options.access}`);
   }
 
   if (isDryRun) {
-    npmPublishCommandSegments.push(`--dry-run`);
+    publishCommandSegments.push(`--dry-run`);
   }
 
   try {
-    const output = execSync(npmPublishCommandSegments.join(' '), {
+    const output = execSync(publishCommandSegments.join(' '), {
       maxBuffer: LARGE_BUFFER,
       env: processEnv(true),
       cwd: context.root,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
+    // If in dry-run mode, the version on disk will not represent the version that would be published, so we scrub it from the output to avoid confusion.
+    const dryRunVersionPlaceholder = 'X.X.X-dry-run';
+
+    const publishSummaryMessage = isDryRun
+      ? `Would publish to ${registry} with tag "${tag}", but ${chalk.keyword(
+          'orange'
+        )('[dry-run]')} was set`
+      : `Published to ${registry} with tag "${tag}"`;
+
+    // bun publish does not support outputting JSON, so we need to modify and print the output string directly
+    if (pm === 'bun') {
+      let outputStr = output.toString();
+      if (isDryRun) {
+        outputStr = outputStr.replace(
+          new RegExp(`${packageJson.name}@${packageJson.version}`, 'g'),
+          `${packageJson.name}@${dryRunVersionPlaceholder}`
+        );
+      }
+      console.log(outputStr);
+      console.log(publishSummaryMessage);
+      return {
+        success: true,
+      };
+    }
 
     /**
-     * We cannot JSON.parse the output directly because if the user is using lifecycle scripts, npm will mix its publish output with the JSON output all on stdout.
+     * We cannot JSON.parse the output directly because if the user is using lifecycle scripts, npm/pnpm will mix its publish output with the JSON output all on stdout.
      * Additionally, we want to capture and show the lifecycle script outputs as beforeJsonData and afterJsonData and print them accordingly below.
      */
     const { beforeJsonData, jsonData, afterJsonData } =
       extractNpmPublishJsonData(output.toString());
     if (!jsonData) {
       console.error(
-        'The npm publish output data could not be extracted. Please report this issue on https://github.com/nrwl/nx'
+        `The ${pm} publish output data could not be extracted. Please report this issue on https://github.com/nrwl/nx`
       );
       return {
         success: false,
       };
     }
 
-    // If in dry-run mode, the version on disk will not represent the version that would be published, so we scrub it from the output to avoid confusion.
-    const dryRunVersionPlaceholder = 'X.X.X-dry-run';
+    // pnpm 11 dropped the per-file size field from its publish --json output,
+    // so recover the sizes from disk for the tarball contents log.
+    if (Array.isArray(jsonData.files)) {
+      for (const file of jsonData.files as Array<{
+        path?: string;
+        size?: number;
+      }>) {
+        if (typeof file.size !== 'number' && typeof file.path === 'string') {
+          try {
+            file.size = statSync(join(packageRoot, file.path)).size;
+          } catch {
+            // leave the size unknown, logTar omits it
+          }
+        }
+      }
+    }
+
     if (isDryRun) {
       for (const [key, val] of Object.entries(jsonData)) {
         if (typeof val !== 'string') {
@@ -273,33 +529,96 @@ export default async function runExecutor(
       console.log(afterJsonData);
     }
 
-    if (isDryRun) {
-      console.log(
-        `Would publish to ${registry} with tag "${tag}", but ${chalk.keyword(
-          'orange'
-        )('[dry-run]')} was set`
-      );
-    } else {
-      console.log(`Published to ${registry} with tag "${tag}"`);
-    }
+    // Print the summary message after the JSON data has been printed
+    console.log(publishSummaryMessage);
 
     return {
       success: true,
     };
   } catch (err) {
     try {
-      const stdoutData = JSON.parse(err.stdout?.toString() || '{}');
+      // bun publish does not support outputting JSON, so we cannot perform any further processing
+      if (pm === 'bun') {
+        const bunStderr = err.stderr?.toString() || '';
+        const bunStdout = err.stdout?.toString() || '';
+        // bun publish does not yet support npm's OIDC trusted publishing flow. If the failure
+        // looks like an authentication error and npm is available, retry via npm to recover.
+        // Other failures (e.g. version conflict, 403) would produce the same error from npm,
+        // so we surface bun's error directly instead.
+        const looksLikeAuthError =
+          /missing authentication|bunx npm login|unauthorized|\b401\b/i.test(
+            bunStderr + bunStdout
+          );
+        if (isNpmInstalled && looksLikeAuthError) {
+          console.warn(
+            `bun publish failed with an authentication error; falling back to npm publish (bun does not support npm OIDC trusted publishing).`
+          );
+          return runPublish({ ...ctx, pm: 'npm' });
+        }
+        console.error(`bun publish error:`);
+        console.error(bunStderr);
+        console.error(bunStdout);
+        return {
+          success: false,
+        };
+      }
 
-      console.error('npm publish error:');
+      // stdout is not guaranteed to be JSON (e.g. lifecycle script failures).
+      // If parsing fails, print raw stderr/stdout so the underlying error is visible to the user.
+      let stdoutData;
+      try {
+        stdoutData = JSON.parse(err.stdout?.toString() || '{}');
+      } catch {
+        const stderr = err.stderr?.toString() || '';
+        const stdout = err.stdout?.toString() || '';
+        if (isAlreadyPublishedPublishError(undefined, stderr, stdout)) {
+          console.warn(
+            `Skipped ${packageTxt}, as v${packageJson.version} has already been published to ${registry} with tag "${tag}"`
+          );
+          return {
+            success: true,
+          };
+        }
+        console.error(err.stderr?.toString() || '');
+        console.error(err.stdout?.toString() || '');
+        return {
+          success: false,
+        };
+      }
+
+      if (
+        isAlreadyPublishedPublishError(
+          stdoutData,
+          err.stderr?.toString() || '',
+          err.stdout?.toString() || ''
+        )
+      ) {
+        console.warn(
+          `Skipped ${packageTxt}, as v${packageJson.version} has already been published to ${registry} with tag "${tag}"`
+        );
+        return {
+          success: true,
+        };
+      }
+
+      console.error(`${pm} publish error:`);
+      // npm returns error.summary and error.detail
       if (stdoutData.error?.summary) {
         console.error(stdoutData.error.summary);
       }
       if (stdoutData.error?.detail) {
         console.error(stdoutData.error.detail);
       }
+      // pnpm returns error.code and error.message
+      if (stdoutData.error?.code && !stdoutData.error?.summary) {
+        console.error(`Error code: ${stdoutData.error.code}`);
+      }
+      if (stdoutData.error?.message && !stdoutData.error?.summary) {
+        console.error(stdoutData.error.message);
+      }
 
       if (context.isVerbose) {
-        console.error('npm publish stdout:');
+        console.error(`${pm} publish stdout:`);
         console.error(JSON.stringify(stdoutData, null, 2));
       }
 
@@ -312,7 +631,7 @@ export default async function runExecutor(
       };
     } catch (err) {
       console.error(
-        'Something unexpected went wrong when processing the npm publish output\n',
+        `Something unexpected went wrong when processing the ${pm} publish output\n`,
         err
       );
       return {

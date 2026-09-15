@@ -1,3 +1,4 @@
+import { addPlugin } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   createProjectGraphAsync,
@@ -8,13 +9,13 @@ import {
   runTasksInSerial,
   Tree,
 } from '@nx/devkit';
-import { addPluginV1 } from '@nx/devkit/src/utils/add-plugin';
-import { createNodes } from '../../../plugins/plugin';
+import { createNodesV2 } from '../../../plugins/plugin';
 import {
   nxVersion,
   reactDomVersion,
-  reactNativeVersion,
   reactVersion,
+  versions,
+  assertSupportedReactNativeVersion,
 } from '../../utils/versions';
 import { addGitIgnoreEntry } from './lib/add-git-ignore-entry';
 import { Schema } from './schema';
@@ -30,6 +31,8 @@ export async function reactNativeInitGeneratorInternal(
   host: Tree,
   schema: Schema
 ) {
+  assertSupportedReactNativeVersion(host);
+
   addGitIgnoreEntry(host);
 
   const nxJson = readNxJson(host);
@@ -39,14 +42,14 @@ export async function reactNativeInitGeneratorInternal(
   schema.addPlugin ??= addPluginDefault;
 
   if (schema.addPlugin) {
-    await addPluginV1(
+    await addPlugin(
       host,
       await createProjectGraphAsync(),
       '@nx/react-native/plugin',
-      createNodes,
+      createNodesV2,
       {
         startTargetName: ['start', 'react-native:start', 'react-native-start'],
-        upgradeTargetname: [
+        upgradeTargetName: [
           'update',
           'react-native:update',
           'react-native-update',
@@ -106,18 +109,21 @@ export async function reactNativeInitGeneratorInternal(
 }
 
 export function updateDependencies(host: Tree, schema: Schema) {
+  const rnVersions = versions(host);
   return addDependenciesToPackageJson(
     host,
     {
       react: reactVersion,
       'react-dom': reactDomVersion,
-      'react-native': reactNativeVersion,
+      'react-native': rnVersions.reactNativeVersion,
     },
     {
       '@nx/react-native': nxVersion,
+      'metro-config': rnVersions.metroVersion,
+      'metro-resolver': rnVersions.metroVersion,
     },
     undefined,
-    schema.keepExistingVersions
+    schema.keepExistingVersions ?? true
   );
 }
 

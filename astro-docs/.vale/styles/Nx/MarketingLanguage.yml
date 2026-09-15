@@ -1,0 +1,32 @@
+extends: existence
+message: "Avoid marketing language '%s'. Be specific about what the feature does instead."
+level: suggestion
+ignorecase: true
+tokens:
+  - 'effortless'
+  - 'effortlessly'
+  - 'seamless'
+  - 'seamlessly'
+  - 'powerful'
+  - 'robust'
+  - 'comprehensive'
+  - 'leverage'
+  - 'utilize'
+  - 'facilitate'
+  - 'aforementioned'
+  - 'best-in-class'
+  - 'world-class'
+  - 'next-level'
+  - 'supercharge'
+  - 'delve'
+  - 'underscore'
+  - 'underscores'
+  - 'foster'
+  - 'empower'
+  - 'meticulous'
+  - 'meticulously'
+  - 'crucial'
+  - 'pivotal'
+  - 'paramount'
+  - 'intricate'
+  - 'multifaceted'

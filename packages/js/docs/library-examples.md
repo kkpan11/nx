@@ -6,7 +6,7 @@ description: This page contains examples for the @nx/js:lib generator.
 The `@nx/js:lib` generator will generate a library for you, and it will configure it according to the options you provide.
 
 ```bash
-npx nx g @nx/js:lib mylib
+npx nx g @nx/js:lib libs/mylib
 ```
 
 By default, the library that is generated when you use this executor without passing any options, like the example above, will be a buildable library, using the `@nx/js:tsc` executor as a builder.
@@ -15,49 +15,41 @@ You may configure the tools you want to use to build your library, or bundle it 
 
 ## Examples
 
-{% tabs %}
-
-{% tab label="Buildable with default compiler (tsc)" %}
+##### Buildable with default compiler (tsc)
 
 Generate a buildable library using the `@nx/js:tsc` executor. This uses `tsc` as the compiler.
 
 ```bash
-npx nx g @nx/js:lib mylib
+npx nx g @nx/js:lib libs/mylib
 ```
 
-{% /tab %}
-
-{% tab label="Buildable with SWC compiler" %}
+##### Buildable with SWC compiler
 
 Generate a buildable library using [SWC](https://swc.rs) as the compiler. This will use the `@nx/js:swc` executor.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=swc
+npx nx g @nx/js:lib libs/mylib --bundler=swc
 ```
 
-{% /tab %}
-
-{% tab label="Buildable with tsc" %}
+##### Buildable with tsc
 
 Generate a buildable library using tsc as the compiler. This will use the `@nx/js:tsc` executor.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=tsc
+npx nx g @nx/js:lib libs/mylib --bundler=tsc
 ```
 
-{% /tab %}
-
-{% tab label="Buildable, with Rollup as a bundler" %}
+##### Buildable, with Rollup as a bundler
 
 Generate a buildable library using [Rollup](https://rollupjs.org) as the bundler. This will use the `@nx/rollup:rollup` executor. It will also use [SWC](https://swc.rs) as the compiler.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=rollup
+npx nx g @nx/js:lib libs/mylib --bundler=rollup
 ```
 
 If you do not want to use `swc` as the compiler, and want to use the default `babel` compiler, you can do so in your `project.json` under the `build` target options, using the [`compiler` property](/nx-api/rollup/executors/rollup#compiler):
 
-```jsonc {% fileName="libs/mylib/project.json" %}
+```jsonc title="libs/mylib/project.json"
 "build": {
   "executor": "@nx/rollup:rollup",
   "options": {
@@ -67,29 +59,25 @@ If you do not want to use `swc` as the compiler, and want to use the default `ba
 }
 ```
 
-{% /tab %}
+##### Buildable, with Vite as a bundler
 
-{% tab label="Buildable, with Vite as a bundler" %}
-
-Generate a buildable library using [Vite](https://vitejs.dev/) as the bundler. This will use the `@nx/vite:build` executor.
+Generate a buildable library using [Vite](https://vite.dev/) as the bundler. This will use the `@nx/vite:build` executor.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=vite
+npx nx g @nx/js:lib libs/mylib --bundler=vite
 ```
 
-{% /tab %}
-
-{% tab label="Using ESBuild" %}
+##### Using ESBuild
 
 Generate a buildable library using [ESBuild](https://esbuild.github.io/) as the bundler. This will use the `@nx/esbuild:esbuild` executor.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=esbuild
+npx nx g @nx/js:lib libs/mylib --bundler=esbuild
 ```
 
 If you want to specify whether you want to bundle your library or not, you can do so in your `project.json` under the `build` target options, using the [`esbuildOptions` property](https://esbuild.github.io/api/):
 
-```jsonc {% fileName="libs/mylib/project.json" %}
+```jsonc title="libs/mylib/project.json"
 "build": {
   "executor": "@nx/esbuild:esbuild",
   "options": {
@@ -101,40 +89,26 @@ If you want to specify whether you want to bundle your library or not, you can d
 }
 ```
 
-{% /tab %}
-
-{% tab label="Minimal publishing target" %}
+##### Minimal publishing target
 
 Generate a **publishable** library with a minimal publishing target. The result will be a buildable library using the `@nx/js:tsc` executor, using `tsc` as the compiler. You can change the compiler or the bundler by passing the `--bundler` flag.
 
 ```bash
-npx nx g lib mylib --publishable
+npx nx g lib libs/mylib --publishable
 ```
 
-{% /tab %}
+##### In a nested directory
 
-{% tab label="Using directory flag" %}
-
-Generate a library named `mylib` and put it under a directory named `myapp` (`libs/myapp/mylib`)
-
-{% callout type="note" title="Directory Flag Behavior Changes" %}
-The command below uses the `as-provided` directory flag behavior, which is the default in Nx 16.8.0. If you're on an earlier version of Nx or using the `derived` option, use `--directory=myapp`. See the [as-provided vs. derived documentation](/deprecated/as-provided-vs-derived) for more details.
-{% /callout %}
+Generate a library named `mylib` and put it under a directory named `nested` (`libs/nested/mylib`).
 
 ```shell
-npx nx g lib mylib --directory=libs/myapp/mylib
+npx nx g lib libs/nested/mylib
 ```
 
-{% /tab %}
-
-{% tab label="Non-buildable library" %}
+##### Non-buildable library
 
 Generate a non-buildable library.
 
 ```bash
-npx nx g @nx/js:lib mylib --bundler=none
+npx nx g @nx/js:lib libs/mylib --bundler=none
 ```
-
-{% /tab %}
-
-{% /tabs %}

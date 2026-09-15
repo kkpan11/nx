@@ -1,14 +1,15 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`vue:storybook-configuration should configure everything and install correct dependencies 1`] = `
 "import type { StorybookConfig } from '@storybook/vue3-vite';
 
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import { mergeConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
 
 const config: StorybookConfig = {
-  stories: ['../src/**/*.stories.@(js|jsx|ts|tsx|mdx)'],
-  addons: ['@storybook/addon-essentials', '@storybook/addon-interactions'],
+  stories: ['../src/**/*.@(mdx|stories.@(js|jsx|ts|tsx))'],
+  addons: [],
   framework: {
     name: '@storybook/vue3-vite',
     options: {},
@@ -16,7 +17,7 @@ const config: StorybookConfig = {
 
   viteFinal: async (config) =>
     mergeConfig(config, {
-      plugins: [nxViteTsPaths()],
+      plugins: [vue(), nxViteTsPaths()],
     }),
 };
 
@@ -29,17 +30,17 @@ export default config;
 `;
 
 exports[`vue:storybook-configuration should generate stories for components 1`] = `
-"import type { Meta, StoryObj } from '@storybook/vue3';
+"import type { Meta, StoryObj } from '@storybook/vue3-vite';
 import myComponent from './my-component.vue';
 
-import { within } from '@storybook/testing-library';
-import { expect } from '@storybook/jest';
+import { expect } from 'storybook/test';
 
-const meta: Meta<typeof myComponent> = {
+const meta = {
   component: myComponent,
   title: 'myComponent',
-};
+} satisfies Meta<typeof myComponent>;
 export default meta;
+
 type Story = StoryObj<typeof meta>;
 
 export const Primary = {
@@ -48,34 +49,33 @@ export const Primary = {
     displayAge: false,
     age: 0,
   },
-};
+} satisfies Story;
 
-export const Heading: Story = {
+export const Heading = {
   args: {
     name: 'name',
     displayAge: false,
     age: 0,
   },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText(/Welcome to myComponent!/gi)).toBeTruthy();
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/myComponent/gi)).toBeTruthy();
   },
-};
+} satisfies Story;
 "
 `;
 
 exports[`vue:storybook-configuration should generate stories for components for app 1`] = `
-"import type { Meta, StoryObj } from '@storybook/vue3';
+"import type { Meta, StoryObj } from '@storybook/vue3-vite';
 import myComponent from './my-component.vue';
 
-import { within } from '@storybook/testing-library';
-import { expect } from '@storybook/jest';
+import { expect } from 'storybook/test';
 
-const meta: Meta<typeof myComponent> = {
+const meta = {
   component: myComponent,
   title: 'myComponent',
-};
+} satisfies Meta<typeof myComponent>;
 export default meta;
+
 type Story = StoryObj<typeof meta>;
 
 export const Primary = {
@@ -84,31 +84,31 @@ export const Primary = {
     displayAge: false,
     age: 0,
   },
-};
+} satisfies Story;
 
-export const Heading: Story = {
+export const Heading = {
   args: {
     name: 'name',
     displayAge: false,
     age: 0,
   },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText(/Welcome to myComponent!/gi)).toBeTruthy();
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/myComponent/gi)).toBeTruthy();
   },
-};
+} satisfies Story;
 "
 `;
 
 exports[`vue:storybook-configuration should generate stories for components without interaction tests 1`] = `
-"import type { Meta, StoryObj } from '@storybook/vue3';
+"import type { Meta, StoryObj } from '@storybook/vue3-vite';
 import myComponent from './my-component.vue';
 
-const meta: Meta<typeof myComponent> = {
+const meta = {
   component: myComponent,
   title: 'myComponent',
-};
+} satisfies Meta<typeof myComponent>;
 export default meta;
+
 type Story = StoryObj<typeof meta>;
 
 export const Primary = {
@@ -117,6 +117,6 @@ export const Primary = {
     displayAge: false,
     age: 0,
   },
-};
+} satisfies Story;
 "
 `;

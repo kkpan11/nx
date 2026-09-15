@@ -1,24 +1,25 @@
 ## Examples
 
-{% tabs %}
-{% tab label="Create a new lib" %}
+##### Create a new lib
 
 ```shell
-nx g lib my-lib
+nx g lib libs/my-lib
 ```
 
-{% /tab %}
-{% tab label="Create a new lib under a directory" %}
+##### Create a new lib under a directory
 
 The following will create a library at `libs/shared/my-lib`.
 
-{% callout type="note" title="Directory Flag Behavior Changes" %}
-The command below uses the `as-provided` directory flag behavior, which is the default in Nx 16.8.0. If you're on an earlier version of Nx or using the `derived` option, use `--directory=shared`. See the [as-provided vs. derived documentation](/deprecated/as-provided-vs-derived) for more details.
-{% /callout %}
-
 ```shell
-nx g lib my-lib --directory=libs/shared/my-lib
+nx g lib libs/shared/my-lib
 ```
 
-{% /tab %}
-{% /tabs %}
+##### Export React Server Components
+
+Unlike a React library, a Next.js library has a second entry point, `src/server.ts`, for React Server Components. Exporting a server component from `src/index.ts` marks that whole file as server-only and breaks imports from client components, so keep client components in `src/index.ts` and server components in `src/server.ts`.
+
+```typescript
+// apps/my-app/app/page.tsx
+import { MyComponent } from '@myorg/my-lib';
+import { HelloServer } from '@myorg/my-lib/server';
+```

@@ -3,32 +3,59 @@ import {
   generateFiles,
   joinPathFragments,
   names,
+  offsetFromRoot,
   readProjectConfiguration,
 } from '@nx/devkit';
+import { getProjectSourceRoot, isUsingTsSolutionSetup } from '@nx/js/internal';
 import { maybeJs } from '../../../utils/maybe-js';
+import {
+  createNxRspackPluginOptions,
+  getDefaultTemplateVariables,
+} from '../../application/lib/create-application-files';
 import { NormalizedSchema } from '../schema';
+import { join } from 'path';
 
 export function addModuleFederationFiles(
   host: Tree,
   options: NormalizedSchema,
   defaultRemoteManifest: { name: string; port: number }[]
 ) {
-  const templateVariables = {
-    ...names(options.name),
-    ...options,
-    static: !options?.dynamic,
-    tmpl: '',
-    remotes: defaultRemoteManifest.map(({ name, port }) => {
-      return {
-        ...names(name),
-        port,
-      };
-    }),
-  };
+  const templateVariables =
+    options.bundler === 'rspack'
+      ? {
+          ...getDefaultTemplateVariables(host, options as any),
+          rspackPluginOptions: {
+            ...createNxRspackPluginOptions(
+              options as any,
+              offsetFromRoot(options.appProjectRoot),
+              false
+            ),
+            mainServer: `./server.ts`,
+          },
+          static: !options?.dynamic,
+          remotes: defaultRemoteManifest.map(({ name, port }) => {
+            return {
+              ...names(name),
+              port,
+            };
+          }),
+        }
+      : {
+          ...names(options.projectName),
+          ...options,
+          static: !options?.dynamic,
+          tmpl: '',
+          remotes: defaultRemoteManifest.map(({ name, port }) => {
+            return {
+              ...names(name),
+              port,
+            };
+          }),
+        };
 
-  const projectConfig = readProjectConfiguration(host, options.name);
+  const projectConfig = readProjectConfiguration(host, options.projectName);
   const pathToMFManifest = joinPathFragments(
-    projectConfig.sourceRoot,
+    getProjectSourceRoot(projectConfig, host),
     'assets/module-federation.manifest.json'
   );
 
@@ -36,30 +63,49 @@ export function addModuleFederationFiles(
   // Renaming original entry file so we can use `import(./bootstrap)` in
   // new entry file.
   host.rename(
-    joinPathFragments(options.appProjectRoot, maybeJs(options, 'src/main.tsx')),
     joinPathFragments(
       options.appProjectRoot,
-      maybeJs(options, 'src/bootstrap.tsx')
+      maybeJs(
+        { js: options.js, useJsx: options.bundler === 'rspack' },
+        'src/main.tsx'
+      )
+    ),
+    joinPathFragments(
+      options.appProjectRoot,
+      maybeJs(
+        { js: options.js, useJsx: options.bundler === 'rspack' },
+        'src/bootstrap.tsx'
+      )
     )
   );
 
   generateFiles(
     host,
-    joinPathFragments(
+    join(
       __dirname,
-      `../files/${options.js ? 'common' : 'common-ts'}`
+      `../files/${
+        options.js
+          ? options.bundler === 'rspack'
+            ? 'rspack-common'
+            : 'common'
+          : 'common-ts'
+      }`
     ),
     options.appProjectRoot,
     templateVariables
   );
 
   const pathToModuleFederationFiles = options.typescriptConfiguration
-    ? 'module-federation-ts'
-    : 'module-federation';
+    ? `${
+        options.bundler === 'rspack' ? 'rspack-' : 'webpack-'
+      }module-federation-ts`
+    : `${
+        options.bundler === 'rspack' ? 'rspack-' : 'webpack-'
+      }module-federation`;
   // New entry file is created here.
   generateFiles(
     host,
-    joinPathFragments(__dirname, `../files/${pathToModuleFederationFiles}`),
+    join(__dirname, `../files/${pathToModuleFederationFiles}`),
     options.appProjectRoot,
     templateVariables
   );
@@ -70,24 +116,50 @@ export function addModuleFederationFiles(
     }
   }
 
-  function processWebpackConfig(options, host, fileName) {
-    const pathToWebpackConfig = joinPathFragments(
+  function processBundlerConfigFile(options, host, fileName) {
+    const pathToBundlerConfig = joinPathFragments(
       options.appProjectRoot,
       fileName
     );
-    deleteFileIfExists(host, pathToWebpackConfig);
+    deleteFileIfExists(host, pathToBundlerConfig);
   }
 
   if (options.typescriptConfiguration) {
-    processWebpackConfig(options, host, 'webpack.config.js');
-    processWebpackConfig(options, host, 'webpack.config.prod.js');
+    if (options.bundler === 'rspack') {
+      processBundlerConfigFile(options, host, 'rspack.config.js');
+      processBundlerConfigFile(options, host, 'rspack.config.prod.js');
+    } else {
+      processBundlerConfigFile(options, host, 'webpack.config.js');
+      processBundlerConfigFile(options, host, 'webpack.config.prod.js');
+    }
+
+    // Delete TypeScript prod config in TS solution setup - not needed in Crystal
+    if (isUsingTsSolutionSetup(host)) {
+      const prodConfigFileName =
+        options.bundler === 'rspack'
+          ? 'rspack.config.prod.ts'
+          : 'webpack.config.prod.ts';
+      processBundlerConfigFile(options, host, prodConfigFileName);
+    }
   }
 
   if (options.dynamic) {
-    processWebpackConfig(options, host, 'webpack.config.prod.js');
-    processWebpackConfig(options, host, 'webpack.config.prod.ts');
+    processBundlerConfigFile(options, host, 'webpack.config.prod.js');
+    processBundlerConfigFile(options, host, 'webpack.config.prod.ts');
+    processBundlerConfigFile(options, host, 'rspack.config.prod.js');
+    processBundlerConfigFile(options, host, 'rspack.config.prod.ts');
     if (!host.exists(pathToMFManifest)) {
-      host.write(pathToMFManifest, '{}');
+      host.write(
+        pathToMFManifest,
+        `{
+        ${defaultRemoteManifest
+          .map(
+            ({ name, port }) =>
+              `"${name}": "http://localhost:${port}/mf-manifest.json"`
+          )
+          .join(',\n')}
+          }`
+      );
     }
   }
 }

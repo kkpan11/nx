@@ -1,14 +1,29 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc",
-    "module": "commonjs",
-    "types": ["jest", "node"]
+    "outDir": "dist/spec",
+    "types": ["jest", "node"],
+    "composite": true,
+    "rootDir": "."
   },
   "include": [
     "jest.config.ts",
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
     "src/**/*.d.ts"
+  ],
+  "references": [
+    {
+      "path": "../../packages/nx"
+    },
+    {
+      "path": "../../packages/plugin"
+    },
+    {
+      "path": "../../packages/eslint"
+    },
+    {
+      "path": "./tsconfig.lib.json"
+    }
   ]
 }

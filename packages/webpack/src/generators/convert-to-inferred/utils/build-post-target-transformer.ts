@@ -2,8 +2,8 @@ import type { TargetConfiguration, Tree } from '@nx/devkit';
 import {
   processTargetOutputs,
   toProjectRelativePath,
-} from '@nx/devkit/src/generators/plugin-migrations/plugin-migration-utils';
-import { tsquery } from '@phenomnomnominal/tsquery';
+} from '@nx/devkit/internal';
+import { ast, query } from '@phenomnomnominal/tsquery';
 import * as ts from 'typescript';
 import type { WebpackExecutorOptions } from '../../../executors/webpack/schema';
 import type { NxAppWebpackPluginOptions } from '../../../plugins/nx-webpack-plugin/nx-app-webpack-plugin-options';
@@ -140,13 +140,6 @@ function extractPluginOptions(
         });
       }
       delete options.memoryLimit;
-    } else if (key === 'isolatedConfig') {
-      context.logger.addLog({
-        executorName: '@nx/webpack:webpack',
-        log: `The 'isolatedConfig' option is deprecated and not supported by the NxAppWebpackPlugin. It was removed from your project configuration.`,
-        project: context.projectName,
-      });
-      delete options.isolatedConfig;
     } else if (key === 'standardWebpackConfigFunction') {
       delete options.standardWebpackConfigFunction;
     } else {
@@ -168,7 +161,7 @@ function updateWebpackConfig(
 
   const updateSources = () => {
     webpackConfigText = tree.read(webpackConfig, 'utf-8');
-    sourceFile = tsquery.ast(webpackConfigText);
+    sourceFile = ast(webpackConfigText);
   };
   updateSources();
 
@@ -208,7 +201,7 @@ function setOptionsInWebpackConfig(
 
   const optionsSelector =
     'VariableStatement:has(VariableDeclaration:has(Identifier[name=options]))';
-  const optionsVariable = tsquery<ts.VariableStatement>(
+  const optionsVariable = query<ts.VariableStatement>(
     sourceFile,
     optionsSelector
   )[0];
@@ -217,7 +210,7 @@ function setOptionsInWebpackConfig(
   // `convert-config-to-webpack-plugin` generates
 
   let defaultOptionsObject: ts.ObjectLiteralExpression;
-  const optionsObject = tsquery<ts.ObjectLiteralExpression>(
+  const optionsObject = query<ts.ObjectLiteralExpression>(
     optionsVariable,
     'ObjectLiteralExpression'
   )[0];
@@ -332,7 +325,7 @@ function setOptionsInNxWebpackPlugin(
 ): void {
   const nxAppWebpackPluginSelector =
     'PropertyAssignment:has(Identifier[name=plugins]) NewExpression:has(Identifier[name=NxAppWebpackPlugin])';
-  const nxAppWebpackPlugin = tsquery<ts.NewExpression>(
+  const nxAppWebpackPlugin = query<ts.NewExpression>(
     sourceFile,
     nxAppWebpackPluginSelector
   )[0];
@@ -364,7 +357,7 @@ function setOptionsInLegacyNxPlugin(
 ): void {
   const legacyNxPluginSelector =
     'AwaitExpression CallExpression:has(Identifier[name=useLegacyNxPlugin])';
-  const legacyNxPlugin = tsquery<ts.CallExpression>(
+  const legacyNxPlugin = query<ts.CallExpression>(
     sourceFile,
     legacyNxPluginSelector
   )[0];

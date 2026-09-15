@@ -2,6 +2,7 @@ import { resolve } from 'path';
 import { ExecutorContext } from '@nx/devkit';
 
 import type { RollupExecutorOptions } from '../schema';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
 
 export interface NormalizedRollupExecutorOptions extends RollupExecutorOptions {
   projectRoot: string;
@@ -13,14 +14,16 @@ export function normalizeRollupExecutorOptions(
   context: ExecutorContext
 ): NormalizedRollupExecutorOptions {
   const { root } = context;
+  const skipTypeCheck = isUsingTsSolutionSetup() ? true : options.skipTypeCheck;
   return {
     ...options,
     rollupConfig: []
       .concat(options.rollupConfig)
       .filter(Boolean)
       .map((p) => normalizePluginPath(p, root)),
+    buildLibsFromSource: options.buildLibsFromSource ?? true,
     projectRoot: context.projectGraph.nodes[context.projectName].data.root,
-    skipTypeCheck: options.skipTypeCheck || false,
+    skipTypeCheck: skipTypeCheck || false,
   };
 }
 

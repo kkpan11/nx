@@ -1,24 +1,30 @@
-import { prompt } from 'enquirer';
+import { multiselectPrompt, textPrompt } from '../../../utils/prompt-helpers';
 import { readdirSync, readFileSync, statSync } from 'fs';
-import ignore from 'ignore';
+import ignore = require('ignore');
 import { join, relative } from 'path';
 import { InitArgs } from '../init-v1';
 import { readJsonFile } from '../../../utils/fileutils';
 import { output } from '../../../utils/output';
+import { detectPackageManager } from '../../../utils/package-manager';
 import {
   addDepsToPackageJson,
   createNxJsonFile,
   initCloud,
   runInstall,
+  setNeverConnectToCloud,
   updateGitIgnore,
 } from './utils';
-import { connectExistingRepoToNxCloudPrompt } from '../../connect/connect-to-nx-cloud';
+import { connectExistingRepoToNxCloudPrompt } from '../../nx-cloud/connect/connect-to-nx-cloud';
+import { MessageOptionKey } from '../../../utils/ab-testing';
 
 type Options = Pick<InitArgs, 'nxCloud' | 'interactive' | 'cacheable'> & {
   legacy?: boolean;
 };
 
-export async function addNxToMonorepo(options: Options) {
+export async function addNxToMonorepo(
+  options: Options,
+  guided: boolean = true
+) {
   const repoRoot = process.cwd();
 
   output.log({ title: '🐳 Nx initialization' });
@@ -29,68 +35,49 @@ export async function addNxToMonorepo(options: Options) {
   let targetDefaults: string[];
   let cacheableOperations: string[];
   let scriptOutputs = {} as { [script: string]: string };
-  let useNxCloud: boolean;
+  let nxCloudChoice: MessageOptionKey;
 
-  if (options.interactive && scripts.length > 0) {
+  if (options.interactive && scripts.length > 0 && guided) {
     output.log({
       title:
         '🧑‍🔧 Please answer the following questions about the scripts found in your workspace in order to generate task runner configuration',
     });
 
-    targetDefaults = (
-      await prompt<{ targetDefaults: string[] }>([
-        {
-          type: 'multiselect',
-          name: 'targetDefaults',
-          message:
-            'Which scripts need to be run in order? (e.g. before building a project, dependent projects must be built)',
-          choices: scripts,
-          /**
-           * limit is missing from the interface but it limits the amount of options shown
-           */
-          limit: process.stdout.rows - 4, // 4 leaves room for the header above, the prompt and some whitespace
-        } as any,
-      ])
-    ).targetDefaults;
+    targetDefaults = await multiselectPrompt({
+      message:
+        'Which scripts need to be run in order? (e.g. before building a project, dependent projects must be built)',
+      choices: scripts,
+    });
 
-    cacheableOperations = (
-      await prompt<{ cacheableOperations: string[] }>([
-        {
-          type: 'multiselect',
-          name: 'cacheableOperations',
-          message:
-            'Which scripts are cacheable? (Produce the same output given the same input, e.g. build, test and lint usually are, serve and start are not)',
-          choices: scripts,
-          /**
-           * limit is missing from the interface but it limits the amount of options shown
-           */
-          limit: process.stdout.rows - 4, // 4 leaves room for the header above, the prompt and some whitespace
-        } as any,
-      ])
-    ).cacheableOperations;
+    cacheableOperations = await multiselectPrompt({
+      message:
+        'Which scripts are cacheable? (Produce the same output given the same input, e.g. build, test and lint usually are, serve and start are not)',
+      choices: scripts,
+    });
 
     for (const scriptName of cacheableOperations) {
-      scriptOutputs[scriptName] = (
-        await prompt([
-          {
-            type: 'input',
-            name: scriptName,
-            message: `Does the "${scriptName}" script create any outputs? If not, leave blank, otherwise provide a path relative to a project root (e.g. dist, lib, build, coverage)`,
-          },
-        ])
-      )[scriptName];
+      scriptOutputs[scriptName] = await textPrompt({
+        message: `Does the "${scriptName}" script create any outputs? If not, leave blank, otherwise provide a path relative to a project root (e.g. dist, lib, build, coverage)`,
+      });
     }
 
-    useNxCloud =
-      options.nxCloud ?? (await connectExistingRepoToNxCloudPrompt());
+    nxCloudChoice =
+      options.nxCloud === true
+        ? 'yes'
+        : options.nxCloud === false
+          ? 'skip'
+          : await connectExistingRepoToNxCloudPrompt();
   } else {
     targetDefaults = [];
     cacheableOperations = options.cacheable ?? [];
-    useNxCloud =
-      options.nxCloud ??
-      (options.interactive
-        ? await connectExistingRepoToNxCloudPrompt()
-        : false);
+    nxCloudChoice =
+      options.nxCloud === true
+        ? 'yes'
+        : options.nxCloud === false
+          ? 'skip'
+          : options.interactive
+            ? await connectExistingRepoToNxCloudPrompt()
+            : 'skip';
   }
 
   createNxJsonFile(
@@ -101,14 +88,17 @@ export async function addNxToMonorepo(options: Options) {
   );
 
   updateGitIgnore(repoRoot);
-  addDepsToPackageJson(repoRoot);
+  const packageManager = detectPackageManager(repoRoot);
+  addDepsToPackageJson(repoRoot, packageManager);
 
   output.log({ title: '📦 Installing dependencies' });
-  runInstall(repoRoot);
+  runInstall(repoRoot, packageManager);
 
-  if (useNxCloud) {
+  if (nxCloudChoice === 'yes') {
     output.log({ title: '🛠️ Setting up Nx Cloud' });
-    initCloud(repoRoot, 'nx-init-monorepo');
+    await initCloud('nx-init-monorepo');
+  } else if (nxCloudChoice === 'never') {
+    setNeverConnectToCloud(repoRoot);
   }
 }
 

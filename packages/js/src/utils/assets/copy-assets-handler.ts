@@ -1,12 +1,28 @@
-import { minimatch } from 'minimatch';
+import picomatch = require('picomatch');
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import * as pathPosix from 'node:path/posix';
 import * as path from 'node:path';
-import * as fse from 'fs-extra';
 import ignore from 'ignore';
-import * as fg from 'fast-glob';
+import { globSync } from 'tinyglobby';
 import { AssetGlob } from './assets';
-import { logger } from '@nx/devkit';
-import { ChangedFile, daemonClient } from 'nx/src/daemon/client/client';
+import {
+  normalizeAssets,
+  getAssetOutputPath,
+  NormalizedAssetEntry as AssetEntry,
+} from './normalize-assets';
+import { logger, workspaceRoot } from '@nx/devkit';
+import { ChangedFile, daemonClient } from '@nx/devkit/internal';
+import { dim } from 'picocolors';
+
+export type { AssetEntry };
+export { normalizeAssets, getAssetOutputPath };
 
 export type FileEventType = 'create' | 'update' | 'delete';
 
@@ -22,29 +38,25 @@ interface CopyAssetHandlerOptions {
   outputDir: string;
   assets: (string | AssetGlob)[];
   callback?: (events: FileEvent[]) => void;
-}
-
-interface AssetEntry {
-  isGlob: boolean;
-  pattern: string;
-  ignore: string[] | null;
-  input: string;
-  output: string;
+  includeIgnoredFiles?: boolean;
 }
 
 export const defaultFileEventHandler = (events: FileEvent[]) => {
   const dirs = new Set(events.map((event) => path.dirname(event.dest)));
-  dirs.forEach((d) => fse.ensureDirSync(d));
+  dirs.forEach((d) => mkdirSync(d, { recursive: true }));
   events.forEach((event) => {
     if (event.type === 'create' || event.type === 'update') {
-      if (fse.lstatSync(event.src).isFile()) {
-        fse.copyFileSync(event.src, event.dest);
+      if (lstatSync(event.src).isFile()) {
+        copyFileSync(event.src, event.dest);
       }
     } else if (event.type === 'delete') {
-      fse.removeSync(event.dest);
+      rmSync(event.dest, { recursive: true, force: true });
     } else {
       logger.error(`Unknown file event: ${event.type}`);
     }
+    const eventDir = path.dirname(event.src);
+    const relativeDest = path.relative(eventDir, event.dest);
+    logger.verbose(`\n${dim(relativeDest)}`);
   });
 };
 
@@ -55,52 +67,33 @@ export class CopyAssetsHandler {
   private readonly assetGlobs: AssetEntry[];
   private readonly ignore: ReturnType<typeof ignore>;
   private readonly callback: (events: FileEvent[]) => void;
+  private readonly includeIgnoredFiles: boolean;
 
   constructor(opts: CopyAssetHandlerOptions) {
     this.rootDir = opts.rootDir;
     this.projectDir = opts.projectDir;
     this.outputDir = opts.outputDir;
     this.callback = opts.callback ?? defaultFileEventHandler;
+    this.includeIgnoredFiles = opts.includeIgnoredFiles ?? false;
 
     // TODO(jack): Should handle nested .gitignore files
     this.ignore = ignore();
     const gitignore = pathPosix.join(opts.rootDir, '.gitignore');
     const nxignore = pathPosix.join(opts.rootDir, '.nxignore');
-    if (fse.existsSync(gitignore))
-      this.ignore.add(fse.readFileSync(gitignore).toString());
-    if (fse.existsSync(nxignore))
-      this.ignore.add(fse.readFileSync(nxignore).toString());
 
-    this.assetGlobs = opts.assets.map((f) => {
-      let isGlob = false;
-      let pattern: string;
-      // Input and output directories are normalized to be relative to root
-      let input: string;
-      let output: string;
-      let ignore: string[] | null = null;
-      if (typeof f === 'string') {
-        pattern = f;
-        input = path.relative(opts.rootDir, opts.projectDir);
-        output = path.relative(opts.rootDir, opts.outputDir);
-      } else {
-        isGlob = true;
-        pattern = pathPosix.join(f.input, f.glob);
-        input = f.input;
-        output = pathPosix.join(
-          path.relative(opts.rootDir, opts.outputDir),
-          f.output
-        );
-        if (f.ignore)
-          ignore = f.ignore.map((ig) => pathPosix.join(f.input, ig));
-      }
-      return {
-        isGlob,
-        input,
-        pattern,
-        ignore,
-        output,
-      };
-    });
+    if (existsSync(gitignore)) {
+      this.ignore.add(readFileSync(gitignore).toString());
+    }
+    if (existsSync(nxignore)) {
+      this.ignore.add(readFileSync(nxignore).toString());
+    }
+
+    this.assetGlobs = normalizeAssets(
+      opts.assets,
+      opts.rootDir,
+      opts.projectDir,
+      opts.outputDir
+    );
   }
 
   async processAllAssetsOnce(): Promise<void> {
@@ -108,10 +101,15 @@ export class CopyAssetsHandler {
       this.assetGlobs.map(async (ag) => {
         const pattern = this.normalizeAssetPattern(ag);
 
-        // fast-glob only supports Unix paths
-        const files = await fg(pattern.replace(/\\/g, '/'), {
+        // globbing only supports Unix paths
+        const files = await globSync(pattern.replace(/\\/g, '/'), {
           cwd: this.rootDir,
           dot: true, // enable hidden files
+          expandDirectories: false,
+          // Only ignore node_modules when the pattern doesn't explicitly reference it.
+          // This allows copying generated files from node_modules (e.g., Prisma client)
+          // while avoiding performance issues from scanning all node_modules for other patterns.
+          ignore: this.getIgnorePatternsForAsset(ag),
         });
 
         this.callback(this.filesToEvent(files, ag));
@@ -123,14 +121,29 @@ export class CopyAssetsHandler {
     this.assetGlobs.forEach((ag) => {
       const pattern = this.normalizeAssetPattern(ag);
 
-      // fast-glob only supports Unix paths
-      const files = fg.sync(pattern.replace(/\\/g, '/'), {
+      // globbing only supports Unix paths
+      const files = globSync(pattern.replace(/\\/g, '/'), {
         cwd: this.rootDir,
         dot: true, // enable hidden files
+        expandDirectories: false,
+        ignore: this.getIgnorePatternsForAsset(ag),
       });
 
       this.callback(this.filesToEvent(files, ag));
     });
+  }
+
+  private getIgnorePatternsForAsset(ag: AssetEntry): string[] {
+    // If the asset input path starts with 'node_modules', allow traversing node_modules
+    // for that specific pattern. This enables copying generated files like Prisma client.
+    const inputStartsWithNodeModules =
+      ag.input.startsWith('node_modules/') || ag.input === 'node_modules';
+
+    if (inputStartsWithNodeModules) {
+      return ['**/.git/**'];
+    }
+
+    return ['**/node_modules/**', '**/.git/**'];
   }
 
   async watchAndProcessOnAssetChange(): Promise<() => void> {
@@ -140,8 +153,14 @@ export class CopyAssetsHandler {
         includeGlobalWorkspaceFiles: true,
       },
       (err, data) => {
-        if (err === 'closed') {
-          logger.error(`Watch error: Daemon closed the connection`);
+        if (err === 'reconnecting') {
+          // Silent - daemon restarts automatically on lockfile changes
+          return;
+        } else if (err === 'reconnected') {
+          // Silent - reconnection succeeded
+          return;
+        } else if (err === 'closed') {
+          logger.error(`Failed to reconnect to daemon after multiple attempts`);
           process.exit(1);
         } else if (err) {
           logger.error(`Watch error: ${err?.message ?? 'Unknown'}`);
@@ -155,14 +174,21 @@ export class CopyAssetsHandler {
   }
 
   async processWatchEvents(events: ChangedFile[]): Promise<void> {
+    if (events.length === 0) return;
+
     const fileEvents: FileEvent[] = [];
+
     for (const event of events) {
-      const pathFromRoot = path.relative(this.rootDir, event.path);
+      const pathFromRoot = event.path.startsWith(this.rootDir)
+        ? path.relative(this.rootDir, event.path)
+        : event.path;
+
       for (const ag of this.assetGlobs) {
         if (
-          minimatch(pathFromRoot, ag.pattern) &&
-          !ag.ignore?.some((ig) => minimatch(pathFromRoot, ig)) &&
-          !this.ignore.ignores(pathFromRoot)
+          picomatch(ag.pattern)(pathFromRoot) &&
+          !ag.ignore?.some((ig) => picomatch(ig)(pathFromRoot)) &&
+          ((ag.includeIgnoredFiles ?? this.includeIgnoredFiles) ||
+            !this.ignore.ignores(pathFromRoot))
         ) {
           const relPath = path.relative(ag.input, pathFromRoot);
           const destPath = relPath.startsWith('..') ? pathFromRoot : relPath;
@@ -183,15 +209,14 @@ export class CopyAssetsHandler {
   private filesToEvent(files: string[], assetGlob: AssetEntry): FileEvent[] {
     return files.reduce((acc, src) => {
       if (
-        !assetGlob.ignore?.some((ig) => minimatch(src, ig)) &&
-        !this.ignore.ignores(src)
+        !assetGlob.ignore?.some((ig) => picomatch(ig)(src)) &&
+        ((assetGlob.includeIgnoredFiles ?? this.includeIgnoredFiles) ||
+          !this.ignore.ignores(src))
       ) {
-        const relPath = path.relative(assetGlob.input, src);
-        const dest = relPath.startsWith('..') ? src : relPath;
         acc.push({
           type: 'create',
           src: path.join(this.rootDir, src),
-          dest: path.join(this.rootDir, assetGlob.output, dest),
+          dest: path.join(this.rootDir, getAssetOutputPath(src, assetGlob)),
         });
       }
       return acc;

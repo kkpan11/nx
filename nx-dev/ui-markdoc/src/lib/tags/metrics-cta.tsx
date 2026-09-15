@@ -1,0 +1,31 @@
+'use client';
+
+/* this is a separate component s.t. it can be client-side only to avoid hydration errors*/
+
+import { ButtonLink } from '@nx/nx-dev-ui-common';
+import { sendCustomEventViaGtm } from '@nx/nx-dev-feature-analytics';
+
+export function MetricsCTA() {
+  return (
+    <div className="not-prose flex flex-col space-y-3">
+      <h3 className="text-lg font-semibold text-zinc-900 dark:text-white">
+        Ready to get started?
+      </h3>
+      <ButtonLink
+        href="/contact/sales"
+        title="Reach out"
+        variant="contrast"
+        size="default"
+        onClick={() =>
+          sendCustomEventViaGtm(
+            'contact-sales-click',
+            'metrics-cta-customer-success',
+            'blog'
+          )
+        }
+      >
+        Reach out
+      </ButtonLink>
+    </div>
+  );
+}

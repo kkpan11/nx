@@ -1,7 +1,83 @@
 import { Tree, updateJson, writeJson } from '@nx/devkit';
-import * as shared from '@nx/js/src/utils/typescript/create-ts-config';
+import * as shared from '@nx/js';
+import {
+  getTsConfigBaseOptions,
+  isUsingTsSolutionSetup,
+} from '@nx/js/internal';
 
 export function createTsConfig(
+  host: Tree,
+  projectRoot: string,
+  type: 'app' | 'lib',
+  options: {
+    strict?: boolean;
+    style?: string;
+    bundler?: string;
+    rootProject?: boolean;
+    unitTestRunner?: string;
+  },
+  relativePathToRootTsConfig: string
+) {
+  if (isUsingTsSolutionSetup(host)) {
+    createTsConfigForTsSolution(
+      host,
+      projectRoot,
+      type,
+      options,
+      relativePathToRootTsConfig
+    );
+  } else {
+    createTsConfigForNonTsSolution(
+      host,
+      projectRoot,
+      type,
+      options,
+      relativePathToRootTsConfig
+    );
+  }
+}
+
+export function createTsConfigForTsSolution(
+  host: Tree,
+  projectRoot: string,
+  type: 'app' | 'lib',
+  options: {
+    strict?: boolean;
+    style?: string;
+    rootProject?: boolean;
+    unitTestRunner?: string;
+  },
+  relativePathToRootTsConfig: string
+) {
+  const json = {
+    extends: relativePathToRootTsConfig,
+    files: [],
+    include: [],
+    references: [
+      {
+        path: type === 'app' ? './tsconfig.app.json' : './tsconfig.lib.json',
+      },
+    ],
+  } as any;
+
+  writeJson(host, `${projectRoot}/tsconfig.json`, json);
+
+  const tsconfigProjectPath = `${projectRoot}/tsconfig.${type}.json`;
+  if (host.exists(tsconfigProjectPath)) {
+    updateJson(host, tsconfigProjectPath, (json) => {
+      json.compilerOptions ??= {};
+
+      const types = new Set(json.compilerOptions.types ?? []);
+      types.add('vite/client');
+
+      json.compilerOptions.types = Array.from(types);
+
+      return json;
+    });
+  }
+}
+
+export function createTsConfigForNonTsSolution(
   host: Tree,
   projectRoot: string,
   type: 'app' | 'lib',
@@ -16,12 +92,11 @@ export function createTsConfig(
   const json = {
     compilerOptions: {
       allowJs: true,
-      esModuleInterop: false,
       allowSyntheticDefaultImports: true,
       strict: options.strict,
       jsx: 'preserve',
       jsxImportSource: 'vue',
-      moduleResolution: 'node',
+      moduleResolution: 'bundler',
       resolveJsonModule: true,
     },
     files: [],
@@ -43,7 +118,7 @@ export function createTsConfig(
   if (options.rootProject) {
     json.compileOnSave = false;
     json.compilerOptions = {
-      ...shared.tsConfigBaseOptions,
+      ...getTsConfigBaseOptions(host),
       ...json.compilerOptions,
     };
     json.exclude = ['node_modules', 'tmp'];

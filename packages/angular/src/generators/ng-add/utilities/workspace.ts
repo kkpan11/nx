@@ -10,19 +10,18 @@ import {
   writeJson,
 } from '@nx/devkit';
 import { lintInitGenerator } from '@nx/eslint';
-import { setupRootEsLint } from '@nx/eslint/src/generators/lint-project/setup-root-eslint';
+import { setupRootEsLint } from '@nx/eslint/internal';
 import {
   getRootTsConfigPathInTree,
   initGenerator as jsInitGenerator,
 } from '@nx/js';
-import { deduceDefaultBase } from 'nx/src/utils/default-base';
-import { prettierVersion } from '@nx/js/src/utils/versions';
-import { toNewFormat } from 'nx/src/adapter/angular-json';
+import { prettierVersion } from '@nx/js/internal';
 import { angularDevkitVersion, nxVersion } from '../../../utils/versions';
 import type { ProjectMigrator } from '../migrators';
 import type { GeneratorOptions } from '../schema';
 import type { WorkspaceRootFileTypesInfo } from './types';
 import { join } from 'path';
+import { deduceDefaultBase, toNewFormat } from '@nx/devkit/internal';
 
 export function validateWorkspace(tree: Tree): void {
   const errors: string[] = [];
@@ -64,7 +63,10 @@ export function createNxJson(
             ]
           : []),
         ...(targets.lint
-          ? ['!{projectRoot}/.eslintrc.json', '!{projectRoot}/eslint.config.js']
+          ? [
+              '!{projectRoot}/.eslintrc.json',
+              '!{projectRoot}/eslint.config.cjs',
+            ]
           : []),
       ].filter(Boolean),
     },
@@ -85,7 +87,7 @@ export function createNxJson(
             inputs: [
               'default',
               '{workspaceRoot}/.eslintrc.json',
-              '{workspaceRoot}/eslint.config.js',
+              '{workspaceRoot}/eslint.config.cjs',
             ],
             cache: true,
           }
@@ -140,7 +142,6 @@ export function updateWorkspaceConfigDefaults(tree: Tree): void {
 export function updateRootTsConfig(tree: Tree): void {
   const tsconfig = readJson(tree, getRootTsConfigPathInTree(tree));
   tsconfig.compilerOptions.paths ??= {};
-  tsconfig.compilerOptions.baseUrl = '.';
   tsconfig.compilerOptions.rootDir = '.';
   tsconfig.exclude = Array.from(
     new Set([...(tsconfig.exclude ?? []), 'node_modules', 'tmp'])

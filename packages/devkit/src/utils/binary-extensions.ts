@@ -189,6 +189,7 @@ const binaryExtensions = new Set([
   '.resources',
   '.rgb',
   '.rip',
+  '.riv',
   '.rlc',
   '.rmf',
   '.rmvb',
@@ -272,6 +273,7 @@ const binaryExtensions = new Set([
   '.zipx',
 ]);
 
+// TODO(v24): use the version from nx/src/utils
 export function isBinaryPath(path: string): boolean {
   return binaryExtensions.has(extname(path).toLowerCase());
 }

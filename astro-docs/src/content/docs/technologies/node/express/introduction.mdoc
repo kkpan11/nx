@@ -1,0 +1,57 @@
+---
+title: Nx with Express
+description: Nx scales your Express monorepo with caching, distributed task execution, and affected-only builds.
+sidebar:
+  label: Introduction
+weight: 2
+filter: 'type:References'
+---
+
+[Express](https://expressjs.com/) is a mature, minimal, and an open source web framework for making web applications and
+apis. Nx scales your Express monorepo, so you can grow your APIs and shared libraries
+without losing fast, reliable builds.
+
+## Requirements
+
+The `@nx/express` plugin supports the following package versions.
+
+| Package   | Supported Versions |
+| --------- | ------------------ |
+| `express` | ^4.0.0 \|\| ^5.0.0 |
+
+[Nx generators](/docs/features/generate-code) install the latest supported versions automatically when scaffolding new projects.
+
+## Create a new workspace
+
+Start from the [Express template](/docs/templates/express-api) to scaffold a ready-to-run Express API:
+
+```shell
+npx create-nx-workspace@latest my-workspace --template nrwl/express-api-template
+```
+
+## Setting up @nx/express
+
+### Installation
+
+{% aside type="note" title="Keep Nx Package Versions In Sync" %}
+Make sure to install the `@nx/express` version that matches the version of `nx` in your repository. If the version numbers get out of sync, you can encounter some difficult to debug errors. You can [fix Nx version mismatches with this recipe](/docs/kb/keep-nx-versions-in-sync).
+{% /aside %}
+
+In any Nx workspace, you can install `@nx/express` by running the following command:
+
+```shell
+nx add @nx/express
+```
+
+This will install the correct version of `@nx/express`.
+
+## Guides
+
+- [Set Up Application Proxies](/docs/kb/application-proxies)
+- [Wait For Tasks To Finish](/docs/kb/wait-for-tasks)
+
+## Set up CI for your Express monorepo
+
+In CI, Nx runs [`nx affected`](/docs/features/ci-features/affected) to rebuild and retest only the projects a change touches, and [caches](/docs/features/cache-task-results) results to skip repeated work.
+
+For a complete pipeline, see [Set up CI](/docs/getting-started/setup-ci).

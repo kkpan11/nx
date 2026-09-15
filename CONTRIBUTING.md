@@ -2,19 +2,10 @@
 
 We would love for you to contribute to Nx! Read this document to see how to do it.
 
-## How to Get Started Video
-
-Watch this 5-minute video:
-
-<a href="https://www.youtube.com/watch?v=8LCA_4qxc08" target="_blank" rel="noreferrer">
-<p style="text-align: center;"><img src="https://raw.githubusercontent.com/nrwl/nx/master/images/how-to-contribute.png" width="600" alt="Nx - How to contribute"></p>
-</a>
-
 ## Got a Question?
 
-We are trying to keep GitHub issues for bug reports and feature requests. Using the `nrwl` tag
-on [Stack Overflow](https://stackoverflow.com/questions/tagged/nrwl) is a much better place to ask general questions
-about how to use Nx.
+We are trying to keep GitHub issues for bug reports and feature requests.
+You can join our [Discord](https://go.nx.dev/community) for general questions and seeking help from others.
 
 ## Found an Issue?
 
@@ -27,15 +18,43 @@ can [submit a Pull Request](https://github.com/nrwl/nx/blob/master/CONTRIBUTING.
 
 Source code and documentation are included in the top-level folders listed below.
 
-- `docs` - Markdown and configuration files for documentation including tutorials, guides for each supported platform,
-  and API docs.
-- `e2e` - E2E tests.
 - `packages` - Source code for Nx packages such as Angular, React, Web, NestJS, Next and others including generators and
   executors (or builders).
+- `e2e` - E2E tests for the Nx packages
+- `graph` - Source code for the Nx Graph application which shows the project graph, task graph, project details, and more in the browser.
+- `docs` - Markdown and configuration files for documentation including tutorials, guides for each supported platform,
+  and API docs.
+- `nx-dev` - Source code for the Nx documentation site which displays the markdown in `docs` and more.
+- `tools` - Workspace-specific tooling and plugins
 - `scripts` - Miscellaneous scripts for project tasks such as building documentation, testing, and code formatting.
 - `tmp` - Folder used by e2e tests. If you are a WebStorm user, make sure to mark this folder as excluded.
 
+## Technologies
+
+This repo contains a mix of different technologies, including:
+
+- **Rust**: The core of Nx is written in Rust, which provides performance and safety.
+- **TypeScript**: The primary language for Nx packages and the Nx DevKit.
+- **Kotlin**: Used for the Gradle and Java plugins.
+
 ## Development Workstation Setup
+
+For local development with [mise](https://mise.jdx.dev/), install the tools declared in `mise.toml`:
+
+```bash
+mise install
+```
+
+Activate mise in your shell, or prefix commands with `mise exec --`. The configuration keeps Java 24 as the default runtime and installs Temurin JDK 17 for Gradle compilation. Mise sets `JAVA17_HOME`, which `gradle.properties` uses to discover that compiler toolchain. Gradle's automatic JDK downloads are disabled, so installing Java 24 alone is insufficient.
+
+To verify toolchain discovery and start the documentation site with its build dependencies:
+
+```bash
+mise exec -- pnpm nx run ':gradle-batch-runner:gradle:javaToolchains' --skipNxCache
+mise exec -- pnpm nx serve astro-docs
+```
+
+The toolchain report should list JDK 17 as detected through `JAVA17_HOME` and Java 24 as the current JVM. With mise activated, you can run the same `pnpm nx` commands directly.
 
 If you are using `VSCode`, and provided you have [Docker](https://docker.com) installed on your machine, then you can leverage [Dev Containers](https://containers.dev) through this [VSCode extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers), to easily setup your development environment, with everything needed to contribute to Nx, already installed (namely `NodeJS`, `Yarn`, `Rust`, `Cargo`, plus some useful extensions like `Nx Console`).
 
@@ -49,15 +68,33 @@ The repo comes with a preconfigured `devcontainer.json` file (located in `.devco
 
 If you open the repo in [Github Codespace](https://github.com/features/codespaces), it will also leverage this config file, to setup the codespace, with the same required tools.
 
+> 💡 **Troubleshooting**
+>
+> If you are having issues when running Nx commands like `build`, `test`... related to the version of `GLIBC`,
+> it probably means the version that is installed on the devcontainer, **is outdated** compare to the minimum version required by Nx tools.
+>
+> You can check currently installed version by running the following command, in a terminal within the container:
+>
+> `ldd --version`
+>
+> Then, try updating the base image used in [devcontainer.json](.devcontainer/devcontainer.json) and rebuild it, to see if it solved the issue.
+>
+> Current base image is `"mcr.microsoft.com/devcontainers/typescript-node:20-bookworm"` which is based on `Debian-12 (bookworm)`,
+> which comes with `GLIBC v2.36` pre-installed (Nx tools currenlty requires `GLIBC v2.33` or higher).
+
 ## Building the Project
 
-> Nx uses Rust to build native bindings for Node. Please make sure that you have Rust installed via [rustup.rs](https://rustup.rs)
-> If you have VSCode + Docker, this can be automated for you, see [section](#development-workstation-setup) above
+> 💡 Nx uses `Rust` to build native bindings for Node. Please make sure that you have Rust installed via [rustup.rs](https://rustup.rs)
+> If you have `VSCode` + `Docker`, this can be automated for you, see [section](#development-workstation-setup) above
 
 After cloning the project to your machine, to install the dependencies, run:
 
 ```bash
-pnpm i
+pnpm install
+
+// or prefer...
+
+pnpm install --frozen-lockfile // if you haven't changed any dependency
 ```
 
 To build all the packages, run:
@@ -165,76 +202,73 @@ To build Nx on Windows, you need to use WSL.
 ## Documentation Contributions
 
 We would love for you to contribute to our documentation as well! Please feel welcome to submit fixes or enhancements to
-our existing documentation pages and the `nx-dev` application in this repo.
+our existing documentation pages, `astro-docs` and the `nx-dev` application in this repo.
 
 ### Documentation Structure
 
 #### Documentation Pages
 
-Our documentation pages can be found within this repo under the `docs` directory.
+Our documentation pages can be found within this repo under the `astro-docs/src/content/docs` directory.
 
-The `docs/map.json` file is considered our source of truth for our site's structure, and should be updated when adding a
-new page to our documentation to ensure that it is included in the documentation site. We also run automated scripts
-based on this `map.json` data to safeguard against common human errors that could break our site.
+Documentation is written in `.mdoc` (Markdoc) or `.mdx` (MDX) format and supports custom Markdoc tags for rich content
+such as videos, graphs, interactive components, and more. See the `astro-docs/README.md` for a full list of available
+custom tags and their usage.
 
-When you make a change to the `map.json` file, make sure to run `pnpm documentation` to propagate your changes to the `nx-dev` application.
+The sidebar structure is defined in `astro-docs/sidebar.mts` and should be updated when adding new sections or pages
+to ensure proper navigation.
+
+#### Astro-Docs Application
+
+Our public `nx.dev/docs` documentation site is built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build),
+and can be found in the `astro-docs` directory of this repo. See [docs README for more details](./astro-docs/README.md)
 
 #### Nx-Dev Application
 
-Our public `nx.dev` documentation site is a [Next.js](https://nextjs.org/) application, that can be found in
-the `nx-dev` directory of this repo.
-The documentation site is consuming the `docs/` directly by copy-ing its content while deploying, so the website is
-always in sync and reflects the latest version of `docs/`.
+The `nx-dev` directory contains a [Next.js](https://nextjs.org/) application used for blog posts and landing pages.
 
 Jump to [Running the Documentation Site Locally](#running-the-documentation-site-locally) to see how to preview your
 changes while serving.
 
 ### Changing Generated API documentation
 
-`.md` files documenting the API for our CLI (including executor and generator API docs) are generated via the
-corresponding `schema.json` file for the given command.
+API documentation for CLI commands, executors, and generators is automatically generated during the build process from
+the corresponding `schema.json` files in each package.
 
-After adjusting the `schema.json` file, `.md` files for these commands can be generated by running:
+The documentation is generated using content loaders in the `astro-docs` application and requires a rebuild to reflect
+changes. After adjusting a `schema.json` file:
 
-```bash
-pnpm documentation
-```
-
-This will update the corresponding contents of the `docs` directory. These are generated automatically on push (via
-husky) as well.
+1. Restart the development server with `nx serve astro-docs` to see the changes
+2. Or run `nx preview astro-docs` to view the built site locally
 
 Note that adjusting the `schema.json` files will also affect the CLI manuals and Nx Console behavior, in addition to
-adjusting the docs.
+the generated documentation.
 
 ### Running the Documentation Site Locally
 
-To run `nx-dev` locally, run the command:
+To run the documentation site locally, run the command:
 
-```bash
-npx nx serve-docs nx-dev
+```shell
+nx serve astro-docs
 ```
 
-You can then access the application locally at `localhost:4200`. Changes to markdown documentation files will be automatically applied to the site when you refresh the browser.
+You can then access the application locally at `localhost:4321`. Changes to markdoc files should reflect automatically in the browser on save.
 
-#### Troubleshooting: `JavaScript heap out of memory`
+#### Working with Plugin Registry
 
-If you see an error that states: `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory`,
-you need
-to [increase the max memory size of V8's old memory section](https://nodejs.org/api/cli.html#--max-old-space-sizesize-in-megabytes):
+To view plugin registry statistics (GitHub stars, npm downloads, etc.) during local development:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=4096"
+NX_DOCS_PLUGIN_STATS=true nx serve astro-docs
 ```
 
-After configuring this, try to run `npx nx serve nx-dev` again.
+Note: Plugin stats are disabled by default in development to improve performance.
 
 ### PR Preview
 
-When submitting a PR, this repo will automatically generate a preview of the `nx-dev` application based on the contents
+When submitting a PR, this repo will automatically generate a preview of the documentation site based on the contents
 of your pull request.
 
-Once the preview site is launched, a comment will automatically be added to your PR with the link your PR's preview. To
-check your docs changes, make sure to select `Preview` from the version selection box of the site.
+Once the preview site is launched, a comment will automatically be added to your PR with the link to your PR's preview.
 
 ## Submission Guidelines
 
@@ -269,6 +303,8 @@ Please follow the following guidelines:
   - Target a specific project with: `nx run proj:test` (i.e. `nx run angular:test` to target `packages/angular`)
   - Target a specific unit test file (i.e. `packages/angular/src/utils/ast-command-line-utils.spec.ts`)
     with `npx jest angular/src/utils/ast-utils` or `npx jest packages/angular/src/utils/ast-utils`
+  - `packages/nx` runs on vitest instead: target a file with
+    `nx run nx:test -- src/utils/formatters/oxfmt.spec.ts` (paths relative to `packages/nx`)
   - For more options on running tests - check `npx jest --help` or visit [jestjs.io](https://jestjs.io/)
   - Debug with `node --inspect-brk ./node_modules/jest/bin/jest.js build/packages/angular/src/utils/ast-utils.spec.js`
 - Make sure e2e tests pass (this can take a while, so you can always let CI check those) (`nx affected --target=e2e`)
@@ -315,6 +351,7 @@ The scope must be one of the following:
 - express - anything Express specific
 - js - anything related to @nx/js package or general js/ts support
 - linter - anything Linter specific
+- module-federation - anything Nx Module Federation specific
 - nest - anything Nest specific
 - nextjs - anything Next specific
 - node - anything Node specific
@@ -345,7 +382,7 @@ Including the issue number that the PR relates to also helps with tracking.
 ```plain
 feat(angular): add an option to generate lazy-loadable modules
 
-`nx generate lib mylib --lazy` provisions the mylib project in .eslintrc.json
+`nx generate lib libs/mylib --lazy` provisions the mylib project in .eslintrc.json
 
 Closes #157
 ```
@@ -355,6 +392,57 @@ Closes #157
 To simplify and automate the process of committing with this format,
 **Nx is a [Commitizen](https://github.com/commitizen/cz-cli) friendly repository**, just do `git add` and
 execute `pnpm commit`.
+
+##### Using the Interactive Commit Tool
+
+Instead of `git commit`, use:
+
+```bash
+pnpm commit
+```
+
+This will launch an interactive prompt that will:
+
+1. Ask you to select the type of change (feat, fix, docs, cleanup, chore)
+2. Let you choose the appropriate scope from the predefined list
+3. Guide you through writing a clear, descriptive commit message
+4. Ensure your commit follows the conventional commit format
+
+##### Available Commit Types
+
+- **feat**: A new feature
+- **fix**: A bug fix
+- **docs**: Documentation only changes
+- **cleanup**: A code change that neither fixes a bug nor adds a feature
+- **chore**: Other changes that don't modify src or test files
+
+##### Available Scopes
+
+The repository includes many predefined scopes. Use the one which is most specific to the changes being committed
+
+- **core**: anything Nx core specific
+- **angular**: anything Angular specific
+- **react**: anything React specific
+- **nextjs**: anything Next specific
+- **node**: anything Node specific
+- **devkit**: devkit-related changes
+- **graph**: anything graph app specific
+- **testing**: anything testing specific (e.g. jest or cypress)
+- **misc**: misc stuff
+- **repo**: anything related to managing the repo itself
+- **nx-dev**: anything related to docs infrastructure
+
+For the complete list of available scopes, see `/scripts/commitizen.js`.
+
+##### Example Commits
+
+```bash
+feat(core): add new project graph visualization
+fix(angular): resolve build issues with standalone components
+docs(misc): update contributing guidelines
+chore(repo): bump dependencies
+cleanup(devkit): refactor utility functions for better readability
+```
 
 #### PR releases
 

@@ -7,10 +7,6 @@ import {
 import { splitByColons, splitTarget } from 'nx/src/devkit-internals';
 
 /**
- * @deprecated(v17) A project graph should be passed to parseTargetString for best accuracy.
- */
-export function parseTargetString(targetString: string): Target;
-/**
  * Parses a target string into {project, target, configuration}
  *
  * Examples:
@@ -44,7 +40,7 @@ export function parseTargetString(
   targetString: string,
   projectGraphOrCtx?: ProjectGraph | ExecutorContext
 ): Target {
-  let projectGraph =
+  let projectGraph: ProjectGraph =
     projectGraphOrCtx && 'projectGraph' in projectGraphOrCtx
       ? projectGraphOrCtx.projectGraph
       : (projectGraphOrCtx as ProjectGraph);
@@ -67,9 +63,15 @@ export function parseTargetString(
     targetString = `${projectGraphOrCtx.projectName}:${targetString}`;
   }
 
+  const currentProject =
+    projectGraphOrCtx && 'projectName' in projectGraphOrCtx
+      ? projectGraphOrCtx.projectName
+      : undefined;
+
   const [project, target, configuration] = splitTarget(
     targetString,
-    projectGraph
+    projectGraph,
+    { currentProject }
   );
 
   if (!project || !target) {

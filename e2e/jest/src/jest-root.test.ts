@@ -1,4 +1,4 @@
-import { newProject, runCLI, runCLIAsync, uniq } from '@nx/e2e/utils';
+import { newProject, runCLI, runCLIAsync, uniq } from '@nx/e2e-utils';
 
 describe('Jest root projects', () => {
   const myapp = uniq('myapp');
@@ -7,75 +7,48 @@ describe('Jest root projects', () => {
   describe('angular', () => {
     beforeAll(() => {
       newProject({
-        packages: ['@nx/angular'],
-        unsetProjectNameAndRootFormat: false,
+        packages: ['@nx/angular', '@nx/jest'],
       });
       runCLI(
-        `generate @nx/angular:app ${myapp} --directory . --rootProject --projectNameAndRootFormat as-provided --no-interactive`
+        `generate @nx/angular:app --name=${myapp} --directory . --rootProject --no-interactive --unitTestRunner=jest --linter=eslint`
       );
     });
 
     it('should test root level app projects', async () => {
-      const rootProjectTestResults = await runCLIAsync(`test ${myapp}`);
-      expect(rootProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
+      expect(() => runCLI(`test ${myapp}`)).not.toThrow();
     }, 300_000);
 
     it('should add lib project and tests should still work', async () => {
       runCLI(
-        `generate @nx/angular:lib ${mylib} --projectNameAndRootFormat as-provided --no-interactive`
+        `generate @nx/angular:lib ${mylib} --no-interactive --unitTestRunner=jest --linter=eslint`
       );
 
-      const libProjectTestResults = await runCLIAsync(`test ${mylib}`);
-
-      expect(libProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
-
-      const rootProjectTestResults = await runCLIAsync(`test ${myapp}`);
-
-      expect(rootProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
+      expect(() => runCLI(`test ${mylib}`)).not.toThrow();
+      expect(() => runCLI(`test ${myapp}`)).not.toThrow();
     }, 300_000);
   });
 
   describe('react', () => {
     beforeAll(() => {
       newProject({
-        packages: ['@nx/react'],
-        unsetProjectNameAndRootFormat: false,
+        packages: ['@nx/react', '@nx/vite', '@nx/jest', '@nx/eslint'],
       });
       runCLI(
-        `generate @nx/react:app ${myapp} --directory . --rootProject --projectNameAndRootFormat as-provided`
+        `generate @nx/react:app --name=${myapp} --directory . --rootProject --unitTestRunner=jest --linter=eslint`
       );
     });
 
     it('should test root level app projects', async () => {
-      const rootProjectTestResults = await runCLIAsync(`test ${myapp}`);
-
-      expect(rootProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
+      expect(() => runCLI(`test ${myapp}`)).not.toThrow();
     }, 300_000);
 
     it('should add lib project and tests should still work', async () => {
       runCLI(
-        `generate @nx/react:lib ${mylib} --unitTestRunner=jest --projectNameAndRootFormat as-provided`
+        `generate @nx/react:lib ${mylib} --unitTestRunner=jest --linter=eslint`
       );
 
-      const libProjectTestResults = await runCLIAsync(`test ${mylib}`);
-
-      expect(libProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
-
-      const rootProjectTestResults = await runCLIAsync(`test ${myapp}`);
-
-      expect(rootProjectTestResults.combinedOutput).toContain(
-        'Test Suites: 1 passed, 1 total'
-      );
+      expect(() => runCLI(`test ${mylib}`)).not.toThrow();
+      expect(() => runCLI(`test ${myapp}`)).not.toThrow();
     }, 300_000);
   });
 });

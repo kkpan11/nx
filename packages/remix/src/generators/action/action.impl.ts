@@ -2,14 +2,13 @@ import { formatFiles, Tree } from '@nx/devkit';
 import { insertImport } from '../../utils/insert-import';
 import { insertStatementAfterImports } from '../../utils/insert-statement-after-imports';
 import { insertStatementInDefaultFunction } from '../../utils/insert-statement-in-default-function';
-import { resolveRemixRouteFile } from '../../utils/remix-route-utils';
 import { LoaderSchema } from './schema';
+import { assertSupportedRemixVersion } from '../../utils/versions';
 
 export default async function (tree: Tree, schema: LoaderSchema) {
-  const routeFilePath =
-    schema.nameAndDirectoryFormat === 'as-provided'
-      ? schema.path
-      : await resolveRemixRouteFile(tree, schema.path, schema.project);
+  assertSupportedRemixVersion(tree);
+
+  const routeFilePath = schema.path;
 
   if (!tree.exists(routeFilePath)) {
     throw new Error(
@@ -41,7 +40,6 @@ export default async function (tree: Tree, schema: LoaderSchema) {
   try {
     insertStatementInDefaultFunction(tree, routeFilePath, statement);
   } catch (err) {
-    // eslint-disable-next-line no-empty
   } finally {
     await formatFiles(tree);
   }

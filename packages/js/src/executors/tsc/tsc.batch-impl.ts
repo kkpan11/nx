@@ -6,8 +6,6 @@ import {
   TaskGraph,
 } from '@nx/devkit';
 import { rmSync } from 'fs';
-import type { BatchExecutorTaskResult } from 'nx/src/config/misc-interfaces';
-import { getLastValueFromAsyncIterableIterator } from 'nx/src/utils/async-iterator';
 import { updatePackageJson } from '../../utils/package-json/update-package-json';
 import type { ExecutorOptions } from '../../utils/schema';
 import { determineModuleFormatFromTsConfig } from './tsc.impl';
@@ -27,6 +25,10 @@ import {
   watchTaskProjectsPackageJsonFileChanges,
 } from './lib/batch';
 import { createEntryPoints } from '../../utils/package-json/create-entry-points';
+import {
+  type BatchExecutorTaskResult,
+  getLastValueFromAsyncIterableIterator,
+} from '@nx/devkit/internal';
 
 export async function* tscBatchExecutor(
   taskGraph: TaskGraph,
@@ -96,9 +98,6 @@ export async function* tscBatchExecutor(
             context.root
           ),
           format: [determineModuleFormatFromTsConfig(tsConfig)],
-          // As long as d.ts files match their .js counterparts, we don't need to emit them.
-          // TSC can match them correctly based on file names.
-          skipTypings: true,
         },
         taskInfo.context,
         taskInfo.projectGraphNode,
@@ -144,9 +143,6 @@ export async function* tscBatchExecutor(
                   context.root
                 ),
                 format: [determineModuleFormatFromTsConfig(t.options.tsConfig)],
-                // As long as d.ts files match their .js counterparts, we don't need to emit them.
-                // TSC can match them correctly based on file names.
-                skipTypings: true,
               },
               t.context,
               t.projectGraphNode,
@@ -264,14 +260,17 @@ function createTypescriptCompilationContext(
   context: ExecutorContext
 ): Record<string, TypescriptProjectContext> {
   const tsCompilationContext: Record<string, TypescriptProjectContext> =
-    Object.entries(tsConfigTaskInfoMap).reduce((acc, [tsConfig, taskInfo]) => {
-      acc[tsConfig] = {
-        project: taskInfo.context.projectName,
-        tsConfig: taskInfo.tsConfig,
-        transformers: taskInfo.options.transformers,
-      };
-      return acc;
-    }, {} as Record<string, TypescriptProjectContext>);
+    Object.entries(tsConfigTaskInfoMap).reduce(
+      (acc, [tsConfig, taskInfo]) => {
+        acc[tsConfig] = {
+          project: taskInfo.context.projectName,
+          tsConfig: taskInfo.tsConfig,
+          transformers: taskInfo.options.transformers,
+        };
+        return acc;
+      },
+      {} as Record<string, TypescriptProjectContext>
+    );
 
   Object.entries(taskInMemoryTsConfigMap).forEach(([task, tsConfig]) => {
     if (!tsCompilationContext[tsConfig.path]) {

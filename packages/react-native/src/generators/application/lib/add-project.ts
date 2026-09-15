@@ -1,11 +1,16 @@
 import {
   addProjectConfiguration,
+  joinPathFragments,
   ProjectConfiguration,
+  readJson,
   readNxJson,
   TargetConfiguration,
   Tree,
+  writeJson,
 } from '@nx/devkit';
 import { NormalizedSchema } from './normalize-options';
+import { warnReactNativeExecutorGenerating } from '../../../utils/deprecation';
+import { type PackageJson } from '@nx/devkit/internal';
 
 export function addProject(host: Tree, options: NormalizedSchema) {
   const nxJson = readNxJson(host);
@@ -15,6 +20,10 @@ export function addProject(host: Tree, options: NormalizedSchema) {
       : p.plugin === '@nx/react-native/plugin'
   );
 
+  if (!hasPlugin) {
+    warnReactNativeExecutorGenerating();
+  }
+
   const project: ProjectConfiguration = {
     root: options.appProjectRoot,
     sourceRoot: `${options.appProjectRoot}/src`,
@@ -23,9 +32,43 @@ export function addProject(host: Tree, options: NormalizedSchema) {
     tags: options.parsedTags,
   };
 
-  addProjectConfiguration(host, options.projectName, {
-    ...project,
-  });
+  const templatedPackageJson = readJson(
+    host,
+    joinPathFragments(options.appProjectRoot, 'package.json')
+  );
+
+  const packageJson: PackageJson = {
+    ...templatedPackageJson,
+    name: options.importPath,
+    version: '0.0.1',
+    private: true,
+  };
+
+  if (!options.useProjectJson) {
+    if (options.projectName !== options.importPath) {
+      packageJson.nx = { name: options.projectName };
+    }
+    if (!hasPlugin) {
+      packageJson.nx ??= {};
+      packageJson.nx.targets = getTargets(options);
+    }
+    if (options.parsedTags?.length) {
+      packageJson.nx ??= {};
+      packageJson.nx.tags = options.parsedTags;
+    }
+  } else {
+    addProjectConfiguration(host, options.projectName, {
+      ...project,
+    });
+  }
+
+  if (!options.useProjectJson || options.isTsSolutionSetup) {
+    writeJson(
+      host,
+      joinPathFragments(options.appProjectRoot, 'package.json'),
+      packageJson
+    );
+  }
 }
 
 function getTargets(options: NormalizedSchema) {

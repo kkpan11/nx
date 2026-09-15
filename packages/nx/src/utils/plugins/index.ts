@@ -1,10 +1,9 @@
-export { fetchCommunityPlugins } from './community-plugins';
-export { fetchCorePlugins, listCorePlugins } from './core-plugins';
+export { getInstalledPluginsAndCapabilities } from './installed-plugins';
+export { getLocalWorkspacePlugins } from './local-plugins';
 export {
-  getInstalledPluginsAndCapabilities,
-  listInstalledPlugins,
-} from './installed-plugins';
-export {
-  getPluginCapabilities,
+  listPlugins,
+  listAlsoAvailableCorePlugins,
   listPluginCapabilities,
-} from './plugin-capabilities';
+} from './output';
+export { getPluginCapabilities } from './plugin-capabilities';
+export { deriveGroupNameFromTarget } from './atomizer-utils';

@@ -1,11 +1,14 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc",
-    "module": "commonjs",
-    "types": ["jest", "node"]
+    "isolatedModules": true,
+    "outDir": "out-tsc/spec",
+    "types": ["jest", "node"],
+    "rootDir": "."
   },
+  "exclude": ["out-tsc"],
   "include": [
+    "src/utils.ts",
     "**/*.test.ts",
     "**/*.spec.ts",
     "**/*.spec.tsx",

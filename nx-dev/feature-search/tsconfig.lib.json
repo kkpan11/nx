@@ -1,9 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc",
+    "outDir": "dist",
     "types": ["node"],
-    "lib": ["dom"]
+    "lib": ["dom", "es2021"],
+    "composite": true,
+    "declaration": true,
+    "rootDir": "."
   },
   "files": [
     "../../node_modules/@nx/react/typings/cssmodule.d.ts",

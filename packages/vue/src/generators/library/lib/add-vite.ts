@@ -18,7 +18,7 @@ export async function addVite(
       ensurePackage<typeof import('@nx/vite')>('@nx/vite', nxVersion);
     const viteTask = await viteConfigurationGenerator(tree, {
       uiFramework: 'none',
-      project: options.name,
+      project: options.projectName,
       newProject: true,
       includeLib: true,
       inSourceTests: options.inSourceTests,
@@ -32,12 +32,13 @@ export async function addVite(
     createOrEditViteConfig(
       tree,
       {
-        project: options.name,
+        project: options.projectName,
         includeLib: true,
         includeVitest: options.unitTestRunner === 'vitest',
         inSourceTests: options.inSourceTests,
         imports: [`import vue from '@vitejs/plugin-vue'`],
         plugins: ['vue()'],
+        useEsmExtension: true,
       },
       false
     );
@@ -48,29 +49,38 @@ export async function addVite(
     options.unitTestRunner === 'vitest' &&
     options.bundler !== 'vite' // tests are already configured if bundler is vite
   ) {
-    const { vitestGenerator, createOrEditViteConfig } = ensurePackage<
-      typeof import('@nx/vite')
-    >('@nx/vite', nxVersion);
-    const vitestTask = await vitestGenerator(tree, {
-      uiFramework: 'none',
-      project: options.name,
+    const { createOrEditViteConfig } = ensurePackage<typeof import('@nx/vite')>(
+      '@nx/vite',
+      nxVersion
+    );
+    ensurePackage('@nx/vitest', nxVersion);
+    // `require()` honors Module._initPaths (which ensurePackage updates); ESM
+    // dynamic `import()` doesn't, so it can't see the on-demand temp install.
+    const {
+      configurationGenerator,
+    }: typeof import('@nx/vitest/generators') = require('@nx/vitest/generators');
+    const vitestTask = await configurationGenerator(tree, {
+      uiFramework: 'vue',
+      project: options.projectName,
       coverageProvider: 'v8',
       inSourceTests: options.inSourceTests,
       skipFormat: true,
       testEnvironment: 'jsdom',
       addPlugin: options.addPlugin,
+      runtimeTsconfigFileName: 'tsconfig.lib.json',
     });
     tasks.push(vitestTask);
 
     createOrEditViteConfig(
       tree,
       {
-        project: options.name,
+        project: options.projectName,
         includeLib: true,
         includeVitest: true,
         inSourceTests: options.inSourceTests,
         imports: [`import vue from '@vitejs/plugin-vue'`],
         plugins: ['vue()'],
+        useEsmExtension: true,
       },
       true
     );

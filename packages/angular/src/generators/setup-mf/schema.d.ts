@@ -1,3 +1,5 @@
+import type { ComponentMetadata } from '../utils/app-components-info';
+
 type FederationType = 'static' | 'dynamic';
 
 export interface Schema {
@@ -15,10 +17,19 @@ export interface Schema {
   standalone?: boolean;
   skipE2E?: boolean;
   typescriptConfiguration?: boolean;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
 }
 
 export interface NormalizedOptions extends Schema {
   federationType: FederationType;
   prefix: string | undefined;
+  componentType: string;
+  componentFileSuffix: string;
+  entryModuleFileName: string;
+  appComponentInfo: ComponentMetadata;
+  nxWelcomeComponentInfo: ComponentMetadata;
 }

@@ -1,11 +1,12 @@
-import { basename, dirname, join, relative, resolve } from 'path';
-import { statSync } from 'fs';
 import {
   normalizePath,
   parseTargetString,
   readCachedProjectGraph,
   workspaceRoot,
 } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { statSync } from 'fs';
+import { basename, dirname, join, parse, relative, resolve } from 'path';
 import {
   AssetGlobPattern,
   FileReplacement,
@@ -74,7 +75,7 @@ export function normalizeOptions(
     );
   }
 
-  const sourceRoot = projectNode.data.sourceRoot ?? projectNode.data.root;
+  const sourceRoot = getProjectSourceRoot(projectNode.data);
 
   if (!combinedPluginAndMaybeExecutorOptions.main) {
     throw new Error(
@@ -98,8 +99,6 @@ export function normalizeOptions(
     commonChunk: combinedPluginAndMaybeExecutorOptions.commonChunk ?? true,
     compiler: combinedPluginAndMaybeExecutorOptions.compiler ?? 'babel',
     configurationName,
-    deleteOutputPath:
-      combinedPluginAndMaybeExecutorOptions.deleteOutputPath ?? true,
     extractCss: combinedPluginAndMaybeExecutorOptions.extractCss ?? true,
     fileReplacements: normalizeFileReplacements(
       workspaceRoot,
@@ -204,6 +203,18 @@ function normalizeRelativePaths(
   for (const [fieldName, fieldValue] of Object.entries(options)) {
     if (isRelativePath(fieldValue)) {
       options[fieldName] = join(projectRoot, fieldValue);
+    } else if (fieldName === 'additionalEntryPoints') {
+      for (let i = 0; i < fieldValue.length; i++) {
+        const v = fieldValue[i];
+        if (isRelativePath(v)) {
+          fieldValue[i] = {
+            entryName: parse(v).name,
+            entryPath: join(projectRoot, v),
+          };
+        } else if (isRelativePath(v.entryPath)) {
+          v.entryPath = join(projectRoot, v.entryPath);
+        }
+      }
     } else if (Array.isArray(fieldValue)) {
       for (let i = 0; i < fieldValue.length; i++) {
         if (isRelativePath(fieldValue[i])) {

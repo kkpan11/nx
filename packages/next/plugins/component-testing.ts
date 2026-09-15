@@ -1,29 +1,34 @@
 import {
-  createExecutorContext,
-  getProjectConfigByPath,
-} from '@nx/cypress/src/utils/ct-helpers';
-import {
   nxBaseCypressPreset,
   NxComponentTestingOptions,
 } from '@nx/cypress/plugins/cypress-preset';
 import {
+  createExecutorContext,
+  type CypressExecutorOptions,
+  getProjectConfigByPath,
+} from '@nx/cypress/internal';
+import {
   ExecutorContext,
   parseTargetString,
   readCachedProjectGraph,
+  readProjectsConfigurationFromProjectGraph,
   readTargetOptions,
   stripIndents,
   workspaceRoot,
 } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
 import { withReact } from '@nx/react';
 import {
+  assertPackageIsInstalled,
+  suppressReactComposeHelperWarnings,
+} from '@nx/react/internal';
+import type {
   AssetGlobPattern,
-  composePluginsSync,
   NormalizedWebpackExecutorOptions,
-  withNx,
 } from '@nx/webpack';
 import { join } from 'path';
 import { NextBuildBuilderOptions } from '../src/utils/types';
-import { CypressExecutorOptions } from '@nx/cypress/src/executors/cypress/cypress.impl';
+import { readNxJsonFromDisk as readNxJson } from '@nx/devkit/internal';
 
 export function nxComponentTestingPreset(
   pathToConfig: string,
@@ -34,6 +39,15 @@ export function nxComponentTestingPreset(
     // options, cast to any to avoid type errors
     return nxBaseCypressPreset(pathToConfig) as any;
   }
+
+  assertPackageIsInstalled('@nx/webpack', '@nx/next/plugins/component-testing');
+  const {
+    composePluginsSync,
+    withNx,
+  }: typeof import('@nx/webpack') = require('@nx/webpack');
+  const {
+    suppressWebpackComposeHelperWarnings,
+  }: typeof import('@nx/webpack/internal') = require('@nx/webpack/internal');
 
   const graph = readCachedProjectGraph();
   const { targets: ctTargets, name: ctProjectName } = getProjectConfigByPath(
@@ -71,6 +85,8 @@ export function nxComponentTestingPreset(
     const parsedBuildTarget = parseTargetString(buildTarget, {
       cwd: process.cwd(),
       root: workspaceRoot,
+      projectsConfigurations: readProjectsConfigurationFromProjectGraph(graph),
+      nxJsonConfiguration: readNxJson(workspaceRoot),
       isVerbose: false,
       projectName: ctProjectName,
       projectGraph: graph,
@@ -121,8 +137,9 @@ Able to find CT project, ${!!ctProjectConfig}.`);
   const webpackOptions: NormalizedWebpackExecutorOptions = {
     root: ctExecutorContext.root,
     projectRoot: ctProjectConfig.root,
-    sourceRoot: ctProjectConfig.sourceRoot,
+    sourceRoot: getProjectSourceRoot(ctProjectConfig),
     main: '',
+    useTsconfigPaths: undefined,
     fileReplacements: buildFileReplacements,
     assets: buildAssets,
     outputPath: buildOuputPath,
@@ -134,21 +151,27 @@ Able to find CT project, ${!!ctProjectConfig}.`);
       'tsconfig.json'
     ),
   };
-  const configure = composePluginsSync(
-    withNx({
-      target: 'web',
-      styles: [],
-      scripts: [],
-      postcssConfig: ctProjectConfig.root,
-    }),
-    withReact({})
-  );
-  const webpackConfig = configure(
-    {},
-    {
-      options: webpackOptions,
-      context: ctExecutorContext,
-    }
+  // Nx composes these helpers internally for the Cypress CT preset; suppress
+  // their deprecation warning so it fires only for user-authored configs.
+  const webpackConfig = suppressWebpackComposeHelperWarnings(() =>
+    suppressReactComposeHelperWarnings(() => {
+      const configure = composePluginsSync(
+        withNx({
+          target: 'web',
+          styles: [],
+          scripts: [],
+          postcssConfig: ctProjectConfig.root,
+        }),
+        withReact({})
+      );
+      return configure(
+        {},
+        {
+          options: webpackOptions,
+          context: ctExecutorContext,
+        }
+      );
+    })
   );
 
   return {

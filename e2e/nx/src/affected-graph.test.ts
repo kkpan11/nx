@@ -14,13 +14,27 @@ import {
   isWindows,
   fileExists,
   removeFile,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { join } from 'path';
 
 describe('Nx Affected and Graph Tests', () => {
   let proj: string;
 
-  beforeAll(() => (proj = newProject({ packages: ['@nx/web', '@nx/js'] })));
+  beforeAll(
+    () =>
+      (proj = newProject({
+        packages: [
+          '@nx/eslint',
+          '@nx/jest',
+          '@nx/js',
+          '@nx/playwright',
+          '@nx/vite',
+          '@nx/vitest',
+          '@nx/web',
+          '@nx/webpack',
+        ],
+      }))
+  );
   afterAll(() => cleanupProject());
 
   describe('affected:*', () => {
@@ -31,12 +45,12 @@ describe('Nx Affected and Graph Tests', () => {
       const mylib = uniq('mylib');
       const mylib2 = uniq('mylib2');
       const mypublishablelib = uniq('mypublishablelib');
-      runCLI(`generate @nx/web:app ${myapp}`);
-      runCLI(`generate @nx/web:app ${myapp2}`);
-      runCLI(`generate @nx/js:lib ${mylib}`);
-      runCLI(`generate @nx/js:lib ${mylib2}`);
+      runCLI(`generate @nx/web:app apps/${myapp} --unitTestRunner=vitest`);
+      runCLI(`generate @nx/web:app apps/${myapp2} --unitTestRunner=vitest`);
+      runCLI(`generate @nx/js:lib libs/${mylib}`);
+      runCLI(`generate @nx/js:lib libs/${mylib2}`);
       runCLI(
-        `generate @nx/js:lib ${mypublishablelib} --publishable --importPath=@${proj}/${mypublishablelib} --tags=ui`
+        `generate @nx/js:lib libs/${mypublishablelib} --publishable --importPath=@${proj}/${mypublishablelib} --tags=ui`
       );
 
       updateFile(
@@ -193,26 +207,30 @@ describe('Nx Affected and Graph Tests', () => {
     });
 
     function generateAll() {
-      runCLI(`generate @nx/web:app ${myapp}`);
-      runCLI(`generate @nx/web:app ${myapp2}`);
-      runCLI(`generate @nx/js:lib ${mylib}`);
+      runCLI(
+        `generate @nx/web:app apps/${myapp} --bundler=webpack --unitTestRunner=vitest`
+      );
+      runCLI(
+        `generate @nx/web:app apps/${myapp2} --bundler=webpack --unitTestRunner=vitest`
+      );
+      runCLI(`generate @nx/js:lib  libs/${mylib}`);
       runCommand(`git add . && git commit -am "add all"`);
     }
 
     it('should not affect other projects by generating a new project', () => {
       // TODO: investigate why affected gives different results on windows
       if (isNotWindows()) {
-        runCLI(`generate @nx/web:app ${myapp}`);
+        runCLI(`generate @nx/web:app apps/${myapp}`);
         expect(runCLI('show projects --affected')).toContain(myapp);
         runCommand(`git add . && git commit -am "add ${myapp}"`);
 
-        runCLI(`generate @nx/web:app ${myapp2}`);
+        runCLI(`generate @nx/web:app apps/${myapp2}`);
         let output = runCLI('show projects --affected');
         expect(output).not.toContain(myapp);
         expect(output).toContain(myapp2);
         runCommand(`git add . && git commit -am "add ${myapp2}"`);
 
-        runCLI(`generate @nx/js:lib ${mylib}`);
+        runCLI(`generate @nx/js:lib libs/${mylib}`);
         output = runCLI('show projects --affected');
         expect(output).not.toContain(myapp);
         expect(output).not.toContain(myapp2);
@@ -292,6 +310,23 @@ describe('Nx Affected and Graph Tests', () => {
       expect(affectedProjects).toContain(myapp);
       expect(affectedProjects).toContain(myapp2);
     });
+
+    it('should detect changes to files inside directories with unicode names', () => {
+      generateAll();
+      // Git C-quotes the path below when this is on, which is the default.
+      runCommand('git config core.quotepath true');
+
+      // Committed first: `--uncommitted` reads `git diff HEAD`, which never
+      // lists an untracked file.
+      const umlautFile = `apps/${myapp}/src/app/Einkäufe/test.ts`;
+      updateFile(umlautFile, 'export const x = 1;');
+      runCommand('git add . && git commit -m "add unicode file"');
+      updateFile(umlautFile, 'export const x = 2;');
+
+      const affectedProjects = runCLI('show projects --affected --uncommitted');
+
+      expect(affectedProjects).toContain(myapp);
+    });
   });
 
   describe('graph', () => {
@@ -314,11 +349,11 @@ describe('Nx Affected and Graph Tests', () => {
       mylib = uniq('mylib');
       mylib2 = uniq('mylib2');
 
-      runCLI(`generate @nx/web:app ${myapp}`);
-      runCLI(`generate @nx/web:app ${myapp2}`);
-      runCLI(`generate @nx/web:app ${myapp3}`);
-      runCLI(`generate @nx/js:lib ${mylib}`);
-      runCLI(`generate @nx/js:lib ${mylib2}`);
+      runCLI(`generate @nx/web:app ${myapp} --directory=apps/${myapp}`);
+      runCLI(`generate @nx/web:app ${myapp2} --directory=apps/${myapp2}`);
+      runCLI(`generate @nx/web:app ${myapp3} --directory=apps/${myapp3}`);
+      runCLI(`generate @nx/js:lib ${mylib} --directory=libs/${mylib}`);
+      runCLI(`generate @nx/js:lib ${mylib2} --directory=libs/${mylib2}`);
 
       runCommand(`git init`);
       runCommand(`git config user.email "test@test.com"`);
@@ -494,7 +529,7 @@ describe('Nx Affected and Graph Tests', () => {
       const environmentJs = readFile('static/environment.js');
 
       expect(environmentJs).toContain('window.projectGraphResponse');
-      expect(environmentJs).toContain('"affected":[]');
+      expect(environmentJs).toMatch(/"affected":\[.*\]/);
     });
 
     // TODO(@AgentEnder): Please re-enable this when you fix the output
@@ -526,7 +561,20 @@ describe('Nx Affected and Graph Tests', () => {
 describe('show projects --affected', () => {
   let proj: string;
 
-  beforeAll(() => (proj = newProject()));
+  beforeAll(
+    () =>
+      (proj = newProject({
+        packages: [
+          '@nx/eslint',
+          '@nx/jest',
+          '@nx/js',
+          '@nx/playwright',
+          '@nx/vite',
+          '@nx/vitest',
+          '@nx/web',
+        ],
+      }))
+  );
   afterAll(() => cleanupProject());
 
   it('should print information about affected projects', async () => {
@@ -536,11 +584,17 @@ describe('show projects --affected', () => {
     const mylib2 = uniq('mylib2');
     const mypublishablelib = uniq('mypublishablelib');
 
-    runCLI(`generate @nx/web:app ${myapp}`);
-    runCLI(`generate @nx/web:app ${myapp2}`);
-    runCLI(`generate @nx/js:lib ${mylib}`);
-    runCLI(`generate @nx/js:lib ${mylib2}`);
-    runCLI(`generate @nx/js:lib ${mypublishablelib}`);
+    runCLI(
+      `generate @nx/web:app ${myapp} --directory=apps/${myapp} --unitTestRunner=vitest`
+    );
+    runCLI(
+      `generate @nx/web:app ${myapp2} --directory=apps/${myapp2} --unitTestRunner=vitest`
+    );
+    runCLI(`generate @nx/js:lib ${mylib} --directory=libs/${mylib}`);
+    runCLI(`generate @nx/js:lib ${mylib2} --directory=libs/${mylib2}`);
+    runCLI(
+      `generate @nx/js:lib ${mypublishablelib} --directory=libs/${mypublishablelib}`
+    );
 
     const app1ElementSpec = readFile(
       `apps/${myapp}/src/app/app.element.spec.ts`

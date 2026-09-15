@@ -1,14 +1,16 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": {},
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0"
+  },
   "files": [],
   "include": [],
   "references": [
     {
       "path": "./tsconfig.lib.json"
-    },
-    {
-      "path": "./tsconfig.spec.json"
     }
-  ]
+  ],
+  "nx": {
+    "addTypecheckTarget": false
+  }
 }

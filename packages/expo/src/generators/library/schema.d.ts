@@ -1,25 +1,27 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 /**
  * Same as the @nx/react library schema, except it removes keys: style, component, routing, appProject
  */
 export interface Schema {
-  name: string;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
+  directory: string;
+  name?: string;
   skipTsConfig: boolean; // default is false
   skipFormat: boolean; // default is false
   tags?: string;
-  pascalCaseFiles?: boolean;
   unitTestRunner: 'jest' | 'none';
-  linter: Linter; // default is eslint
+  linter?: LinterType;
   publishable?: boolean;
   buildable?: boolean;
   importPath?: string;
   js: boolean; // default is false
   strict: boolean; // default is true
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   skipPackageJson?: boolean; // default is false
   addPlugin?: boolean;
+  useProjectJson?: boolean;
 }

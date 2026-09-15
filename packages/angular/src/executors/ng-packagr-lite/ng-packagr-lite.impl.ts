@@ -2,7 +2,7 @@ import type { ExecutorContext } from '@nx/devkit';
 import {
   createTmpTsConfig,
   DependentBuildableProjectNode,
-} from '@nx/js/src/utils/buildable-libs-utils';
+} from '@nx/js/internal';
 import { NgPackagr } from 'ng-packagr';
 import { join, resolve } from 'path';
 import { createLibraryExecutor } from '../package/package.impl';
@@ -15,7 +15,7 @@ async function initializeNgPackgrLite(
   context: ExecutorContext,
   projectDependencies: DependentBuildableProjectNode[]
 ): Promise<NgPackagr> {
-  const ngPackagr = await getNgPackagrInstance(options);
+  const ngPackagr = await getNgPackagrInstance();
   ngPackagr.forProject(resolve(context.root, options.project));
 
   if (options.tsConfig) {

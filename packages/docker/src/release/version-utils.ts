@@ -1,0 +1,176 @@
+import { execFileSync } from 'child_process';
+import { writeFileSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { ProjectGraphProjectNode, workspaceRoot } from '@nx/devkit';
+import { interpolateVersionPattern } from './version-pattern-utils';
+import { selectPrompt, type FinalConfigForProject } from '@nx/devkit/internal';
+
+const DEFAULT_VERSION_SCHEMES = {
+  production: '{currentDate|YYMM.DD}.{shortCommitSha}',
+  hotfix: '{currentDate|YYMM.DD}.{shortCommitSha}-hotfix',
+};
+
+export const getDockerVersionPath = (
+  workspaceRoot: string,
+  projectRoot: string
+) => {
+  return join(workspaceRoot, 'tmp', projectRoot, '.docker-version');
+};
+
+export async function handleDockerVersion(
+  workspaceRoot: string,
+  projectGraphNode: ProjectGraphProjectNode,
+  finalConfigForProject: FinalConfigForProject,
+  dockerVersionScheme?: string,
+  dockerVersion?: string,
+  versionActionsVersion?: string | null
+) {
+  // If the full docker image reference is provided, use it directly
+  const nxDockerImageRefEnvOverride =
+    process.env.NX_DOCKER_IMAGE_REF?.trim() || undefined;
+  // If an explicit dockerVersion is provided, use it directly
+  let newVersion: string | undefined;
+
+  if (!nxDockerImageRefEnvOverride) {
+    if (dockerVersion) {
+      newVersion = dockerVersion;
+    } else {
+      const availableVersionSchemes =
+        finalConfigForProject.dockerOptions.versionSchemes ??
+        DEFAULT_VERSION_SCHEMES;
+      const versionScheme =
+        dockerVersionScheme && dockerVersionScheme in availableVersionSchemes
+          ? dockerVersionScheme
+          : Object.keys(availableVersionSchemes).length === 1
+            ? Object.keys(availableVersionSchemes)[0]
+            : await promptForNewVersion(
+                availableVersionSchemes,
+                projectGraphNode.name
+              );
+      if (
+        availableVersionSchemes[versionScheme].includes(
+          '{versionActionsVersion}'
+        ) &&
+        versionActionsVersion == null
+      ) {
+        return {
+          newVersion: null,
+          logs: [
+            `Skipped ${projectGraphNode.name}, because no new version was resolved for this project.`,
+          ],
+        };
+      }
+      newVersion = calculateNewVersion(
+        projectGraphNode.name,
+        versionScheme,
+        availableVersionSchemes,
+        versionActionsVersion
+      );
+    }
+  }
+
+  const logs = updateProjectVersion(
+    newVersion,
+    nxDockerImageRefEnvOverride,
+    workspaceRoot,
+    projectGraphNode.data.root,
+    finalConfigForProject.dockerOptions.repositoryName,
+    finalConfigForProject.dockerOptions.registryUrl
+  );
+
+  return {
+    newVersion:
+      newVersion || process.env.NX_DOCKER_IMAGE_REF?.split(':')[1] || null,
+    logs,
+  };
+}
+
+async function promptForNewVersion(
+  versionSchemes: Record<string, string>,
+  projectName: string
+) {
+  // Each scheme's resolved pattern renders as its own hint.
+  return selectPrompt({
+    message: `What type of docker release would you like to make for project "${projectName}"?`,
+    choices: Object.keys(versionSchemes).map((vs) => ({
+      value: vs,
+      hint: interpolateVersionPattern(versionSchemes[vs], {
+        projectName,
+      }),
+    })),
+  });
+}
+
+function calculateNewVersion(
+  projectName: string,
+  versionScheme: string,
+  versionSchemes: Record<string, string>,
+  versionActionsVersion?: string
+): string {
+  if (!(versionScheme in versionSchemes)) {
+    throw new Error(
+      `Could not find version scheme '${versionScheme}'. Available options are: ${Object.keys(
+        versionSchemes
+      ).join(', ')}.`
+    );
+  }
+  return interpolateVersionPattern(versionSchemes[versionScheme], {
+    projectName,
+    versionActionsVersion,
+  });
+}
+
+function updateProjectVersion(
+  newVersion: string | undefined,
+  nxDockerImageRefEnvOverride: string | undefined,
+  workspaceRoot: string,
+  projectRoot: string,
+  repositoryName?: string,
+  registry?: string
+): string[] {
+  const isDryRun = process.env.NX_DRY_RUN && process.env.NX_DRY_RUN !== 'false';
+  const imageRef = getDefaultImageReference(projectRoot);
+  const newImageRef = getImageReference(projectRoot, repositoryName, registry);
+  const fullImageRef =
+    nxDockerImageRefEnvOverride ?? `${newImageRef}:${newVersion}`;
+  if (!isDryRun) {
+    // argv array, not a shell string - the image ref is assembled from workspace
+    // config, CLI flags and env, so it can't be trusted as shell input.
+    execFileSync('docker', ['tag', imageRef, fullImageRef], {
+      windowsHide: true,
+    });
+  }
+  const logs = isDryRun
+    ? [`Image would be tagged with ${fullImageRef} but dry run is enabled.`]
+    : [`Image tagged with ${fullImageRef}.`];
+  if (isDryRun) {
+    logs.push(`No changes were applied as --dry-run is enabled.`);
+  } else {
+    const dockerVersionPath = getDockerVersionPath(workspaceRoot, projectRoot);
+    mkdirSync(dirname(dockerVersionPath), { recursive: true });
+    writeFileSync(dockerVersionPath, fullImageRef);
+  }
+  return logs;
+}
+
+function getImageReference(
+  projectRoot: string,
+  repositoryName?: string,
+  registry?: string
+) {
+  let imageRef = repositoryName ?? getDefaultImageReference(projectRoot);
+
+  if (registry) {
+    imageRef = `${registry}/${imageRef}`;
+  }
+  return imageRef;
+}
+
+function getDefaultImageReference(projectRoot: string) {
+  const root = projectRoot === '.' ? workspaceRoot : projectRoot;
+  const normalized = root
+    .replace(/^[\\/]/, '')
+    .replace(/[\\/\s]+/g, '-')
+    .toLowerCase();
+  return normalized.length > 128 ? normalized.slice(-128) : normalized;
+}

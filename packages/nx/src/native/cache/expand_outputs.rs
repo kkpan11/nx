@@ -1,27 +1,54 @@
-use std::path::PathBuf;
-use tracing::trace;
+use hashbrown::HashMap;
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
+use tracing::{debug, trace};
 
-use crate::native::glob::{build_glob_set, contains_glob_pattern};
+use crate::native::glob::{build_glob_set, contains_glob_pattern, glob_transform::partition_glob};
 use crate::native::utils::Normalize;
-use crate::native::walker::nx_walker_sync;
+use crate::native::walker::{nx_walker, nx_walker_sync};
 
 #[napi]
+pub fn expand_outputs(directory: String, entries: Vec<String>) -> anyhow::Result<Vec<String>> {
+    _expand_outputs(directory, entries)
+}
+
 /// Expands the given entries into a list of existing directories and files.
 /// This is used for copying outputs to and from the cache
-pub fn expand_outputs(directory: String, entries: Vec<String>) -> anyhow::Result<Vec<String>> {
-    let directory: PathBuf = directory.into();
+pub fn _expand_outputs<P>(directory: P, entries: Vec<String>) -> anyhow::Result<Vec<String>>
+where
+    P: AsRef<Path>,
+{
+    let directory: PathBuf = directory.as_ref().into();
+    trace!(
+        "Expanding {} output entries in directory: {:?}",
+        entries.len(),
+        &directory
+    );
 
     let has_glob_pattern = entries.iter().any(|entry| contains_glob_pattern(entry));
 
     if !has_glob_pattern {
         trace!("No glob patterns found, checking if entries exist");
+        let mut existing_count = 0;
         let existing_directories = entries
             .into_iter()
             .filter(|entry| {
                 let path = directory.join(entry);
-                path.exists()
+                let exists = path.exists();
+                if exists {
+                    existing_count += 1;
+                    trace!("Found existing entry: {}", entry);
+                } else {
+                    trace!("Entry does not exist: {}", entry);
+                }
+                exists
             })
-            .collect();
+            .collect::<Vec<_>>();
+        debug!(
+            "Expanded outputs: found {} existing entries out of {} total",
+            existing_count,
+            existing_directories.len()
+        );
         return Ok(existing_directories);
     }
 
@@ -48,30 +75,106 @@ pub fn expand_outputs(directory: String, entries: Vec<String>) -> anyhow::Result
         .collect::<Vec<_>>();
 
     trace!(?negated_globs, ?regular_globs, "Expanding globs");
+    trace!(
+        "Building glob set for {} regular globs",
+        regular_globs.len()
+    );
 
     let glob_set = build_glob_set(&regular_globs)?;
-    let found_paths = nx_walker_sync(directory, Some(&negated_globs))
+    trace!("Successfully built glob set");
+
+    trace!(
+        "Walking directory with {} negated globs",
+        negated_globs.len()
+    );
+    let found_paths = nx_walker_sync(&directory, Some(&negated_globs))
         .filter_map(|path| {
             if glob_set.is_match(&path) {
+                trace!("Glob match found: {}", path.to_normalized_string());
                 Some(path.to_normalized_string())
             } else {
                 None
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
 
+    debug!(
+        "Expanded outputs: found {} paths matching glob patterns",
+        found_paths.len()
+    );
     Ok(found_paths)
 }
 
 #[napi]
+/// Statically checks which `paths` would be captured by the given output
+/// `entries`, without touching the file system. Mirrors `expand_outputs`
+/// semantics: entries match themselves and anything nested under them (so a
+/// directory entry captures its contents), negated (`!`-prefixed) entries
+/// exclude matches from the whole entry set, and a non-empty list with only
+/// negated entries matches everything not excluded. An empty list matches
+/// nothing.
+pub fn match_output_paths(entries: Vec<String>, paths: Vec<String>) -> anyhow::Result<Vec<bool>> {
+    if entries.is_empty() {
+        return Ok(vec![false; paths.len()]);
+    }
+
+    let globs = entries
+        .iter()
+        .flat_map(|entry| {
+            let (negation, pattern) = match entry.strip_prefix('!') {
+                Some(rest) => ("!", rest),
+                None => ("", entry.as_str()),
+            };
+            let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+            if pattern.ends_with("**") {
+                vec![format!("{negation}{pattern}")]
+            } else {
+                // Match the entry itself and anything nested under it, like
+                // expand_outputs does when it includes an existing directory
+                // wholesale. This cannot be gated on contains_glob_pattern:
+                // that predicate flags `@`, `+` and `,`, which are ordinary in
+                // directory names (scoped packages), and expand_outputs only
+                // gets away with it because it then stats the path. We have no
+                // filesystem here, so we emit the containment form for every
+                // entry — for a true glob (`dist/*.js/**`) it matches nothing
+                // real and is inert.
+                vec![
+                    format!("{negation}{pattern}"),
+                    format!("{negation}{pattern}/**"),
+                ]
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let glob_set = build_glob_set(&globs)?;
+    Ok(paths.iter().map(|path| glob_set.is_match(path)).collect())
+}
+
+fn partition_globs_into_map(globs: Vec<String>) -> anyhow::Result<HashMap<String, Vec<String>>> {
+    globs
+        .iter()
+        .map(|glob| partition_glob(glob))
+        // Right now we have an iterator where each item is (root: String, patterns: String[]).
+        // We want a singular root, with the patterns mapped to it.
+        .fold(
+            Ok(HashMap::<String, Vec<String>>::new()),
+            |map_result, parsed_glob| {
+                let mut map = map_result?;
+                let (root, patterns) = parsed_glob?;
+                let entry = map.entry(root).or_insert(vec![]);
+                entry.extend(patterns);
+                Ok(map)
+            },
+        )
+}
+
 /// Expands the given outputs into a list of existing files.
-/// This is used when hashing outputs
+/// This is used when hashing outputs. Takes a borrowed directory so batch
+/// callers don't pay a String clone per task.
 pub fn get_files_for_outputs(
-    directory: String,
+    directory: &Path,
     entries: Vec<String>,
 ) -> anyhow::Result<Vec<String>> {
-    let directory: PathBuf = directory.into();
-
     let mut globs: Vec<String> = vec![];
     let mut files: Vec<String> = vec![];
     let mut directories: Vec<String> = vec![];
@@ -79,7 +182,9 @@ pub fn get_files_for_outputs(
         let path = directory.join(&entry);
 
         if !path.exists() {
-            globs.push(entry);
+            if contains_glob_pattern(&entry) {
+                globs.push(entry);
+            }
         } else if path.is_dir() {
             directories.push(entry);
         } else {
@@ -88,28 +193,41 @@ pub fn get_files_for_outputs(
     }
 
     if !globs.is_empty() {
-        // todo(jcammisuli): optimize this as nx_walker_sync is very slow on the root directory. We need to change this to only search smaller directories
-        let glob_set = build_glob_set(&globs)?;
-        let found_paths = nx_walker_sync(&directory, None).filter_map(|path| {
-            if glob_set.is_match(&path) {
-                Some(path.to_normalized_string())
-            } else {
-                None
-            }
-        });
+        let partitioned_globs = partition_globs_into_map(globs)?;
+        for (root, patterns) in partitioned_globs {
+            let root_path = directory.join(&root);
+            let glob_set = build_glob_set(&patterns)?;
+            trace!("walking directory: {:?}", root_path);
 
-        files.extend(found_paths);
+            let found_paths: Vec<String> = nx_walker(&root_path, false)
+                .filter_map(|file| {
+                    if glob_set.is_match(&file.normalized_path) {
+                        Some(
+                            // root_path contains full directory,
+                            // root is only the leading dirs from glob
+                            PathBuf::from(&root)
+                                .join(&file.normalized_path)
+                                .to_normalized_string(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            files.extend(found_paths);
+        }
     }
 
     if !directories.is_empty() {
         for dir in directories {
             let dir = PathBuf::from(dir);
             let dir_path = directory.join(&dir);
-            let files_in_dir = nx_walker_sync(&dir_path, None).filter_map(|e| {
-                let path = dir_path.join(&e);
+            let files_in_dir = nx_walker(&dir_path, false).filter_map(|e| {
+                let path = dir_path.join(&e.normalized_path);
 
                 if path.is_file() {
-                    Some(dir.join(e).to_normalized_string())
+                    Some(dir.join(e.normalized_path).to_normalized_string())
                 } else {
                     None
                 }
@@ -123,11 +241,26 @@ pub fn get_files_for_outputs(
     Ok(files)
 }
 
+#[napi]
+/// Batch version of get_files_for_outputs that processes multiple output
+/// entries in parallel using Rayon. Each entry is a list of output paths
+/// for a single task.
+pub fn get_files_for_outputs_batch(
+    directory: String,
+    entries_batch: Vec<Vec<String>>,
+) -> anyhow::Result<Vec<Vec<String>>> {
+    let directory = Path::new(&directory);
+    entries_batch
+        .into_par_iter()
+        .map(|entries| get_files_for_outputs(directory, entries))
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use assert_fs::prelude::*;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     use std::{assert_eq, vec};
 
     fn setup_fs() -> TempDir {
@@ -212,6 +345,402 @@ mod test {
                 "apps/web/.next/static",
                 "apps/web/.next/static/contents"
             ]
+        );
+    }
+
+    #[test]
+    fn should_match_output_paths_statically() {
+        let entries = vec![
+            "apps/web/.next/**".to_string(),
+            "!apps/web/.next/cache/**".to_string(),
+        ];
+        let paths = vec![
+            "apps/web/.next/static/chunk.js".to_string(),
+            "apps/web/.next/cache/webpack/a.pack".to_string(),
+            "apps/web/other.txt".to_string(),
+        ];
+        let result = match_output_paths(entries, paths).unwrap();
+        assert_eq!(result, vec![true, false, false]);
+    }
+
+    #[test]
+    fn should_match_output_paths_with_directory_containment() {
+        let entries = vec!["dist/libs/dep".to_string()];
+        let paths = vec![
+            "dist/libs/dep".to_string(),
+            "dist/libs/dep/index.d.ts".to_string(),
+            "dist/libs/dep/nested/deep.js".to_string(),
+            "dist/libs/dep-other/index.d.ts".to_string(),
+        ];
+        let result = match_output_paths(entries, paths).unwrap();
+        assert_eq!(result, vec![true, true, true, false]);
+    }
+
+    #[test]
+    fn should_match_everything_not_excluded_when_only_negated_entries() {
+        // Matches expand_outputs: with no positive entries, the walk keeps
+        // everything the negated globs don't exclude.
+        let entries = vec!["!dist/cache/**".to_string()];
+        let paths = vec![
+            "src/index.ts".to_string(),
+            "dist/main.js".to_string(),
+            "dist/cache/a.js".to_string(),
+        ];
+        let result = match_output_paths(entries, paths).unwrap();
+        assert_eq!(result, vec![true, true, false]);
+    }
+
+    #[test]
+    fn should_match_nothing_for_empty_entries() {
+        let paths = vec!["src/index.ts".to_string()];
+        let result = match_output_paths(vec![], paths).unwrap();
+        assert_eq!(result, vec![false]);
+    }
+
+    /// Asserts the property `match_output_paths` exists to uphold: every path
+    /// `expand_outputs` finds on disk must also match statically.
+    fn assert_static_matches_expansion(files: &[&str], entries: &[&str]) {
+        let temp = TempDir::new().unwrap();
+        for file in files {
+            temp.child(file).touch().unwrap();
+        }
+        let entries: Vec<String> = entries.iter().map(|e| e.to_string()).collect();
+
+        let expanded = expand_outputs(temp.display().to_string(), entries.clone()).unwrap();
+        assert!(
+            !expanded.is_empty(),
+            "fixture expanded to nothing for entries {:?} — the assertion below would be vacuous",
+            entries
+        );
+
+        let matches = match_output_paths(entries.clone(), expanded.clone()).unwrap();
+        assert!(
+            matches.iter().all(|m| *m),
+            "expand_outputs found {:?} for entries {:?}, but match_output_paths returned {:?}",
+            expanded,
+            entries,
+            matches
+        );
+    }
+
+    #[test]
+    fn should_match_output_paths_consistently_with_expand_outputs() {
+        // Plain directory output, with a negated subtree.
+        assert_static_matches_expansion(
+            &[
+                "apps/web/.next/cache/contents",
+                "apps/web/.next/static/contents",
+            ],
+            &["apps/web/.next", "!apps/web/.next/cache"],
+        );
+
+        // Directory outputs whose *path* contains characters that
+        // contains_glob_pattern treats as glob syntax (`@` in a scoped package
+        // name, `+`, `,`). expand_outputs stats these and walks them as
+        // directories, so the static matcher must capture nested files too.
+        assert_static_matches_expansion(
+            &["dist/libs/@scope/pkg/index.js"],
+            &["dist/libs/@scope/pkg"],
+        );
+        assert_static_matches_expansion(&["dist/libs/a+b/index.js"], &["dist/libs/a+b"]);
+
+        // Genuine globs keep working.
+        assert_static_matches_expansion(&["multi/file.js", "multi/src.ts"], &["multi/*.{js,ts}"]);
+        assert_static_matches_expansion(&["dist/apps/web/main.js"], &["dist/apps/**"]);
+    }
+
+    #[test]
+    fn should_still_exclude_negated_subtrees_when_matching_output_paths() {
+        let entries = vec![
+            "apps/web/.next".to_string(),
+            "!apps/web/.next/cache".to_string(),
+        ];
+        let excluded =
+            match_output_paths(entries, vec!["apps/web/.next/cache/contents".to_string()]).unwrap();
+        assert_eq!(excluded, vec![false]);
+    }
+
+    /// The forward parity assertion (`assert_static_matches_expansion`) cannot
+    /// see a *false positive* — a path the static matcher claims but the runner
+    /// would never cache. Negated subtrees are where that hides: an exclusion
+    /// whose literal characters get mangled silently stops excluding anything.
+    #[test]
+    fn should_not_match_excluded_subtrees_of_dirs_with_glob_like_names() {
+        for (dir, excluded_child) in [
+            ("dist/libs/@scope/pkg", "dist/libs/@scope/pkg/.cache/x"),
+            ("dist/libs/a+b", "dist/libs/a+b/.cache/x"),
+        ] {
+            let entries = vec![dir.to_string(), format!("!{dir}/.cache")];
+            let kept = format!("{dir}/index.js");
+
+            let matches =
+                match_output_paths(entries, vec![kept.clone(), excluded_child.to_string()])
+                    .unwrap();
+
+            assert!(matches[0], "{kept} should still match");
+            assert!(
+                !matches[1],
+                "{excluded_child} is inside a negated subtree and must not be reported as an output"
+            );
+        }
+    }
+
+    #[test]
+    fn should_get_files_for_outputs_with_glob() {
+        let temp = setup_fs();
+        let entries = vec![
+            "packages/nx/src/native/*.node".to_string(),
+            "folder/nested-folder".to_string(),
+            "test.txt".to_string(),
+        ];
+        let mut result = get_files_for_outputs(temp.path(), entries).unwrap();
+        result.sort();
+        assert_eq!(
+            result,
+            vec![
+                "folder/nested-folder",
+                "packages/nx/src/native/nx.darwin-arm64.node",
+                "test.txt"
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn should_expand_outputs_with_symlinks_and_globs() {
+        // Reproduces https://github.com/nrwl/nx/issues/34013
+        // When outputs include both glob patterns (*.json) and directory patterns
+        // that contain symlinks, the expanded outputs may cause EEXIST errors
+        // during cache operations.
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+
+        // Create .next directory with JSON files
+        temp.child(".next/build-manifest.json")
+            .write_str("{}")
+            .unwrap();
+        temp.child(".next/routes-manifest.json")
+            .write_str("{}")
+            .unwrap();
+
+        // Create .next/standalone with files
+        temp.child(".next/standalone/server.js")
+            .write_str("server")
+            .unwrap();
+        temp.child(".next/standalone/real-pkg/index.js")
+            .write_str("pkg")
+            .unwrap();
+
+        // Create a symlink inside standalone (simulating pnpm/bun linker)
+        symlink(
+            temp.join(".next/standalone/real-pkg/index.js"),
+            temp.join(".next/standalone/linked-entry.js"),
+        )
+        .unwrap();
+
+        // Create .next/server
+        temp.child(".next/server/app.js").write_str("app").unwrap();
+
+        let entries = vec![
+            ".next/*.json".to_string(),
+            ".next/standalone".to_string(),
+            ".next/server".to_string(),
+        ];
+        let mut result = expand_outputs(temp.display().to_string(), entries).unwrap();
+        result.sort();
+
+        // Verify that the symlink is included in expanded outputs
+        assert!(
+            result.contains(&".next/standalone/linked-entry.js".to_string()),
+            "Symlink should be in expanded outputs"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn should_handle_cache_put_and_restore_with_symlinks() {
+        // Full reproduction of issue #34013 including the cache put and restore cycle
+        use crate::native::cache::file_ops::_copy;
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        // Create workspace structure simulating Next.js standalone build
+        workspace
+            .child("app/.next/build-manifest.json")
+            .write_str("{}")
+            .unwrap();
+        workspace
+            .child("app/.next/routes-manifest.json")
+            .write_str("{}")
+            .unwrap();
+        workspace
+            .child("app/.next/standalone/server.js")
+            .write_str("server")
+            .unwrap();
+        workspace
+            .child("app/.next/standalone/real-pkg/index.js")
+            .write_str("pkg")
+            .unwrap();
+
+        // Create symlink (simulating pnpm/bun linker)
+        symlink(
+            workspace.join("app/.next/standalone/real-pkg/index.js"),
+            workspace.join("app/.next/standalone/linked-entry.js"),
+        )
+        .unwrap();
+
+        workspace
+            .child("app/.next/server/app.js")
+            .write_str("app")
+            .unwrap();
+
+        let outputs = vec![
+            "app/.next/*.json".to_string(),
+            "app/.next/standalone".to_string(),
+            "app/.next/server".to_string(),
+        ];
+
+        // === SIMULATE CACHE PUT ===
+        let cache_hash_dir = cache.child("hash123");
+        cache_hash_dir.create_dir_all().unwrap();
+
+        let expanded = _expand_outputs(workspace.path(), outputs.clone()).unwrap();
+
+        // Copy each expanded output to cache (mimicking cache.rs put())
+        for output in expanded.iter() {
+            let src = workspace.join(output);
+            if src.exists() {
+                let dest = cache_hash_dir.join(output);
+                let result = _copy(&src, &dest);
+                assert!(
+                    result.is_ok(),
+                    "PUT: Failed to copy {}: {:?}",
+                    output,
+                    result.err()
+                );
+            }
+        }
+
+        // === SIMULATE CACHE RESTORE ===
+        // (This is what copy_files_from_cache does)
+
+        // Step 1: Expand outputs from cache directory
+        let restore_expanded = _expand_outputs(cache_hash_dir.path(), outputs.clone()).unwrap();
+
+        // Step 2: Remove expanded outputs from workspace
+        let items_to_remove: Vec<_> = restore_expanded.iter().map(|p| workspace.join(p)).collect();
+        fs_extra::remove_items(&items_to_remove).unwrap();
+
+        // Step 3: Copy entire cache hash dir to workspace (this is where EEXIST occurs)
+        let restore_result = _copy(cache_hash_dir.path(), workspace.path());
+        assert!(
+            restore_result.is_ok(),
+            "RESTORE: Failed to copy from cache to workspace: {:?}",
+            restore_result.err()
+        );
+
+        // Verify files were restored correctly
+        assert!(workspace.child("app/.next/build-manifest.json").exists());
+        assert!(workspace.child("app/.next/standalone/server.js").exists());
+        assert!(
+            workspace
+                .child("app/.next/standalone/linked-entry.js")
+                .exists()
+        );
+        assert!(workspace.child("app/.next/server/app.js").exists());
+    }
+
+    #[test]
+    fn should_get_files_for_outputs_when_gitignore_hides_files() {
+        let temp = TempDir::new().unwrap();
+        temp.child("out/.gitignore").write_str("*").unwrap();
+        temp.child("out/visible.txt").write_str("content").unwrap();
+
+        let entries = vec!["out".to_string()];
+        let mut result = get_files_for_outputs(temp.path(), entries).unwrap();
+        result.sort();
+
+        assert!(result.contains(&"out/visible.txt".to_string()));
+        assert!(result.contains(&"out/.gitignore".to_string()));
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn should_not_leak_threads() {
+        use std::process::Command;
+        use std::thread;
+
+        fn get_thread_count() -> usize {
+            let pid = std::process::id();
+            let pid_str = pid.to_string();
+
+            // Use ps command to get thread count (works on Linux and macOS)
+            #[cfg(target_os = "linux")]
+            let ps_args = vec!["-o", "nlwp=", "-p", &pid_str];
+
+            #[cfg(target_os = "macos")]
+            let ps_args = vec!["-M", "-p", &pid_str];
+
+            if let Ok(output) = Command::new("ps").args(&ps_args).output() {
+                if let Ok(output_str) = String::from_utf8(output.stdout) {
+                    #[cfg(target_os = "linux")]
+                    {
+                        // On Linux, nlwp gives us the thread count directly
+                        if let Ok(count) = output_str.trim().parse::<usize>() {
+                            return count;
+                        }
+                    }
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        // On macOS, count lines (excluding header) to get thread count
+                        let thread_count = output_str.lines().count().saturating_sub(1);
+                        if thread_count > 0 {
+                            return thread_count;
+                        }
+                    }
+                }
+            }
+
+            // Fallback to available parallelism if ps command fails
+            thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        }
+
+        let initial_count = get_thread_count();
+
+        // Run multiple operations to test for thread leaks
+        for _ in 0..5 {
+            let temp = setup_fs();
+            let entries = vec![
+                "packages/nx/src/native/*.node".to_string(),
+                "multi/*.{js,map,ts}".to_string(),
+                "test.txt".to_string(),
+            ];
+
+            // Test both functions
+            let _result1 = expand_outputs(temp.display().to_string(), entries.clone());
+            let _result2 = get_files_for_outputs(temp.path(), entries);
+
+            drop(temp);
+        }
+
+        // Allow brief time for any cleanup
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let final_count = get_thread_count();
+
+        // After fixing nx_walker, thread count should remain stable
+        // Allow minimal variance for system threads
+        assert_eq!(
+            final_count, initial_count,
+            "Thread count changed from {} to {}, indicating a thread leak",
+            initial_count, final_count
         );
     }
 }

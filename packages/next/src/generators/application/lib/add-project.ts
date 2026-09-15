@@ -1,11 +1,17 @@
+import { addBuildTargetDefaults, type PackageJson } from '@nx/devkit/internal';
 import { NormalizedSchema } from './normalize-options';
 import {
   addProjectConfiguration,
+  joinPathFragments,
   ProjectConfiguration,
   readNxJson,
   Tree,
+  writeJson,
 } from '@nx/devkit';
-import { addBuildTargetDefaults } from '@nx/devkit/src/generators/add-build-target-defaults';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import { nextVersion } from '../../../utils/versions';
+import { warnNextExecutorGenerating } from '../../../utils/deprecation';
+import { reactDomVersion, reactVersion } from '@nx/react';
 
 export function addProject(host: Tree, options: NormalizedSchema) {
   const targets: Record<string, any> = {};
@@ -21,6 +27,7 @@ export function addProject(host: Tree, options: NormalizedSchema) {
   );
 
   if (!hasPlugin) {
+    warnNextExecutorGenerating();
     addBuildTargetDefaults(host, '@nx/next:build');
 
     targets.build = {
@@ -56,24 +63,51 @@ export function addProject(host: Tree, options: NormalizedSchema) {
         },
       },
     };
-
-    targets.export = {
-      executor: '@nx/next:export',
-      options: {
-        buildTarget: `${options.projectName}:build:production`,
-      },
-    };
   }
+
+  const sourceRoot = options.src
+    ? joinPathFragments(options.appProjectRoot, 'src')
+    : options.appProjectRoot;
 
   const project: ProjectConfiguration = {
     root: options.appProjectRoot,
-    sourceRoot: options.appProjectRoot,
+    sourceRoot,
     projectType: 'application',
     targets,
     tags: options.parsedTags,
   };
 
-  addProjectConfiguration(host, options.projectName, {
-    ...project,
-  });
+  const packageJson: PackageJson = {
+    name: options.importPath,
+    version: '0.0.1',
+    private: true,
+    dependencies: {
+      next: nextVersion,
+      react: reactVersion,
+      'react-dom': reactDomVersion,
+    },
+  };
+
+  if (!options.useProjectJson) {
+    if (options.projectName !== options.importPath) {
+      packageJson.nx = { name: options.projectName };
+    }
+    packageJson.nx ??= {};
+    packageJson.nx.sourceRoot = sourceRoot;
+    if (options.parsedTags?.length) {
+      packageJson.nx.tags = options.parsedTags;
+    }
+  } else {
+    addProjectConfiguration(host, options.projectName, {
+      ...project,
+    });
+  }
+
+  if (!options.useProjectJson || options.isTsSolutionSetup) {
+    writeJson(
+      host,
+      joinPathFragments(options.appProjectRoot, 'package.json'),
+      packageJson
+    );
+  }
 }

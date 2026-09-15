@@ -1,21 +1,19 @@
 import type { Tree } from '@nx/devkit';
-import * as devkit from '@nx/devkit';
 import { runNestSchematic } from './run-nest-schematic';
 import { createTreeWithNestApplication } from './testing';
 import type { NestSchematic, NormalizedOptions } from './types';
 
 describe('runNestSchematic utility', () => {
   let tree: Tree;
-  const project = 'api';
+  const directory = 'api';
   const options: NormalizedOptions = {
     name: 'test',
-    sourceRoot: `apps/${project}/src`,
-    flat: true,
+    sourceRoot: `apps/${directory}/src`,
     spec: true,
   };
 
   beforeEach(() => {
-    tree = createTreeWithNestApplication(project);
+    tree = createTreeWithNestApplication(directory);
     jest.clearAllMocks();
   });
 
@@ -37,26 +35,33 @@ describe('runNestSchematic utility', () => {
   ];
 
   test.each(testTypes)('%p should run successfully', async (type) => {
-    await expect(
-      runNestSchematic(tree, type, options)
-    ).resolves.not.toThrowError();
+    await expect(runNestSchematic(tree, type, options)).resolves.not.toThrow();
   });
 
   describe('--skipFormat', () => {
-    it('should format files by default', async () => {
-      jest.spyOn(devkit, 'formatFiles');
+    let formatFilesSpy: jest.SpyInstance;
 
+    beforeEach(() => {
+      const devkitModule = require('@nx/devkit');
+      formatFilesSpy = jest
+        .spyOn(devkitModule, 'formatFiles')
+        .mockImplementation(() => Promise.resolve());
+    });
+
+    afterAll(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('should format files by default', async () => {
       await runNestSchematic(tree, 'class', options);
 
-      expect(devkit.formatFiles).toHaveBeenCalled();
+      expect(formatFilesSpy).toHaveBeenCalled();
     });
 
     it('should not format files when --skipFormat=true', async () => {
-      jest.spyOn(devkit, 'formatFiles');
-
       await runNestSchematic(tree, 'class', { ...options, skipFormat: true });
 
-      expect(devkit.formatFiles).not.toHaveBeenCalled();
+      expect(formatFilesSpy).not.toHaveBeenCalled();
     });
   });
 });

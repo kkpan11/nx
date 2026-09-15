@@ -1,6 +1,8 @@
+import { POSTHOG_SNIPPET } from '@nx/nx-dev-feature-analytics';
 import { Head, Html, Main, NextScript } from 'next/document';
+import type { ReactElement } from 'react';
 
-export default function Document(): JSX.Element {
+export default function Document(): ReactElement {
   return (
     <Html className="h-full scroll-smooth" lang="en">
       <Head>
@@ -29,6 +31,10 @@ export default function Document(): JSX.Element {
           color="#5bbad5"
         />
         <script
+          data-cookieconsent="ignore"
+          dangerouslySetInnerHTML={{ __html: POSTHOG_SNIPPET }}
+        />
+        <script
           dangerouslySetInnerHTML={{
             __html: `
                 try {
@@ -42,7 +48,7 @@ export default function Document(): JSX.Element {
           }}
         />
       </Head>
-      <body className="h-full bg-white text-slate-700 antialiased selection:bg-blue-500 selection:text-white dark:bg-slate-900 dark:text-slate-400 dark:selection:bg-sky-500">
+      <body className="h-full bg-white text-zinc-700 antialiased selection:bg-blue-500 selection:text-white dark:bg-zinc-900 dark:text-zinc-400 dark:selection:bg-blue-500">
         <Main />
         <NextScript />
       </body>

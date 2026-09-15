@@ -20,15 +20,24 @@ interface ProjectPattern {
 }
 
 /**
+ * The subset of a {@link ProjectGraphProjectNode} that `findMatchingProjects`
+ * needs. Project names come from the map keys, so only `data.root` and
+ * `data.tags` are read per node — callers may pass full nodes or this slice.
+ */
+export type MatcherProjectNode = {
+  data: Pick<ProjectGraphProjectNode['data'], 'root' | 'tags'>;
+};
+
+/**
  * Find matching project names given a list of potential project names or globs.
  *
  * @param patterns A list of project names or globs to match against.
- * @param projects A map of {@link ProjectGraphProjectNode} by project name.
+ * @param projects A map of {@link MatcherProjectNode} by project name.
  * @returns
  */
 export function findMatchingProjects(
   patterns: string[] = [],
-  projects: Record<string, ProjectGraphProjectNode>
+  projects: Record<string, MatcherProjectNode>
 ): string[] {
   if (!patterns.length || patterns.filter((p) => p.length).length === 0) {
     return []; // Short circuit if called with no patterns
@@ -49,7 +58,8 @@ export function findMatchingProjects(
   }
 
   for (const stringPattern of patterns) {
-    if (!stringPattern.length) {
+    // Do not waste time attempting to look up cross-workspace references which will never match
+    if (!stringPattern.length || stringPattern.startsWith('nx-cloud:')) {
       continue;
     }
 
@@ -134,7 +144,7 @@ export function findMatchingProjects(
 
 function addMatchingProjectsByDirectory(
   projectNames: string[],
-  projects: Record<string, ProjectGraphProjectNode>,
+  projects: Record<string, MatcherProjectNode>,
   pattern: ProjectPattern,
   matchedProjects: Set<string>
 ) {
@@ -152,7 +162,7 @@ function addMatchingProjectsByDirectory(
 
 function addMatchingProjectsByName(
   projectNames: string[],
-  projects: Record<string, ProjectGraphProjectNode>,
+  projects: Record<string, MatcherProjectNode>,
   pattern: ProjectPattern,
   matchedProjects: Set<string>
 ) {
@@ -166,6 +176,21 @@ function addMatchingProjectsByName(
   }
 
   if (!isGlobPattern(pattern.value)) {
+    // Custom regex that is basically \b but includes hyphens (-) and excludes underscores (_), so "foo" pattern matches "foo_bar" but not "foo-e2e".
+    const regex = new RegExp(
+      `(?<![@a-zA-Z0-9-])${pattern.value}(?![@a-zA-Z0-9-])`,
+      'i'
+    );
+    const matchingProjects = Object.keys(projects).filter((name) =>
+      regex.test(name)
+    );
+    for (const projectName of matchingProjects) {
+      if (pattern.exclude) {
+        matchedProjects.delete(projectName);
+      } else {
+        matchedProjects.add(projectName);
+      }
+    }
     return;
   }
 
@@ -184,7 +209,7 @@ function addMatchingProjectsByName(
 
 function addMatchingProjectsByTag(
   projectNames: string[],
-  projects: Record<string, ProjectGraphProjectNode>,
+  projects: Record<string, MatcherProjectNode>,
   pattern: ProjectPattern,
   matchedProjects: Set<string>
 ) {
@@ -220,7 +245,7 @@ function isExcludePattern(pattern: string): boolean {
 
 function parseStringPattern(
   pattern: string,
-  projects: Record<string, ProjectGraphProjectNode>
+  projects: Record<string, MatcherProjectNode>
 ): ProjectPattern {
   const isExclude = isExcludePattern(pattern);
 

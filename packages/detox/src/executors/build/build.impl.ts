@@ -1,8 +1,10 @@
 import { ExecutorContext } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 
 import { DetoxBuildOptions } from './schema';
+import { warnDetoxExecutorsDeprecation } from '../../utils/deprecation';
 
 export interface DetoxBuildOutput {
   success: boolean;
@@ -14,6 +16,8 @@ export default async function* detoxBuildExecutor(
   options: DetoxBuildOptions,
   context: ExecutorContext
 ): AsyncGenerator<DetoxBuildOutput> {
+  warnDetoxExecutorsDeprecation();
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -50,7 +54,8 @@ export function runCliBuild(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

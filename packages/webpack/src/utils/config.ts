@@ -1,11 +1,14 @@
 import {
   ExecutorContext,
   readCachedProjectGraph,
+  readProjectsConfigurationFromProjectGraph,
   workspaceRoot,
 } from '@nx/devkit';
-import { Configuration } from 'webpack';
-
+import { getProjectSourceRoot } from '@nx/js/internal';
+import type { Configuration } from 'webpack';
 import { NormalizedWebpackExecutorOptions } from '../executors/webpack/schema';
+import { warnWebpackComposeHelpersDeprecation } from './deprecation';
+import { readNxJsonFromDisk as readNxJson } from '@nx/devkit/internal';
 
 export const nxWebpackComposablePlugin = 'nxWebpackComposablePlugin';
 
@@ -26,11 +29,18 @@ export interface NxComposableWebpackPlugin {
 }
 
 export interface AsyncNxComposableWebpackPlugin {
-  (config: Configuration, ctx: NxWebpackExecutionContext):
-    | Configuration
-    | Promise<Configuration>;
+  (
+    config: Configuration,
+    ctx: NxWebpackExecutionContext
+  ): Configuration | Promise<Configuration>;
 }
 
+/**
+ * @deprecated Will be removed in Nx v24. Use `NxAppWebpackPlugin` from
+ * `@nx/webpack/app-plugin` in a standard webpack config and run
+ * `nx g @nx/webpack:convert-to-inferred`. See
+ * https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.
+ */
 export function composePlugins(
   ...plugins: (
     | NxComposableWebpackPlugin
@@ -38,6 +48,7 @@ export function composePlugins(
     | Promise<NxComposableWebpackPlugin | AsyncNxComposableWebpackPlugin>
   )[]
 ) {
+  warnWebpackComposeHelpersDeprecation();
   return Object.assign(
     async function combined(
       config: Configuration,
@@ -65,7 +76,14 @@ export function composePlugins(
   );
 }
 
+/**
+ * @deprecated Will be removed in Nx v24. Use `NxAppWebpackPlugin` from
+ * `@nx/webpack/app-plugin` in a standard webpack config and run
+ * `nx g @nx/webpack:convert-to-inferred`. See
+ * https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.
+ */
 export function composePluginsSync(...plugins: NxComposableWebpackPlugin[]) {
+  warnWebpackComposeHelpersDeprecation();
   return Object.assign(
     function combined(
       config: Configuration,
@@ -91,19 +109,24 @@ function ensureNxWebpackExecutionContext(ctx: NxWebpackExecutionContext): void {
   ctx.options ??= {
     root: workspaceRoot,
     projectRoot: projectNode.data.root,
-    sourceRoot: projectNode.data.sourceRoot ?? projectNode.data.root,
+    sourceRoot: getProjectSourceRoot(projectNode.data),
     // These aren't actually needed since NxWebpackPlugin and withNx both support them being undefined.
     assets: undefined,
     outputPath: undefined,
     tsConfig: undefined,
     outputFileName: undefined,
+    useTsconfigPaths: undefined,
   };
   ctx.context ??= {
     projectName,
     targetName,
     configurationName,
+    projectsConfigurations:
+      readProjectsConfigurationFromProjectGraph(projectGraph),
+    nxJsonConfiguration: readNxJson(workspaceRoot),
     cwd: process.cwd(),
     root: workspaceRoot,
     isVerbose: process.env['NX_VERBOSE_LOGGING'] === 'true',
+    projectGraph,
   };
 }

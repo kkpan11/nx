@@ -1,31 +1,39 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import {
   Tree,
   getProjects,
   readJson,
   readProjectConfiguration,
+  updateJson,
+  writeJson,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { Linter } from '@nx/eslint';
 import { reactNativeApplicationGenerator } from './application';
 
 describe('app', () => {
   let appTree: Tree;
+  let envBackup: string | undefined;
 
   beforeEach(() => {
+    envBackup = process.env.ESLINT_USE_FLAT_CONFIG;
+    delete process.env.ESLINT_USE_FLAT_CONFIG;
     appTree = createTreeWithEmptyWorkspace();
     appTree.write('.gitignore', '');
   });
 
+  afterEach(() => {
+    if (envBackup === undefined) delete process.env.ESLINT_USE_FLAT_CONFIG;
+    else process.env.ESLINT_USE_FLAT_CONFIG = envBackup;
+  });
+
   it('should update configuration', async () => {
     await reactNativeApplicationGenerator(appTree, {
-      name: 'my-app',
+      directory: 'my-app',
       displayName: 'myApp',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       e2eTestRunner: 'none',
       install: false,
-      projectNameAndRootFormat: 'as-provided',
       unitTestRunner: 'none',
       bundler: 'vite',
     });
@@ -36,13 +44,12 @@ describe('app', () => {
 
   it('should update nx.json', async () => {
     await reactNativeApplicationGenerator(appTree, {
-      name: 'my-app',
+      directory: 'my-app',
       displayName: 'myApp',
       tags: 'one,two',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       e2eTestRunner: 'none',
       install: false,
-      projectNameAndRootFormat: 'as-provided',
       unitTestRunner: 'none',
       bundler: 'vite',
     });
@@ -55,12 +62,11 @@ describe('app', () => {
 
   it('should generate files', async () => {
     await reactNativeApplicationGenerator(appTree, {
-      name: 'my-app',
+      directory: 'my-app',
       displayName: 'myApp',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       e2eTestRunner: 'none',
       install: false,
-      projectNameAndRootFormat: 'as-provided',
       unitTestRunner: 'jest',
       bundler: 'vite',
     });
@@ -70,29 +76,33 @@ describe('app', () => {
     const tsconfig = readJson(appTree, 'my-app/tsconfig.json');
     expect(tsconfig.extends).toEqual('../tsconfig.base.json');
 
-    expect(appTree.exists('my-app/.eslintrc.json')).toBe(true);
-    expect(appTree.read('my-app/jest.config.ts', 'utf-8'))
+    expect(appTree.exists('my-app/eslint.config.mjs')).toBe(true);
+    expect(appTree.read('my-app/jest.config.cts', 'utf-8'))
       .toMatchInlineSnapshot(`
-      "module.exports = {
+      "/// <reference types="jest" />
+      /// <reference types="node" />
+      module.exports = {
         displayName: 'my-app',
         preset: 'react-native',
         resolver: '@nx/jest/plugins/resolver',
         moduleFileExtensions: ['ts', 'js', 'html', 'tsx', 'jsx'],
         setupFilesAfterEnv: ['<rootDir>/src/test-setup.ts'],
         moduleNameMapper: {
-          '\\\\.svg$': '@nx/react-native/plugins/jest/svg-mock',
+          '[.]svg$': '@nx/react-native/plugins/jest/svg-mock',
         },
         transform: {
-          '^.+.(js|ts|tsx)$': [
+          '^.+[.](js|ts|tsx)$': [
             'babel-jest',
             {
               configFile: __dirname + '/.babelrc.js',
             },
           ],
-          '^.+.(bmp|gif|jpg|jpeg|mp4|png|psd|svg|webp)$': require.resolve(
-            'react-native/jest/assetFileTransformer.js'
-          ),
+          '^.+[.](bmp|gif|jpg|jpeg|mp4|png|psd|svg|webp)$':
+            require.resolve('react-native/jest/assetFileTransformer.js'),
         },
+        transformIgnorePatterns: [
+          'node_modules/(?!(.pnpm/.+/node_modules/)?(react-native|@react-native(-community)?)/)',
+        ],
         coverageDirectory: '../coverage/my-app',
       };
       "
@@ -101,29 +111,27 @@ describe('app', () => {
 
   it('should generate targets', async () => {
     await reactNativeApplicationGenerator(appTree, {
-      name: 'my-app',
+      directory: 'my-app',
       displayName: 'myApp',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       e2eTestRunner: 'none',
       install: false,
-      projectNameAndRootFormat: 'as-provided',
       unitTestRunner: 'jest',
       bundler: 'vite',
     });
 
-    expect(appTree.exists('my-app/jest.config.ts')).toBeTruthy();
+    expect(appTree.exists('my-app/jest.config.cts')).toBeTruthy();
   });
 
   it('should extend from root tsconfig.json when no tsconfig.base.json', async () => {
     appTree.rename('tsconfig.base.json', 'tsconfig.json');
 
     await reactNativeApplicationGenerator(appTree, {
-      name: 'my-app',
+      directory: 'my-app',
       displayName: 'myApp',
-      linter: Linter.EsLint,
+      linter: 'eslint',
       e2eTestRunner: 'none',
       install: false,
-      projectNameAndRootFormat: 'as-provided',
       unitTestRunner: 'none',
       bundler: 'vite',
     });
@@ -132,15 +140,49 @@ describe('app', () => {
     expect(tsconfig.extends).toEqual('../tsconfig.json');
   });
 
+  it('should not ignore "out-tsc" from eslint', async () => {
+    process.env.ESLINT_USE_FLAT_CONFIG = 'false';
+    await reactNativeApplicationGenerator(appTree, {
+      name: 'my-app',
+      directory: 'my-app',
+      linter: 'eslint',
+      e2eTestRunner: 'none',
+      install: false,
+      unitTestRunner: 'none',
+      bundler: 'webpack',
+      skipFormat: true,
+    });
+
+    const eslintConfig = readJson(appTree, 'my-app/.eslintrc.json');
+    expect(eslintConfig.ignorePatterns).not.toContain('**/out-tsc');
+  });
+
+  it('should not ignore "out-tsc" from eslint with flat config', async () => {
+    appTree.write('eslint.config.mjs', 'export default [];');
+
+    await reactNativeApplicationGenerator(appTree, {
+      name: 'my-app',
+      directory: 'my-app',
+      linter: 'eslint',
+      e2eTestRunner: 'none',
+      install: false,
+      unitTestRunner: 'none',
+      bundler: 'webpack',
+      skipFormat: true,
+    });
+
+    const eslintConfig = appTree.read('my-app/eslint.config.mjs', 'utf-8');
+    expect(eslintConfig).not.toContain('**/out-tsc');
+  });
+
   describe('detox', () => {
     it('should create e2e app with directory', async () => {
       await reactNativeApplicationGenerator(appTree, {
         name: 'my-app',
         directory: 'my-dir',
-        linter: Linter.EsLint,
+        linter: 'eslint',
         e2eTestRunner: 'detox',
         install: false,
-        projectNameAndRootFormat: 'as-provided',
         bundler: 'vite',
         unitTestRunner: 'none',
       });
@@ -173,14 +215,14 @@ describe('app', () => {
           binaryPath:
             '../my-dir/ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
           build:
-            "cd ../my-dir/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -derivedDataPath ./build -quiet",
+            "cd ../my-dir/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15 Plus' -derivedDataPath ./build -quiet",
           type: 'ios.app',
         },
         'ios.release': {
           binaryPath:
             '../my-dir/ios/build/Build/Products/Release-iphonesimulator/MyApp.app',
           build:
-            "cd ../my-dir/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -derivedDataPath ./build -quiet",
+            "cd ../my-dir/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15 Plus' -derivedDataPath ./build -quiet",
           type: 'ios.app',
         },
       });
@@ -188,11 +230,10 @@ describe('app', () => {
 
     it('should create e2e app without directory', async () => {
       await reactNativeApplicationGenerator(appTree, {
-        name: 'my-app',
-        linter: Linter.EsLint,
+        directory: 'my-app',
+        linter: 'eslint',
         e2eTestRunner: 'detox',
         install: false,
-        projectNameAndRootFormat: 'as-provided',
         bundler: 'vite',
         unitTestRunner: 'none',
       });
@@ -224,14 +265,14 @@ describe('app', () => {
           binaryPath:
             '../my-app/ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
           build:
-            "cd ../my-app/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -derivedDataPath ./build -quiet",
+            "cd ../my-app/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15 Plus' -derivedDataPath ./build -quiet",
           type: 'ios.app',
         },
         'ios.release': {
           binaryPath:
             '../my-app/ios/build/Build/Products/Release-iphonesimulator/MyApp.app',
           build:
-            "cd ../my-app/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -derivedDataPath ./build -quiet",
+            "cd ../my-app/ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp -configuration Release -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15 Plus' -derivedDataPath ./build -quiet",
           type: 'ios.app',
         },
       });
@@ -243,18 +284,293 @@ describe('app', () => {
       const packageJsonBefore = readJson(appTree, 'package.json');
 
       await reactNativeApplicationGenerator(appTree, {
-        name: 'my-app',
+        directory: 'my-app',
         displayName: 'myApp',
-        linter: Linter.EsLint,
+        linter: 'eslint',
         e2eTestRunner: 'none',
         install: false,
         skipPackageJson: true,
-        projectNameAndRootFormat: 'as-provided',
         unitTestRunner: 'none',
         bundler: 'webpack',
       });
 
       expect(readJson(appTree, 'package.json')).toEqual(packageJsonBefore);
+    });
+  });
+
+  describe('TS solution setup', () => {
+    let tree: Tree;
+
+    beforeEach(() => {
+      tree = createTreeWithEmptyWorkspace();
+      tree.write('.gitignore', '');
+      updateJson(tree, 'package.json', (json) => {
+        json.workspaces = ['packages/*', 'apps/*'];
+        return json;
+      });
+      writeJson(tree, 'tsconfig.base.json', {
+        compilerOptions: {
+          composite: true,
+          declaration: true,
+        },
+      });
+      writeJson(tree, 'tsconfig.json', {
+        extends: './tsconfig.base.json',
+        files: [],
+        references: [],
+      });
+    });
+
+    it('should add project references when using TS solution', async () => {
+      await reactNativeApplicationGenerator(tree, {
+        directory: 'my-app',
+        displayName: 'myApp',
+        tags: 'one,two',
+        linter: 'eslint',
+        e2eTestRunner: 'none',
+        install: false,
+        unitTestRunner: 'jest',
+        bundler: 'vite',
+        addPlugin: true,
+        useProjectJson: false,
+      });
+
+      expect(readJson(tree, 'tsconfig.json').references).toMatchInlineSnapshot(`
+        [
+          {
+            "path": "./my-app",
+          },
+        ]
+      `);
+      const packageJson = readJson(tree, 'my-app/package.json');
+      expect(packageJson.name).toBe('@proj/my-app');
+      expect(packageJson.nx.name).toBeUndefined();
+      // Make sure keys are in idiomatic order
+      expect(Object.keys(packageJson)).toMatchInlineSnapshot(`
+        [
+          "name",
+          "version",
+          "private",
+          "dependencies",
+          "nx",
+        ]
+      `);
+      expect(readJson(tree, 'my-app/tsconfig.json')).toMatchInlineSnapshot(`
+        {
+          "extends": "../tsconfig.base.json",
+          "files": [],
+          "include": [],
+          "references": [
+            {
+              "path": "./tsconfig.app.json",
+            },
+            {
+              "path": "./tsconfig.spec.json",
+            },
+          ],
+        }
+      `);
+      expect(readJson(tree, 'my-app/tsconfig.app.json')).toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "jsx": "react-jsx",
+            "lib": [
+              "dom",
+            ],
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "noUnusedLocals": false,
+            "outDir": "dist",
+            "rootDir": "src",
+            "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo",
+            "types": [
+              "node",
+            ],
+          },
+          "exclude": [
+            "out-tsc",
+            "dist",
+            "src/**/*.test.ts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.tsx",
+            "src/**/*.spec.tsx",
+            "src/**/*.test.js",
+            "src/**/*.spec.js",
+            "src/**/*.test.jsx",
+            "src/**/*.spec.jsx",
+            "src/test-setup.ts",
+            "jest.config.ts",
+            "jest.config.cts",
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+          ],
+          "extends": "../tsconfig.base.json",
+          "files": [
+            "../node_modules/@nx/react-native/typings/svg.d.ts",
+          ],
+          "include": [
+            "src/**/*.ts",
+            "src/**/*.tsx",
+            "src/**/*.js",
+            "src/**/*.jsx",
+          ],
+        }
+      `);
+      expect(readJson(tree, 'my-app/tsconfig.spec.json'))
+        .toMatchInlineSnapshot(`
+        {
+          "compilerOptions": {
+            "jsx": "react-jsx",
+            "lib": [
+              "dom",
+            ],
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "noUnusedLocals": false,
+            "outDir": "./out-tsc/jest",
+            "types": [
+              "jest",
+              "node",
+            ],
+          },
+          "extends": "../tsconfig.base.json",
+          "files": [
+            "src/test-setup.ts",
+          ],
+          "include": [
+            "jest.config.ts",
+            "jest.config.cts",
+            "src/**/*.test.ts",
+            "src/**/*.spec.ts",
+            "src/**/*.test.tsx",
+            "src/**/*.spec.tsx",
+            "src/**/*.test.js",
+            "src/**/*.spec.js",
+            "src/**/*.test.jsx",
+            "src/**/*.spec.jsx",
+            "src/**/*.d.ts",
+          ],
+          "references": [
+            {
+              "path": "./tsconfig.app.json",
+            },
+          ],
+        }
+      `);
+    });
+
+    it('should respect the provided name', async () => {
+      await reactNativeApplicationGenerator(tree, {
+        directory: 'my-app',
+        name: 'my-app',
+        displayName: 'myApp',
+        tags: 'one,two',
+        linter: 'eslint',
+        e2eTestRunner: 'none',
+        install: false,
+        unitTestRunner: 'jest',
+        bundler: 'vite',
+        addPlugin: true,
+        useProjectJson: false,
+      });
+
+      const packageJson = readJson(tree, 'my-app/package.json');
+      expect(packageJson.name).toBe('@proj/my-app');
+      expect(packageJson.nx.name).toBe('my-app');
+      // Make sure keys are in idiomatic order
+      expect(Object.keys(packageJson)).toMatchInlineSnapshot(`
+        [
+          "name",
+          "version",
+          "private",
+          "dependencies",
+          "nx",
+        ]
+      `);
+    });
+
+    it('should generate project.json if useProjectJson is true', async () => {
+      await reactNativeApplicationGenerator(tree, {
+        directory: 'my-app',
+        linter: 'eslint',
+        e2eTestRunner: 'cypress',
+        install: false,
+        unitTestRunner: 'jest',
+        bundler: 'vite',
+        addPlugin: true,
+        useProjectJson: true,
+        skipFormat: true,
+      });
+
+      expect(tree.exists('my-app/project.json')).toBeTruthy();
+      expect(readProjectConfiguration(tree, '@proj/my-app'))
+        .toMatchInlineSnapshot(`
+        {
+          "$schema": "../node_modules/nx/schemas/project-schema.json",
+          "name": "@proj/my-app",
+          "projectType": "application",
+          "root": "my-app",
+          "sourceRoot": "my-app/src",
+          "tags": [],
+          "targets": {},
+        }
+      `);
+      expect(readJson(tree, 'my-app/package.json').nx).toBeUndefined();
+      expect(tree.exists('my-app-e2e/project.json')).toBeTruthy();
+      expect(readProjectConfiguration(tree, '@proj/my-app-e2e'))
+        .toMatchInlineSnapshot(`
+        {
+          "$schema": "../node_modules/nx/schemas/project-schema.json",
+          "implicitDependencies": [
+            "@proj/my-app",
+          ],
+          "name": "@proj/my-app-e2e",
+          "projectType": "application",
+          "root": "my-app-e2e",
+          "sourceRoot": "my-app-e2e/src",
+          "tags": [],
+          "targets": {},
+        }
+      `);
+      expect(readJson(tree, 'my-app-e2e/package.json').nx).toBeUndefined();
+    });
+
+    it('should ignore "out-tsc" from eslint', async () => {
+      process.env.ESLINT_USE_FLAT_CONFIG = 'false';
+      await reactNativeApplicationGenerator(tree, {
+        directory: 'my-app',
+        linter: 'eslint',
+        e2eTestRunner: 'none',
+        install: false,
+        unitTestRunner: 'none',
+        bundler: 'webpack',
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      const eslintConfig = readJson(tree, 'my-app/.eslintrc.json');
+      expect(eslintConfig.ignorePatterns).toContain('**/out-tsc');
+    });
+
+    it('should ignore "out-tsc" from eslint with flat config', async () => {
+      tree.write('eslint.config.mjs', 'export default [];');
+
+      await reactNativeApplicationGenerator(tree, {
+        directory: 'my-app',
+        linter: 'eslint',
+        e2eTestRunner: 'none',
+        install: false,
+        unitTestRunner: 'none',
+        bundler: 'webpack',
+        addPlugin: true,
+        useProjectJson: false,
+        skipFormat: true,
+      });
+
+      const eslintConfig = tree.read('my-app/eslint.config.mjs', 'utf-8');
+      expect(eslintConfig).toContain('**/out-tsc');
     });
   });
 });

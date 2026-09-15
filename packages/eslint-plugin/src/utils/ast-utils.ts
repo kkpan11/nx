@@ -5,6 +5,7 @@ import {
   workspaceRoot,
 } from '@nx/devkit';
 import { findNodes } from '@nx/js';
+import { getProjectSourceRoot } from '@nx/js/internal';
 import { getModifiers } from '@typescript-eslint/type-utils';
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -70,9 +71,11 @@ export function getBarrelEntryPointProjectNode(
       .filter((entry) => {
         const sourceFolderPaths = tsConfigBase.compilerOptions.paths[entry];
         return sourceFolderPaths.some((sourceFolderPath) => {
+          const normalizedPath = sourceFolderPath.replace(/^\.\//, '');
+          const sourceRoot = getProjectSourceRoot(projectNode.data);
           return (
-            sourceFolderPath === projectNode.data.sourceRoot ||
-            sourceFolderPath.indexOf(`${projectNode.data.sourceRoot}/`) === 0
+            normalizedPath === sourceRoot ||
+            normalizedPath.indexOf(`${sourceRoot}/`) === 0
           );
         });
       })
@@ -108,7 +111,7 @@ function hasMemberExport(exportedMember, filePath) {
   );
 }
 
-export function getRelativeImportPath(exportedMember, filePath, basePath) {
+export function getRelativeImportPath(exportedMember, filePath) {
   const status = lstatSync(filePath, {
     throwIfNoEntry: false,
   });
@@ -119,6 +122,8 @@ export function getRelativeImportPath(exportedMember, filePath, basePath) {
     );
     if (ext) {
       filePath += ext;
+    } else {
+      return;
     }
   } else if (status.isDirectory()) {
     const file = readdirSync(filePath).find((file) =>
@@ -273,8 +278,7 @@ export function getRelativeImportPath(exportedMember, filePath, basePath) {
       if (hasMemberExport(exportedMember, moduleFilePath)) {
         const foundFilePath = getRelativeImportPath(
           exportedMember,
-          moduleFilePath,
-          basePath
+          moduleFilePath
         );
         if (foundFilePath) {
           return foundFilePath;

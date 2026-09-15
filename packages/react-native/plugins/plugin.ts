@@ -1,21 +1,27 @@
 import {
-  CreateDependencies,
-  CreateNodes,
+  getNamedInputs,
+  calculateHashesForCreateNodes,
+  loadConfigFile,
+  PluginCache,
+  workspaceDataDirectory,
+  hashObject,
+} from '@nx/devkit/internal';
+import {
+  AggregateCreateNodesError,
   CreateNodesContext,
+  createNodesFromFiles,
+  CreateNodesResult,
+  CreateNodesResultArray,
+  CreateNodes,
   detectPackageManager,
   joinPathFragments,
   NxJsonConfiguration,
   readJsonFile,
   TargetConfiguration,
-  writeJsonFile,
 } from '@nx/devkit';
 import { dirname, join } from 'path';
 import { getLockFileName } from '@nx/js';
-import { getNamedInputs } from '@nx/devkit/src/utils/get-named-inputs';
-import { existsSync, readdirSync } from 'fs';
-import { calculateHashForCreateNodes } from '@nx/devkit/src/utils/calculate-hash-for-create-nodes';
-import { workspaceDataDirectory } from 'nx/src/utils/cache-directory';
-import { loadConfigFile } from '@nx/devkit/src/utils/config-utils';
+import { readdirSync } from 'fs';
 
 export interface ReactNativePluginOptions {
   startTargetName?: string;
@@ -26,72 +32,103 @@ export interface ReactNativePluginOptions {
   buildAndroidTargetName?: string;
   bundleTargetName?: string;
   syncDepsTargetName?: string;
-  upgradeTargetname?: string;
+  upgradeTargetName?: string;
 }
 
-const cachePath = join(workspaceDataDirectory, 'react-native.hash');
-const targetsCache = readTargetsCache();
-function readTargetsCache(): Record<
+type ReactNativeTargets = Record<
   string,
-  Record<string, TargetConfiguration<ReactNativePluginOptions>>
-> {
-  return existsSync(cachePath) ? readJsonFile(cachePath) : {};
-}
-
-function writeTargetsToCache() {
-  const oldCache = readTargetsCache();
-  writeJsonFile(cachePath, {
-    ...oldCache,
-    ...targetsCache,
-  });
-}
-
-export const createDependencies: CreateDependencies = () => {
-  writeTargetsToCache();
-  return [];
-};
+  TargetConfiguration<ReactNativePluginOptions>
+>;
 
 export const createNodes: CreateNodes<ReactNativePluginOptions> = [
-  '**/app.{json,config.js}',
-  async (configFilePath, options, context) => {
-    options = normalizeOptions(options);
-    const projectRoot = dirname(configFilePath);
-
-    // Do not create a project if package.json or project.json or metro.config.js isn't there.
-    const siblingFiles = readdirSync(join(context.workspaceRoot, projectRoot));
-    if (
-      !siblingFiles.includes('package.json') ||
-      !siblingFiles.includes('metro.config.js')
-    ) {
-      return {};
-    }
-    const appConfig = await getAppConfig(configFilePath, context);
-    if (appConfig.expo) {
-      return {};
-    }
-
-    const hash = await calculateHashForCreateNodes(
-      projectRoot,
-      options,
-      context,
-      [getLockFileName(detectPackageManager(context.workspaceRoot))]
+  '**/app.{json,config.js,config.ts}',
+  async (configFiles, options, context) => {
+    const optionsHash = hashObject(options);
+    const cachePath = join(
+      workspaceDataDirectory,
+      `react-native-${optionsHash}.hash`
     );
-
-    targetsCache[hash] ??= buildReactNativeTargets(
-      projectRoot,
-      options,
-      context
+    const targetsCache = new PluginCache<ReactNativeTargets>(cachePath);
+    const lockFileName = getLockFileName(
+      detectPackageManager(context.workspaceRoot)
     );
+    const normalizedOptions = normalizeOptions(options);
 
-    return {
-      projects: {
-        [projectRoot]: {
-          targets: targetsCache[hash],
-        },
-      },
-    };
+    try {
+      const { entries, preErrors } = await filterReactNativeConfigs(
+        configFiles,
+        context
+      );
+
+      const projectHashes = await calculateHashesForCreateNodes(
+        entries.map((e) => e.projectRoot),
+        normalizedOptions,
+        context,
+        entries.map(() => [lockFileName])
+      );
+
+      let results: CreateNodesResultArray = [];
+      let nodeErrors: Array<[string | null, Error]> = [];
+      try {
+        results = await createNodesFromFiles(
+          (configFile, _, ctx, idx) =>
+            createNodesInternal(
+              configFile,
+              normalizedOptions,
+              ctx,
+              targetsCache,
+              projectHashes[idx]
+            ),
+          entries.map((e) => e.configFile),
+          options,
+          context
+        );
+      } catch (e) {
+        if (e instanceof AggregateCreateNodesError) {
+          results = e.partialResults ?? [];
+          nodeErrors = e.errors;
+        } else {
+          throw e;
+        }
+      }
+
+      const allErrors = [...preErrors, ...nodeErrors];
+      if (allErrors.length > 0) {
+        throw new AggregateCreateNodesError(allErrors, results);
+      }
+      return results;
+    } finally {
+      targetsCache.writeToDisk();
+    }
   },
 ];
+
+export const createNodesV2 = createNodes;
+
+async function createNodesInternal(
+  configFile: string,
+  options: ReactNativePluginOptions,
+  context: CreateNodesContext,
+  targetsCache: PluginCache<ReactNativeTargets>,
+  hash: string
+): Promise<CreateNodesResult> {
+  const projectRoot = dirname(configFile);
+
+  if (!targetsCache.has(hash)) {
+    targetsCache.set(
+      hash,
+      buildReactNativeTargets(projectRoot, options, context)
+    );
+  }
+
+  return {
+    projects: {
+      [projectRoot]: {
+        targets: targetsCache.get(hash),
+      },
+    },
+  };
+}
 
 function buildReactNativeTargets(
   projectRoot: string,
@@ -103,6 +140,7 @@ function buildReactNativeTargets(
   const targets: Record<string, TargetConfiguration> = {
     [options.startTargetName]: {
       command: `react-native start`,
+      continuous: true,
       options: { cwd: projectRoot },
     },
     [options.podInstallTargetName]: {
@@ -112,10 +150,12 @@ function buildReactNativeTargets(
     },
     [options.runIosTargetName]: {
       command: `react-native run-ios`,
+      continuous: true,
       options: { cwd: projectRoot },
     },
     [options.runAndroidTargetName]: {
       command: `react-native run-android`,
+      continuous: true,
       options: { cwd: projectRoot },
     },
     [options.buildIosTargetName]: {
@@ -142,8 +182,9 @@ function buildReactNativeTargets(
     },
     [options.syncDepsTargetName]: {
       executor: '@nx/react-native:sync-deps',
+      continuous: false,
     },
-    [options.upgradeTargetname]: {
+    [options.upgradeTargetName]: {
       command: `react-native upgrade`,
       options: { cwd: projectRoot },
     },
@@ -159,6 +200,56 @@ function getAppConfig(
   const resolvedPath = join(context.workspaceRoot, configFilePath);
 
   return loadConfigFile(resolvedPath);
+}
+
+async function filterReactNativeConfigs(
+  configFiles: readonly string[],
+  context: CreateNodesContext
+): Promise<{
+  entries: Array<{ configFile: string; projectRoot: string }>;
+  preErrors: Array<[string, Error]>;
+}> {
+  const preErrors: Array<[string, Error]> = [];
+  const candidates = await Promise.all(
+    configFiles.map(
+      async (
+        configFile
+      ): Promise<{ configFile: string; projectRoot: string } | null> => {
+        try {
+          const projectRoot = dirname(configFile);
+          const siblingFiles = readdirSync(
+            join(context.workspaceRoot, projectRoot)
+          );
+          if (
+            !siblingFiles.includes('package.json') ||
+            !siblingFiles.includes('metro.config.js')
+          ) {
+            return null;
+          }
+          // Skip Expo projects; the @nx/expo plugin handles them.
+          const packageJson = readJsonFile(
+            join(context.workspaceRoot, projectRoot, 'package.json')
+          );
+          const appConfig = await getAppConfig(configFile, context);
+          if (
+            appConfig.expo ||
+            packageJson.dependencies?.['expo'] ||
+            packageJson.devDependencies?.['expo']
+          ) {
+            return null;
+          }
+          return { configFile, projectRoot };
+        } catch (e) {
+          preErrors.push([configFile, e as Error]);
+          return null;
+        }
+      }
+    )
+  );
+  return {
+    entries: candidates.filter((c): c is NonNullable<typeof c> => c !== null),
+    preErrors,
+  };
 }
 
 function getInputs(
@@ -194,6 +285,6 @@ function normalizeOptions(
   options.buildAndroidTargetName ??= 'build-android';
   options.bundleTargetName ??= 'bundle';
   options.syncDepsTargetName ??= 'sync-deps';
-  options.upgradeTargetname ??= 'upgrade';
+  options.upgradeTargetName ??= 'upgrade';
   return options;
 }

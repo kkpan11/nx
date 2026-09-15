@@ -1,9 +1,12 @@
-import * as chalk from 'chalk';
+import * as pc from 'picocolors';
 import { ExecutorContext, logger, names } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { ChildProcess, fork } from 'child_process';
+import { resolveExpoCliPath } from '../../utils/resolve-expo-cli';
 import { resolve as pathResolve } from 'path';
 
 import { ExpoStartOptions } from './schema';
+import { warnExpoExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ExpoStartOutput {
   baseUrl?: string;
@@ -16,12 +19,14 @@ export default async function* startExecutor(
   options: ExpoStartOptions,
   context: ExecutorContext
 ): AsyncGenerator<ExpoStartOutput> {
+  warnExpoExecutorDeprecation('start');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
   try {
     const baseUrl = `http://localhost:${options.port}`;
-    logger.info(chalk.cyan(`Packager is ready at ${baseUrl}`));
+    logger.info(pc.cyan(`Packager is ready at ${baseUrl}`));
 
     await startAsync(context.root, projectRoot, options);
 
@@ -43,7 +48,7 @@ function startAsync(
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     childProcess = fork(
-      require.resolve('@expo/cli/build/bin/cli'),
+      resolveExpoCliPath(),
       ['start', ...createStartOptions(options)],
       {
         cwd: pathResolve(workspaceRoot, projectRoot),
@@ -61,7 +66,8 @@ function startAsync(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

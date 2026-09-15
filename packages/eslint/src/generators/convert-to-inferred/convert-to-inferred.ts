@@ -1,18 +1,21 @@
 import {
+  migrateProjectExecutorsToPlugin,
+  NoTargetsToMigrateError,
+  processTargetOutputs,
+  interpolate,
+} from '@nx/devkit/internal';
+import {
   createProjectGraphAsync,
   formatFiles,
-  names,
+  type ProjectConfiguration,
   type TargetConfiguration,
   type Tree,
 } from '@nx/devkit';
-import { createNodesV2, EslintPluginOptions } from '../../plugins/plugin';
-import { migrateProjectExecutorsToPlugin } from '@nx/devkit/src/generators/plugin-migrations/executor-to-plugin-migrator';
+import { basename, dirname, relative } from 'node:path/posix';
+import { createNodes, type EslintPluginOptions } from '../../plugins/plugin';
+import { assertSupportedEslintVersion } from '../../utils/assert-supported-eslint-version';
+import { ESLINT_CONFIG_FILENAMES } from '../../utils/config-file';
 import { targetOptionsToCliMap } from './lib/target-options-map';
-import { interpolate } from 'nx/src/tasks-runner/utils';
-import {
-  processTargetOutputs,
-  toProjectRelativePath,
-} from '@nx/devkit/src/generators/plugin-migrations/plugin-migration-utils';
 
 interface Schema {
   project?: string;
@@ -20,6 +23,8 @@ interface Schema {
 }
 
 export async function convertToInferred(tree: Tree, options: Schema) {
+  assertSupportedEslintVersion(tree);
+
   const projectGraph = await createProjectGraphAsync();
 
   const migratedProjects =
@@ -27,20 +32,21 @@ export async function convertToInferred(tree: Tree, options: Schema) {
       tree,
       projectGraph,
       '@nx/eslint/plugin',
-      createNodesV2,
+      createNodes,
       { targetName: 'lint' },
       [
         {
           executors: ['@nx/eslint:lint', '@nrwl/linter:eslint'],
           postTargetTransformer,
           targetPluginOptionMapper: (targetName) => ({ targetName }),
+          skipTargetFilter,
         },
       ],
       options.project
     );
 
   if (migratedProjects.size === 0) {
-    throw new Error('Could not find any targets to migrate.');
+    throw new NoTargetsToMigrateError();
   }
 
   if (!options.skipFormat) {
@@ -55,16 +61,37 @@ function postTargetTransformer(
   inferredTargetConfiguration: TargetConfiguration
 ): TargetConfiguration {
   if (target.inputs) {
-    const inputs = target.inputs.filter(
-      (input) =>
-        typeof input === 'string' &&
-        ![
-          'default',
-          '{workspaceRoot}/.eslintrc.json',
-          '{workspaceRoot}/.eslintignore',
-          '{workspaceRoot}/eslint.config.js',
-        ].includes(input)
-    );
+    const normalizeInput = (input: string) => {
+      return input
+        .replace('{workspaceRoot}', '')
+        .replace('{projectRoot}', projectDetails.root)
+        .replace('{projectName}', projectDetails.projectName)
+        .replace(/^\//, '');
+    };
+
+    const inputs = target.inputs.filter((input) => {
+      if (typeof input === 'string') {
+        // if the input is a string, check if it is inferred by the plugin
+        // if it is, filter it out
+        return !inferredTargetConfiguration.inputs.some(
+          (inferredInput) =>
+            typeof inferredInput === 'string' &&
+            normalizeInput(inferredInput) === normalizeInput(input)
+        );
+      } else if ('externalDependencies' in input) {
+        // if the input is an object with an externalDependencies property,
+        // check if all the external dependencies are inferred by the plugin
+        // if they are, filter it out
+        return !input.externalDependencies.every((externalDependency) =>
+          inferredTargetConfiguration.inputs.some(
+            (inferredInput) =>
+              typeof inferredInput === 'object' &&
+              'externalDependencies' in inferredInput &&
+              inferredInput.externalDependencies.includes(externalDependency)
+          )
+        );
+      }
+    });
     if (inputs.length === 0) {
       delete target.inputs;
     }
@@ -107,13 +134,9 @@ function handlePropertiesInOptions(
   projectDetails: { projectName: string; root: string },
   target: TargetConfiguration
 ) {
-  if ('eslintConfig' in options) {
-    options.config = toProjectRelativePath(
-      options.eslintConfig,
-      projectDetails.root
-    );
-    delete options.eslintConfig;
-  }
+  // inferred targets are only identified after known files that ESLint would
+  // pick up, so we can remove the eslintConfig option
+  delete options.eslintConfig;
 
   if ('force' in options) {
     delete options.force;
@@ -150,22 +173,61 @@ function handlePropertiesInOptions(
   if ('lintFilePatterns' in options) {
     const normalizedLintFilePatterns = options.lintFilePatterns.map(
       (pattern) => {
-        return interpolate(pattern, {
+        const interpolatedPattern = interpolate(pattern, {
           workspaceRoot: '',
           projectRoot: projectDetails.root,
           projectName: projectDetails.projectName,
         });
+
+        if (interpolatedPattern === projectDetails.root) {
+          return '.';
+        }
+
+        return interpolatedPattern.replace(
+          new RegExp(`^(?:\./)?${projectDetails.root}/`),
+          ''
+        );
       }
     );
 
-    options.args = normalizedLintFilePatterns.map((pattern) =>
-      pattern.startsWith(projectDetails.root)
-        ? pattern.replace(new RegExp(`^${projectDetails.root}/`), './')
-        : pattern
-    );
+    options.args = normalizedLintFilePatterns
+      // the @nx/eslint/plugin automatically infers these, so we don't need to pass them in
+      .filter((p) =>
+        projectDetails.root === '.'
+          ? !['.', 'src', './src', 'lib', './lib'].includes(p)
+          : p !== '.'
+      );
+    if (options.args.length === 0) {
+      delete options.args;
+    }
 
     delete options.lintFilePatterns;
   }
 }
 
 export default convertToInferred;
+
+function skipTargetFilter(
+  targetOptions: { eslintConfig?: string },
+  project: ProjectConfiguration
+) {
+  if (targetOptions.eslintConfig) {
+    // check that the eslintConfig option is a default config file known by ESLint
+    if (
+      !ESLINT_CONFIG_FILENAMES.includes(basename(targetOptions.eslintConfig))
+    ) {
+      return `The "eslintConfig" option value (${targetOptions.eslintConfig}) is not a default config file known by ESLint.`;
+    }
+
+    // check that it is at the project root or in a parent directory
+    const eslintConfigPath = relative(project.root, targetOptions.eslintConfig);
+    if (
+      dirname(eslintConfigPath) !== '.' &&
+      !eslintConfigPath.startsWith('../')
+    ) {
+      return `The "eslintConfig" option value (${targetOptions.eslintConfig}) must point to a file in the project root or a parent directory.`;
+    }
+  }
+
+  return false;
+}

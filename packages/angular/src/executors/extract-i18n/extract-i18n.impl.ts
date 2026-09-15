@@ -1,24 +1,24 @@
-import type { ExtractI18nBuilderOptions } from '@angular-devkit/build-angular';
 import { parseTargetString, type ExecutorContext } from '@nx/devkit';
-import { createBuilderContext } from 'nx/src/adapter/ngcli-adapter';
-import { readCachedProjectConfiguration } from 'nx/src/project-graph/project-graph';
-import { getInstalledAngularVersionInfo } from '../utilities/angular-version-utils';
+import { assertPackageIsInstalled } from '../utilities/builder-package';
 import { patchBuilderContext } from '../utilities/patch-builder-context';
 import type { ExtractI18nExecutorOptions } from './schema';
+import { createBuilderContext } from '@nx/devkit/ngcli-adapter';
+import { readCachedProjectConfiguration } from '@nx/devkit/internal';
 
 export default async function* extractI18nExecutor(
   options: ExtractI18nExecutorOptions,
   context: ExecutorContext
 ) {
   const parsedBuildTarget = parseTargetString(options.buildTarget, context);
-  const browserTargetProjectConfiguration = readCachedProjectConfiguration(
+  const buildTargetProjectConfiguration = readCachedProjectConfiguration(
     parsedBuildTarget.project
   );
 
   const buildTarget =
-    browserTargetProjectConfiguration.targets[parsedBuildTarget.target];
+    buildTargetProjectConfiguration.targets[parsedBuildTarget.target];
 
   const isUsingEsbuildBuilder = [
+    '@angular/build:application',
     '@angular-devkit/build-angular:application',
     '@angular-devkit/build-angular:browser-esbuild',
     '@nx/angular:application',
@@ -27,7 +27,7 @@ export default async function* extractI18nExecutor(
 
   const builderContext = await createBuilderContext(
     {
-      builderName: 'extrct-i18n',
+      builderName: '@nx/angular:extract-i18n',
       description: 'Extracts i18n messages from source code.',
       optionSchema: require('./schema.json'),
     },
@@ -42,27 +42,12 @@ export default async function* extractI18nExecutor(
    */
   patchBuilderContext(builderContext, isUsingEsbuildBuilder, parsedBuildTarget);
 
-  const { executeExtractI18nBuilder } = await import(
-    '@angular-devkit/build-angular'
+  assertPackageIsInstalled(
+    '@angular-devkit/build-angular',
+    '@nx/angular:extract-i18n'
   );
-  const delegateBuilderOptions = getDelegateBuilderOptions(options);
+  const { executeExtractI18nBuilder } =
+    await import('@angular-devkit/build-angular');
 
-  return await executeExtractI18nBuilder(
-    delegateBuilderOptions,
-    builderContext
-  );
-}
-
-function getDelegateBuilderOptions(
-  options: ExtractI18nExecutorOptions
-): ExtractI18nBuilderOptions {
-  const delegateBuilderOptions: ExtractI18nBuilderOptions = { ...options };
-
-  const { major: angularMajorVersion } = getInstalledAngularVersionInfo();
-  if (angularMajorVersion <= 17) {
-    delegateBuilderOptions.browserTarget = delegateBuilderOptions.buildTarget;
-    delete delegateBuilderOptions.buildTarget;
-  }
-
-  return delegateBuilderOptions;
+  return await executeExtractI18nBuilder(options, builderContext);
 }

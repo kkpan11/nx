@@ -1,2 +1,6 @@
+benchmarks/packages
 nx-dev/**/jest.config.js
 .next
+_files
+_solution
+nx-dev/tutorial/**/templates

@@ -9,7 +9,7 @@ import {
   runCLI,
   runCommand,
   runNgNew,
-} from '../../utils';
+} from '@nx/e2e-utils';
 
 describe('nx init (Angular CLI - legacy)', () => {
   let project: string;
@@ -56,7 +56,7 @@ describe('nx init (Angular CLI - legacy)', () => {
     // run build again to check is coming from cache
     const cachedBuildOutput = runCLI(`build ${project} --outputHashing none`);
     expect(cachedBuildOutput).toContain(
-      `> nx run ${project}:build:production --outputHashing none  [local cache]`
+      `> nx run ${project}:build:production --outputHashing none  [existing outputs match the cache, left as is]`
     );
     expect(cachedBuildOutput).toContain('Nx read the output from the cache');
     expect(cachedBuildOutput).toContain(
@@ -85,12 +85,12 @@ describe('nx init (Angular CLI - legacy)', () => {
     expect(coldBuildOutput).toContain(
       `Successfully ran target build for project ${project}`
     );
-    checkFilesExist(`dist/apps/${project}/browser/main.js`);
+    checkFilesExist(`dist/${project}/browser/main.js`);
 
     // run build again to check is coming from cache
     const cachedBuildOutput = runCLI(`build ${project} --outputHashing none`);
     expect(cachedBuildOutput).toContain(
-      `> nx run ${project}:build:production --outputHashing none  [local cache]`
+      `> nx run ${project}:build:production --outputHashing none  [existing outputs match the cache, left as is]`
     );
     expect(cachedBuildOutput).toContain('Nx read the output from the cache');
     expect(cachedBuildOutput).toContain(

@@ -3,16 +3,23 @@ import {
   addDependenciesToPackageJson,
   generateFiles,
   joinPathFragments,
+  names,
   readProjectConfiguration,
   updateProjectConfiguration,
 } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
 import { join } from 'path';
+import { gte } from 'semver';
 import {
   corsVersion,
   moduleFederationNodeVersion,
   typesCorsVersion,
 } from '../../../utils/versions';
-import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
+import { getComponentType } from '../../utils/artifact-types';
+import {
+  getInstalledAngularVersionInfo,
+  supportsSsrAllowedHosts,
+} from '../../utils/version-utils';
 
 export async function updateSsrSetup(
   tree: Tree,
@@ -21,26 +28,29 @@ export async function updateSsrSetup(
     port,
     standalone,
     typescriptConfiguration,
+    zoneless,
     skipPackageJson,
   }: {
     appName: string;
     port: number;
     standalone: boolean;
     typescriptConfiguration: boolean;
+    zoneless: boolean;
     skipPackageJson?: boolean;
   }
 ) {
+  const { major: angularMajorVersion, version: angularVersion } =
+    getInstalledAngularVersionInfo(tree);
   let project = readProjectConfiguration(tree, appName);
+  const sourceRoot = getProjectSourceRoot(project, tree);
 
   tree.rename(
-    joinPathFragments(project.sourceRoot, 'main.server.ts'),
-    joinPathFragments(project.sourceRoot, 'bootstrap.server.ts')
+    joinPathFragments(sourceRoot, 'main.server.ts'),
+    joinPathFragments(sourceRoot, 'bootstrap.server.ts')
   );
 
-  tree.write(
-    joinPathFragments(project.root, 'server.ts'),
-    "import('./src/main.server');"
-  );
+  const pathToServerEntry = joinPathFragments(sourceRoot, 'server.ts');
+  tree.write(pathToServerEntry, `import('./main.server');`);
 
   const browserBundleOutput = project.targets.build.options.outputPath;
   const serverBundleOutput = project.targets.build.options.outputPath.replace(
@@ -48,23 +58,17 @@ export async function updateSsrSetup(
     '/server'
   );
 
-  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-  generateFiles(
-    tree,
-    join(
-      __dirname,
-      '../files/common',
-      angularMajorVersion >= 17 ? 'v17+' : 'pre-v17'
-    ),
-    project.root,
-    {
-      appName,
-      browserBundleOutput,
-      serverBundleOutput,
-      standalone,
-      tmpl: '',
-    }
-  );
+  generateFiles(tree, join(__dirname, '../files/common'), project.root, {
+    appName,
+    browserBundleOutput,
+    serverBundleOutput,
+    standalone,
+    zoneless,
+    useDefaultImport: angularMajorVersion >= 21,
+    angularMajorVersion,
+    supportsAllowedHosts: supportsSsrAllowedHosts(tree),
+    tmpl: '',
+  });
 
   const pathToTemplateFiles = typescriptConfiguration ? 'base-ts' : 'base';
 
@@ -78,6 +82,12 @@ export async function updateSsrSetup(
   );
 
   if (standalone) {
+    const componentType = getComponentType(tree);
+    const componentFileSuffix = componentType ? `.${componentType}` : '';
+
+    // https://github.com/angular/angular-cli/releases/tag/20.3.0
+    const useBootstrapContext = gte(angularVersion, '20.3.0');
+
     generateFiles(
       tree,
       joinPathFragments(__dirname, '../files/standalone'),
@@ -85,6 +95,9 @@ export async function updateSsrSetup(
       {
         appName,
         standalone,
+        componentType: componentType ? names(componentType).className : '',
+        componentFileSuffix,
+        useBootstrapContext,
         tmpl: '',
       }
     );

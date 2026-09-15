@@ -1,8 +1,6 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
-import { Tree } from '@nx/devkit';
-import { writeJson } from '@nx/devkit';
+import { Tree, writeJson } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { componentGenerator } from '../component/component';
 import { librarySecondaryEntryPointGenerator } from '../library-secondary-entry-point/library-secondary-entry-point';
@@ -13,27 +11,15 @@ import {
 } from '../utils/testing';
 import { angularStoriesGenerator } from './stories';
 
-// need to mock cypress otherwise it'll use the nx installed version from package.json
-//  which is v9 while we are testing for the new v10 version
-jest.mock('@nx/cypress/src/utils/cypress-version');
-// TODO(katerina): Nx 19 -> remove Cypress
-
 describe('angularStories generator: libraries', () => {
   const libName = 'test-ui-lib';
-  let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
-
-  beforeEach(() => {
-    mockedInstalledCypressVersion.mockReturnValue(10);
-  });
 
   describe('Stories for empty Angular library', () => {
     let tree: Tree;
 
     beforeEach(async () => {
       tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
-      await generateTestLibrary(tree, { name: libName, skipFormat: true });
+      await generateTestLibrary(tree, { directory: libName, skipFormat: true });
     });
 
     it('should not fail on empty NgModule declarations', () => {
@@ -64,8 +50,7 @@ describe('angularStories generator: libraries', () => {
       // add a standalone component to the secondary entrypoint
       await componentGenerator(tree, {
         name: 'secondary-button',
-        project: libName,
-        path: `${libName}/secondary-entry-point/src/lib`,
+        path: `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button`,
         skipFormat: true,
       });
 
@@ -73,35 +58,84 @@ describe('angularStories generator: libraries', () => {
 
       expect(
         tree.exists(
-          `${libName}/src/lib/barrel/barrel-button/barrel-button.component.stories.ts`
+          `${libName}/src/lib/barrel/barrel-button/barrel-button.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.exists(
-          `${libName}/src/lib/nested/nested-button/nested-button.component.stories.ts`
+          `${libName}/src/lib/nested/nested-button/nested-button.stories.ts`
         )
       ).toBeTruthy();
       expect(
-        tree.exists(
-          `${libName}/src/lib/test-button/test-button.component.stories.ts`
-        )
+        tree.exists(`${libName}/src/lib/test-button/test-button.stories.ts`)
       ).toBeTruthy();
       expect(
-        tree.exists(
-          `${libName}/src/lib/test-other/test-other.component.stories.ts`
-        )
+        tree.exists(`${libName}/src/lib/test-other/test-other.stories.ts`)
       ).toBeTruthy();
       expect(
         tree.read(
-          `${libName}/src/lib/test-button/test-button.component.stories.ts`,
+          `${libName}/src/lib/test-button/test-button.stories.ts`,
           'utf-8'
         )
       ).toMatchSnapshot();
       expect(
         tree.exists(
+          `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button.stories.ts`
+        )
+      ).toBeTruthy();
+    });
+
+    it('should generate stories.ts files for components generated with a type "component"', async () => {
+      writeJson(tree, `${libName}/package.json`, { name: libName });
+      await librarySecondaryEntryPointGenerator(tree, {
+        library: libName,
+        name: 'secondary-entry-point',
+        skipFormat: true,
+      });
+      await componentGenerator(tree, {
+        name: 'secondary-button',
+        path: `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button`,
+        type: 'component',
+        skipFormat: true,
+      });
+
+      await angularStoriesGenerator(tree, { name: libName });
+
+      expect(
+        tree.exists(
           `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button.component.stories.ts`
         )
       ).toBeTruthy();
+      expect(
+        tree.read(
+          `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button.component.stories.ts`,
+          'utf-8'
+        )
+      ).toMatchInlineSnapshot(`
+        "import type { Meta, StoryObj } from '@storybook/angular';
+        import { SecondaryButtonComponent } from './secondary-button.component';
+        import { expect } from 'storybook/test';
+
+        const meta: Meta<SecondaryButtonComponent> = {
+          component: SecondaryButtonComponent,
+          title: 'SecondaryButtonComponent',
+        };
+        export default meta;
+
+        type Story = StoryObj<SecondaryButtonComponent>;
+
+        export const Primary: Story = {
+          args: {},
+        };
+
+        export const Heading: Story = {
+          args: {},
+          play: async ({ canvas }) => {
+            await expect(canvas.getByText(/secondary-button/gi)).toBeTruthy();
+          },
+        };
+        "
+      `);
     });
 
     it('should run twice without errors', async () => {
@@ -127,17 +161,17 @@ describe('angularStories generator: libraries', () => {
 
       expect(
         tree.exists(
-          `${libName}/src/lib/variable-declare/variable-declare-button/variable-declare-button.component.stories.ts`
+          `${libName}/src/lib/variable-declare/variable-declare-button/variable-declare-button.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.exists(
-          `${libName}/src/lib/variable-declare/variable-declare-view/variable-declare-view.component.stories.ts`
+          `${libName}/src/lib/variable-declare/variable-declare-view/variable-declare-view.stories.ts`
         )
       ).toBeTruthy();
     });
 
-    it('should handle modules with where components are spread into the declarations array', async () => {
+    it('should handle modules where components are spread into the declarations array', async () => {
       await angularStoriesGenerator(tree, {
         name: libName,
         skipFormat: true,
@@ -145,17 +179,17 @@ describe('angularStories generator: libraries', () => {
 
       expect(
         tree.exists(
-          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-anotherview/variable-spread-declare-anotherview.component.stories.ts`
+          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-anotherview/variable-spread-declare-anotherview.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.exists(
-          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-button/variable-spread-declare-button.component.stories.ts`
+          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-button/variable-spread-declare-button.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.exists(
-          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-view/variable-spread-declare-view.component.stories.ts`
+          `${libName}/src/lib/variable-spread-declare/variable-spread-declare-view/variable-spread-declare-view.stories.ts`
         )
       ).toBeTruthy();
     });
@@ -168,12 +202,12 @@ describe('angularStories generator: libraries', () => {
 
       expect(
         tree.exists(
-          `${libName}/src/lib/static-member-declarations/cmp1/cmp1.component.stories.ts`
+          `${libName}/src/lib/static-member-declarations/cmp1/cmp1.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.exists(
-          `${libName}/src/lib/static-member-declarations/cmp2/cmp2.component.stories.ts`
+          `${libName}/src/lib/static-member-declarations/cmp2/cmp2.stories.ts`
         )
       ).toBeTruthy();
     });
@@ -181,21 +215,21 @@ describe('angularStories generator: libraries', () => {
     it('should generate stories file for scam component', async () => {
       await scamGenerator(tree, {
         name: 'my-scam',
-        project: libName,
+        path: `${libName}/src/lib/my-scam/my-scam`,
         skipFormat: true,
       });
 
       await angularStoriesGenerator(tree, { name: libName, skipFormat: true });
 
       expect(
-        tree.exists(`${libName}/src/lib/my-scam/my-scam.component.stories.ts`)
+        tree.exists(`${libName}/src/lib/my-scam/my-scam.stories.ts`)
       ).toBeTruthy();
     });
 
     it('should generate stories file for inline scam component', async () => {
       await scamGenerator(tree, {
         name: 'my-scam',
-        project: libName,
+        path: `${libName}/src/lib/my-scam/my-scam`,
         inlineScam: true,
         skipFormat: true,
       });
@@ -203,7 +237,7 @@ describe('angularStories generator: libraries', () => {
       await angularStoriesGenerator(tree, { name: libName, skipFormat: true });
 
       expect(
-        tree.exists(`${libName}/src/lib/my-scam/my-scam.component.stories.ts`)
+        tree.exists(`${libName}/src/lib/my-scam/my-scam.stories.ts`)
       ).toBeTruthy();
     });
 
@@ -211,7 +245,7 @@ describe('angularStories generator: libraries', () => {
       // add standalone component
       await componentGenerator(tree, {
         name: 'standalone',
-        project: libName,
+        path: `${libName}/src/lib/standalone/standalone`,
         standalone: true,
         skipFormat: true,
       });
@@ -225,8 +259,7 @@ describe('angularStories generator: libraries', () => {
       // add a standalone component to the secondary entrypoint
       await componentGenerator(tree, {
         name: 'secondary-standalone',
-        project: libName,
-        path: `${libName}/secondary-entry-point/src/lib`,
+        path: `${libName}/secondary-entry-point/src/lib/secondary-standalone/secondary-standalone`,
         standalone: true,
         skipFormat: true,
       });
@@ -234,24 +267,22 @@ describe('angularStories generator: libraries', () => {
       await angularStoriesGenerator(tree, { name: libName });
 
       expect(
-        tree.exists(
-          `${libName}/src/lib/standalone/standalone.component.stories.ts`
-        )
+        tree.exists(`${libName}/src/lib/standalone/standalone.stories.ts`)
       ).toBeTruthy();
       expect(
         tree.read(
-          `${libName}/src/lib/standalone/standalone.component.stories.ts`,
+          `${libName}/src/lib/standalone/standalone.stories.ts`,
           'utf-8'
         )
       ).toMatchSnapshot();
       expect(
         tree.exists(
-          `${libName}/secondary-entry-point/src/lib/secondary-standalone/secondary-standalone.component.stories.ts`
+          `${libName}/secondary-entry-point/src/lib/secondary-standalone/secondary-standalone.stories.ts`
         )
       ).toBeTruthy();
       expect(
         tree.read(
-          `${libName}/secondary-entry-point/src/lib/secondary-standalone/secondary-standalone.component.stories.ts`,
+          `${libName}/secondary-entry-point/src/lib/secondary-standalone/secondary-standalone.stories.ts`,
           'utf-8'
         )
       ).toMatchSnapshot();
@@ -268,8 +299,7 @@ describe('angularStories generator: libraries', () => {
       // add a standalone component to the secondary entrypoint
       await componentGenerator(tree, {
         name: 'secondary-button',
-        project: libName,
-        path: `${libName}/secondary-entry-point/src/lib`,
+        path: `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button`,
         skipFormat: true,
       });
 
@@ -284,33 +314,29 @@ describe('angularStories generator: libraries', () => {
 
       expect(
         tree.exists(
-          `${libName}/src/lib/barrel/barrel-button/barrel-button.component.stories.ts`
+          `${libName}/src/lib/barrel/barrel-button/barrel-button.stories.ts`
         )
       ).toBeFalsy();
       expect(
         tree.exists(
-          `${libName}/src/lib/nested/nested-button/nested-button.component.stories.ts`
+          `${libName}/src/lib/nested/nested-button/nested-button.stories.ts`
         )
       ).toBeTruthy();
       expect(
-        tree.exists(
-          `${libName}/src/lib/test-button/test-button.component.stories.ts`
-        )
+        tree.exists(`${libName}/src/lib/test-button/test-button.stories.ts`)
       ).toBeTruthy();
       expect(
-        tree.exists(
-          `${libName}/src/lib/test-other/test-other.component.stories.ts`
-        )
+        tree.exists(`${libName}/src/lib/test-other/test-other.stories.ts`)
       ).toBeTruthy();
       expect(
         tree.read(
-          `${libName}/src/lib/test-button/test-button.component.stories.ts`,
+          `${libName}/src/lib/test-button/test-button.stories.ts`,
           'utf-8'
         )
       ).toMatchSnapshot();
       expect(
         tree.exists(
-          `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button.component.stories.ts`
+          `${libName}/secondary-entry-point/src/lib/secondary-button/secondary-button.stories.ts`
         )
       ).toBeFalsy();
     });

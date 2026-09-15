@@ -1,23 +1,25 @@
 import {
-  updateJson,
   cleanupProject,
-  newProject,
-  runCLI,
-  tmpProjPath,
-  runCommand,
   createFile,
-  uniq,
+  detectPackageManager,
+  exists,
   getPackageManagerCommand,
+  newProject,
   readJson,
+  runCLI,
+  runCommand,
+  tmpProjPath,
+  uniq,
   updateFile,
-} from '@nx/e2e/utils';
+  updateJson,
+} from '@nx/e2e-utils';
 import { join } from 'path';
 
 describe('packaging libs', () => {
   let scope: string;
 
   beforeEach(() => {
-    scope = newProject();
+    scope = newProject({ packages: ['@nx/js', '@nx/eslint', '@nx/jest'] });
   });
 
   afterEach(() => cleanupProject());
@@ -29,11 +31,13 @@ describe('packaging libs', () => {
     const rollupLib = uniq('rolluplib');
 
     runCLI(
-      `generate @nx/js:lib ${esbuildLib} --bundler=esbuild --no-interactive`
+      `generate @nx/js:lib libs/${esbuildLib} --bundler=esbuild --no-interactive`
     );
-    runCLI(`generate @nx/js:lib ${viteLib} --bundler=vite --no-interactive`);
     runCLI(
-      `generate @nx/js:lib ${rollupLib} --bundler=rollup --no-interactive`
+      `generate @nx/js:lib libs/${viteLib} --bundler=vite --no-interactive`
+    );
+    runCLI(
+      `generate @nx/js:lib libs/${rollupLib} --bundler=rollup --no-interactive`
     );
     updateFile(`libs/${rollupLib}/src/index.ts`, (content) => {
       // Test that default functions work in ESM (Node).
@@ -136,18 +140,34 @@ describe('packaging libs', () => {
     const tscEsmLib = uniq('tscesmlib');
     const swcEsmLib = uniq('swcesmlib');
 
-    runCLI(`generate @nx/js:lib ${tscLib} --bundler=tsc --no-interactive`);
-    runCLI(`generate @nx/js:lib ${swcLib} --bundler=swc --no-interactive`);
-    runCLI(`generate @nx/js:lib ${tscEsmLib} --bundler=tsc --no-interactive`);
-    runCLI(`generate @nx/js:lib ${swcEsmLib} --bundler=swc --no-interactive`);
+    runCLI(`generate @nx/js:lib libs/${tscLib} --bundler=tsc --no-interactive`);
+    runCLI(
+      `generate @nx/js:lib libs/${swcLib}  --bundler=swc --no-interactive`
+    );
+    runCLI(
+      `generate @nx/js:lib libs/${tscEsmLib} --bundler=tsc --no-interactive`
+    );
+    runCLI(
+      `generate @nx/js:lib libs/${swcEsmLib} --bundler=swc --no-interactive`
+    );
 
     // Change module format to ESM
     updateJson(`libs/${tscEsmLib}/tsconfig.json`, (json) => {
       json.compilerOptions.module = 'esnext';
       return json;
     });
+    updateJson(`libs/${tscEsmLib}/package.json`, (json) => {
+      // check one lib without type, the build output should be set with type module
+      delete json.type;
+      return json;
+    });
     updateJson(`libs/${swcEsmLib}/.swcrc`, (json) => {
       json.module.type = 'es6';
+      return json;
+    });
+    updateJson(`libs/${swcEsmLib}/package.json`, (json) => {
+      // check one lib with the type set, the build output should be set with type module
+      json.type = 'module';
       return json;
     });
     // Node ESM requires file extensions in imports so must add them before building
@@ -185,19 +205,26 @@ describe('packaging libs', () => {
 
     expect(readJson(`dist/libs/${tscLib}/package.json`).exports).toEqual({
       './package.json': './package.json',
-      '.': './src/index.js',
+      '.': {
+        default: './src/index.js',
+        types: './src/index.d.ts',
+      },
       './foo/bar': './src/foo/bar.js',
       './foo/faz': './src/foo/faz.js',
     });
 
     expect(readJson(`dist/libs/${swcLib}/package.json`).exports).toEqual({
       './package.json': './package.json',
-      '.': './src/index.js',
+      '.': {
+        default: './src/index.js',
+        types: './src/index.d.ts',
+      },
       './foo/bar': './src/foo/bar.js',
       './foo/faz': './src/foo/faz.js',
     });
 
-    const pmc = getPackageManagerCommand();
+    const pm = detectPackageManager();
+    const pmc = getPackageManagerCommand({ packageManager: pm });
     let output: string;
 
     // Make sure CJS output is correct
@@ -231,6 +258,19 @@ describe('packaging libs', () => {
         console.log(faz);
       `
     );
+
+    if (pm === 'pnpm' && exists('pnpm-lock.yaml')) {
+      // if the workspace file exists, the packages must be included so the
+      // install command considers them
+      updateFile(
+        'pnpm-lock.yaml',
+        (content) => `${content}
+packages:
+  - 'libs/*'
+  - 'test-cjs'`
+      );
+    }
+
     runCommand(pmc.install, {
       cwd: join(tmpProjPath(), 'test-cjs'),
     });

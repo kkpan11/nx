@@ -5,6 +5,7 @@
   "description": "Build a project using webpack.",
   "cli": "nx",
   "type": "object",
+  "x-deprecated": "The `@nx/webpack:webpack` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/webpack:convert-to-inferred` to migrate to the `@nx/webpack/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "properties": {
     "crossOrigin": {
       "type": "string",
@@ -41,14 +42,28 @@
       "description": "Target platform for the build, same as the Webpack target option.",
       "enum": ["node", "web", "webworker"]
     },
-    "deleteOutputPath": {
-      "type": "boolean",
-      "description": "Delete the output path before building.",
-      "default": true
-    },
     "watch": {
       "type": "boolean",
       "description": "Enable re-building when files change."
+    },
+    "cache": {
+      "description": "Configure webpack caching behavior. When not specified, defaults to `{ type: 'memory' }` for Node targets in watch mode, and `undefined` otherwise.",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "The type of cache to use.",
+              "enum": ["memory", "filesystem"]
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
     },
     "baseHref": {
       "type": "string",
@@ -70,6 +85,31 @@
       "type": "boolean",
       "description": "Use a separate bundle containing the runtime."
     },
+    "skipTypeChecking": {
+      "alias": "typeCheck",
+      "type": "boolean",
+      "description": "Skip the type checking. Default is `false`.",
+      "x-deprecated": "Use `typeCheckOptions` instead. This option will be removed in Nx 24."
+    },
+    "typeCheckOptions": {
+      "description": "Configure type checking during the build. Set to `true` to enable with defaults (async: true). Set to `false` to disable type checking entirely. Use `{ async: true }` to run type checking in a separate process without blocking the build. Default is `{ async: true }`.",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "async": {
+              "type": "boolean",
+              "description": "Run type checking in a separate process without blocking the build.",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "sourceMap": {
       "description": "Output sourcemaps. Use 'hidden' for use with error reporting tools without generating sourcemap comment.",
       "oneOf": [
@@ -84,6 +124,10 @@
     "progress": {
       "type": "boolean",
       "description": "Log progress to the console while building."
+    },
+    "poll": {
+      "type": "number",
+      "description": "Enable and define the file watching poll time period."
     },
     "assets": {
       "type": "array",
@@ -163,6 +207,14 @@
       "type": "boolean",
       "description": "Generates a `package.json` and pruned lock file with the project's `node_module` dependencies populated for installing in a container. If a `package.json` exists in the project's directory, it will be reused with dependencies populated."
     },
+    "skipOverrides": {
+      "type": "boolean",
+      "description": "Do not add a `overrides` and `resolutions` entries to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
+    "skipPackageManager": {
+      "type": "boolean",
+      "description": "Do not add a `packageManager` entry to the generated package.json file. Only works in conjunction with `generatePackageJson` option."
+    },
     "transformers": {
       "type": "array",
       "description": "List of TypeScript Compiler Transfomers Plugins.",
@@ -213,6 +265,10 @@
       "type": "boolean",
       "description": "Extract CSS into a `.css` file."
     },
+    "cssModuleHashFunction": {
+      "type": "string",
+      "description": "Hash algorithm used to generate CSS module class names. Defaults to `md5`, which FIPS-restricted OpenSSL rejects. Changing it renames generated class names."
+    },
     "subresourceIntegrity": {
       "type": "boolean",
       "description": "Enables the use of subresource integrity validation."
@@ -231,11 +287,12 @@
       "type": "boolean",
       "description": "Generates a 'stats.json' file which can be analyzed using tools such as: 'webpack-bundle-analyzer' or `<https://webpack.github.io/analyse>`."
     },
-    "isolatedConfig": {
-      "type": "boolean",
-      "description": "Do not apply Nx webpack plugins automatically. Plugins need to be applied in the project's webpack.config.js file (e.g. withNx, withReact, etc.).",
-      "default": true,
-      "x-deprecated": "Automatic configuration of Webpack is deprecated in favor of an explicit 'webpack.config.js' file. This option will be removed in Nx 20. See https://nx.dev/recipes/webpack/webpack-config-setup."
+    "runtimeDependencies": {
+      "description": "Add runtime dependencies to the generated `package.json` file. Useful for Docker install.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "standardWebpackConfigFunction": {
       "type": "boolean",
@@ -353,7 +410,7 @@
               "type": "string",
               "description": "The file to include.",
               "x-completion-type": "file",
-              "x-completion-glob": "**/*@(.css|.scss|.less|.sass|.styl|.stylus)"
+              "x-completion-glob": "**/*@(.css|.scss|.less|.sass)"
             },
             "bundleName": {
               "type": "string",
@@ -372,7 +429,7 @@
           "type": "string",
           "description": "The file to include.",
           "x-completion-type": "file",
-          "x-completion-glob": "**/*@(.css|.scss|.less|.sass|.styl|.stylus)"
+          "x-completion-glob": "**/*@(.css|.scss|.less|.sass)"
         }
       ]
     },

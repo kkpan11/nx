@@ -12,37 +12,34 @@
     }
   ],
   "properties": {
-    "name": {
-      "description": "Library name.",
+    "directory": {
+      "description": "A directory where the library is placed.",
       "type": "string",
+      "alias": "dir",
       "$default": {
         "$source": "argv",
         "index": 0
       },
-      "x-prompt": "What name would you like to use for the library?",
-      "pattern": "(?:^@[a-zA-Z0-9-*~][a-zA-Z0-9-*._~]*\\/[a-zA-Z0-9-~][a-zA-Z0-9-._~]*|^[a-zA-Z][^:]*)$"
+      "x-prompt": "Which directory do you want to create the library in?"
     },
-    "directory": {
-      "description": "A directory where the library is placed.",
-      "type": "string",
-      "alias": "dir"
-    },
-    "projectNameAndRootFormat": {
-      "description": "Whether to generate the project name and root directory as provided (`as-provided`) or generate them composing their values and taking the configured layout into account (`derived`).",
-      "type": "string",
-      "enum": ["as-provided", "derived"]
+    "name": {
+      "description": "Library name.",
+      "pattern": "(?:^@[a-zA-Z0-9-*~][a-zA-Z0-9-*._~]*\\/[a-zA-Z0-9-~][a-zA-Z0-9-._~]*|^[a-zA-Z][^:]*)$",
+      "type": "string"
     },
     "linter": {
-      "description": "The tool to use for running lint checks.",
+      "description": "The tool to use for running lint checks. Defaults to the linter the workspace already uses.",
       "type": "string",
-      "enum": ["eslint", "none"],
-      "default": "eslint"
+      "enum": ["eslint", "oxlint", "none"],
+      "x-priority": "important"
     },
     "unitTestRunner": {
       "description": "Test runner to use for unit tests.",
       "type": "string",
-      "enum": ["jest", "none"],
-      "default": "jest"
+      "enum": ["jest", "vitest", "none"],
+      "default": "none",
+      "x-prompt": "Which unit test runner would you like to use?",
+      "x-priority": "important"
     },
     "tags": {
       "description": "Add tags to the library (used for linting).",
@@ -92,7 +89,7 @@
       "default": false
     },
     "testEnvironment": {
-      "description": "The test environment for jest, for node applications this should stay as node unless doing DOM testing.",
+      "description": "The test environment for the unit test runner. For node applications this should stay as node unless doing DOM testing.",
       "type": "string",
       "enum": ["jsdom", "node"],
       "default": "node"
@@ -119,16 +116,16 @@
       "type": "boolean",
       "default": true
     },
-    "standaloneConfig": {
-      "description": "Split the project configuration into <projectRoot>/project.json rather than including it inside workspace.json",
+    "enableTypedLinting": {
       "type": "boolean",
-      "default": true,
-      "x-deprecated": "Nx only supports standaloneConfig"
+      "description": "Whether to enable typed linting. For flat configs, this configures the recommended `parserOptions.projectService` and `tsconfigRootDir`. For legacy `.eslintrc` configs, this configures `parserOptions.project`. We do not enable this by default for lint performance reasons.",
+      "default": false
     },
     "setParserOptionsProject": {
       "type": "boolean",
-      "description": "Whether or not to configure the ESLint \"parserOptions.project\" option. We do not do this by default for lint performance reasons.",
-      "default": false
+      "description": "Deprecated alias for `enableTypedLinting`.",
+      "default": false,
+      "x-deprecated": "Use `enableTypedLinting` instead. This option will be removed in Nx v24."
     },
     "skipPackageJson": {
       "description": "Do not add dependencies to `package.json`.",
@@ -136,12 +133,11 @@
       "default": false,
       "x-priority": "internal"
     },
-    "simpleName": {
-      "description": "Don't include the directory in the name of the module of the library.",
+    "useProjectJson": {
       "type": "boolean",
-      "default": false
+      "description": "Use a `project.json` configuration file instead of inlining the Nx configuration in the `package.json` file."
     }
   },
   "additionalProperties": false,
-  "required": ["name"]
+  "required": ["directory"]
 }

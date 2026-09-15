@@ -16,10 +16,8 @@ export function createTaskHasher(
   if (daemonClient.enabled()) {
     return new DaemonBasedTaskHasher(daemonClient, runnerOptions);
   } else {
-    const { fileMap, allWorkspaceFiles, rustReferences } = getFileMap();
+    const { rustReferences } = getFileMap();
     return new InProcessTaskHasher(
-      fileMap?.projectFileMap,
-      allWorkspaceFiles,
       projectGraph,
       nxJson,
       rustReferences,

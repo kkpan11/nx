@@ -1,12 +1,12 @@
 import { Fragment, ReactNode, useMemo, useState } from 'react';
 import { PlayIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { Transition } from '@headlessui/react';
-import { getExternalApiService, useEnvironmentConfig } from '@nx/graph/shared';
-/* eslint-disable @nx/enforce-module-boundaries */
+import { getExternalApiService, useEnvironmentConfig } from '@nx/graph-shared';
+
 // nx-ignore-next-line
 import type { TargetConfiguration } from '@nx/devkit';
-import { TerminalOutput } from '@nx/nx-dev/ui-fence';
-import { Tooltip } from '@nx/graph/ui-tooltips';
+import { TerminalOutput } from '@nx/nx-dev-ui-fence';
+import { Tooltip } from '@nx/graph-ui-common';
 import { TooltipTriggerText } from '../target-configuration-details/tooltip-trigger-text';
 
 interface ShowOptionsHelpProps {
@@ -16,10 +16,7 @@ interface ShowOptionsHelpProps {
 }
 
 const fallbackHelpExample = {
-  options: {
-    silent: true,
-  },
-  args: ['foo'],
+  args: ['foo', '--bar="baz"'],
 };
 
 export function ShowOptionsHelp({
@@ -59,7 +56,7 @@ export function ShowOptionsHelp({
       null,
       2
     );
-  }, [helpExampleOptions, helpExampleArgs]);
+  }, [helpExampleOptions, helpExampleArgs, targetName]);
 
   let runHelpActionElement: null | ReactNode;
   if (environment === 'docs') {
@@ -87,11 +84,14 @@ export function ShowOptionsHelp({
               }
             : async () => {
                 setPending(true);
-                const result = await fetch(
+                const result = (await fetch(
                   `/help?project=${encodeURIComponent(
                     projectName
                   )}&target=${encodeURIComponent(targetName)}`
-                ).then((resp) => resp.json());
+                ).then((resp) => resp.json())) as {
+                  text: string;
+                  success: boolean;
+                };
                 setResult(result);
                 setPending(false);
               }
@@ -122,6 +122,7 @@ export function ShowOptionsHelp({
           <a
             className="text-blue-500 hover:underline"
             target="_blank"
+            rel="noopener noreferrer"
             href="https://nx.dev/recipes/running-tasks/pass-args-to-commands#pass-args-to-commands"
           >
             passing them
@@ -138,7 +139,7 @@ export function ShowOptionsHelp({
                     <code>project.json</code> file for{' '}
                     <span className="font-semibold">{projectName}</span>.
                   </p>
-                  <pre className="mb-2 border border-slate-200 bg-slate-100/50 p-2 p-2 text-slate-400 dark:border-slate-700 dark:bg-slate-700/50 dark:text-slate-500">
+                  <pre className="mb-2 border border-slate-200 bg-slate-100/50 p-2 text-slate-400 dark:border-slate-700 dark:bg-slate-700/50 dark:text-slate-500">
                     {helpExampleTest}
                   </pre>
                   {helpExampleOptions && (
@@ -151,10 +152,10 @@ export function ShowOptionsHelp({
                   )}
                   {helpExampleArgs && (
                     <p className="mb-2">
-                      The <code>args</code> are CLI positional arguments, such
-                      as <code>ls somedir</code>, where you would use{' '}
-                      <code>{'"args": ["somedir"]'}</code> to set it in the
-                      target configuration.
+                      The <code>args</code> are CLI flags or positional
+                      arguments, such as <code>ls -la somedir</code>, where you
+                      would use <code>{'"args": ["-la", "somedir"]'}</code> to
+                      set it in the target configuration.
                     </p>
                   )}
                 </div>

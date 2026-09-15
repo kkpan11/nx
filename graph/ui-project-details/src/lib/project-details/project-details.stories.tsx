@@ -1,6 +1,6 @@
-import type { Meta } from '@storybook/react';
+import type { Meta } from '@storybook/react-webpack5';
 import { ProjectDetails } from './project-details';
-import { ExpandedTargetsProvider } from '@nx/graph/shared';
+import { ExpandedTargetsProvider } from '../expanded-targets-provider';
 
 const meta: Meta<typeof ProjectDetails> = {
   component: ProjectDetails,
@@ -83,6 +83,11 @@ export const Primary = {
               ],
             },
             configurations: {},
+            syncGenerators: [
+              '@nx/js:typescript-sync',
+              '@foo/bar:sync',
+              '@baz/qux:sync',
+            ],
           },
           build: {
             dependsOn: ['build-base', 'build-native'],
@@ -91,14 +96,6 @@ export const Primary = {
             executor: 'nx:run-commands',
             outputs: ['{workspaceRoot}/build/packages/jest'],
             options: { command: 'node ./scripts/copy-readme.js jest' },
-            configurations: {},
-          },
-          'add-extra-dependencies': {
-            executor: 'nx:run-commands',
-            options: {
-              command:
-                'node ./scripts/add-dependency-to-build.js jest @nrwl/jest',
-            },
             configurations: {},
           },
           lint: {
@@ -114,12 +111,29 @@ export const Primary = {
             options: { lintFilePatterns: ['packages/jest'] },
             configurations: {},
           },
+          'docker:build': {
+            command: 'docker build .',
+            metadata: {
+              technologies: ['docker'],
+            },
+          },
+          'docker:run': {
+            command: 'docker {args} run .',
+            metadata: {
+              technologies: ['docker'],
+            },
+          },
         },
         $schema: '../../node_modules/nx/schemas/project-schema.json',
         sourceRoot: 'packages/jest',
         projectType: 'library',
         implicitDependencies: [],
         tags: [],
+        metadata: {
+          targetGroups: {
+            Docker: ['docker:build', 'docker:run'],
+          },
+        },
       },
     },
     sourceMap: {
@@ -197,19 +211,12 @@ export const Primary = {
         'packages/jest/project.json',
         'nx-core-build-project-json-nodes',
       ],
-      'targets.add-extra-dependencies': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
-      'targets.add-extra-dependencies.command': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
       'targets.lint': [
         'packages/jest/project.json',
         'nx-core-build-project-json-nodes',
       ],
     },
+    disabledTaskSyncGenerators: ['@foo/bar:sync'],
   },
 };
 
@@ -605,14 +612,6 @@ export const Gradle = {
         'packages/jest/project.json',
         'nx-core-build-project-json-nodes',
       ],
-      'targets.add-extra-dependencies': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
-      'targets.add-extra-dependencies.command': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
       'targets.lint': [
         'packages/jest/project.json',
         'nx-core-build-project-json-nodes',
@@ -817,14 +816,6 @@ export const Cart = {
         'nx-core-build-project-json-nodes',
       ],
       'targets.build.options.command': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
-      'targets.add-extra-dependencies': [
-        'packages/jest/project.json',
-        'nx-core-build-project-json-nodes',
-      ],
-      'targets.add-extra-dependencies.command': [
         'packages/jest/project.json',
         'nx-core-build-project-json-nodes',
       ],

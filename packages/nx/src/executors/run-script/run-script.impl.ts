@@ -1,11 +1,12 @@
+import { spawn } from 'child_process';
 import * as path from 'path';
+import { killProcessTreeGraceful } from '../../native';
 import type { ExecutorContext } from '../../config/misc-interfaces';
-import { getPackageManagerCommand } from '../../utils/package-manager';
-import { execSync } from 'child_process';
 import {
-  getPseudoTerminal,
+  createPseudoTerminal,
   PseudoTerminal,
 } from '../../tasks-runner/pseudo-terminal';
+import { getPackageManagerCommand } from '../../utils/package-manager';
 
 export interface RunScriptOptions {
   script: string;
@@ -37,7 +38,7 @@ export default async function (
     if (PseudoTerminal.isSupported()) {
       await ptyProcess(command, cwd, env);
     } else {
-      nodeProcess(command, cwd, env);
+      await nodeProcess(command, cwd, env);
     }
     return { success: true };
   } catch (e) {
@@ -49,11 +50,42 @@ function nodeProcess(
   command: string,
   cwd: string,
   env: Record<string, string>
-) {
-  execSync(command, {
-    stdio: ['inherit', 'inherit', 'inherit'],
-    cwd,
-    env,
+): Promise<void> {
+  return new Promise<void>((res, rej) => {
+    let cp = spawn(command, [], {
+      shell: true,
+      cwd,
+      env,
+      windowsHide: true,
+    });
+
+    // Forward stdout/stderr to parent process
+    cp.stdout.pipe(process.stdout);
+    cp.stderr.pipe(process.stderr);
+
+    cp.on('error', (error) => {
+      rej(error);
+    });
+
+    cp.on('exit', (code) => {
+      if (code === 0) {
+        res();
+      } else {
+        rej(new Error(`Command "${command}" exited with non-zero status code`));
+      }
+    });
+
+    const exitHandler = (signal: NodeJS.Signals) => {
+      if (cp && cp.pid && !cp.killed) {
+        killProcessTreeGraceful(cp.pid, signal).finally(() => {
+          res();
+        });
+      }
+    };
+
+    process.on('SIGINT', () => exitHandler('SIGINT'));
+    process.on('SIGTERM', () => exitHandler('SIGTERM'));
+    process.on('SIGHUP', () => exitHandler('SIGHUP'));
   });
 }
 
@@ -62,10 +94,11 @@ async function ptyProcess(
   cwd: string,
   env: Record<string, string>
 ) {
-  const terminal = getPseudoTerminal();
+  const terminal = createPseudoTerminal();
+  await terminal.init();
 
   return new Promise<void>((res, rej) => {
-    const cp = terminal.runCommand(command, { cwd, jsEnv: env });
+    let cp = terminal.runCommand(command, { cwd, jsEnv: env });
     cp.onExit((code) => {
       if (code === 0) {
         res();

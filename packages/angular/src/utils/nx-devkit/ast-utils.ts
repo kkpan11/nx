@@ -1,4 +1,9 @@
-import type * as ts from 'typescript';
+import {
+  joinPathFragments,
+  names,
+  readProjectConfiguration,
+  Tree,
+} from '@nx/devkit';
 import {
   findNodes,
   getImport,
@@ -7,9 +12,9 @@ import {
   removeChange,
   replaceChange,
 } from '@nx/js';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
 import { dirname, join } from 'path';
-import { names, readProjectConfiguration, Tree } from '@nx/devkit';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import type * as ts from 'typescript';
 
 let tsModule: typeof import('typescript');
 
@@ -72,20 +77,32 @@ function _angularImportsFromNode(
 
 /**
  * Check if the Component, Directive or Pipe is standalone
+ * @param tree The file system tree
  * @param sourceFile TS Source File containing the token to check
  * @param decoratorName The type of decorator to check (Component, Directive, Pipe)
  */
 export function isStandalone(
+  tree: Tree,
   sourceFile: ts.SourceFile,
   decoratorName: DecoratorName
-) {
+): boolean {
   const decoratorMetadata = getDecoratorMetadata(
     sourceFile,
     decoratorName,
     '@angular/core'
   );
-  return decoratorMetadata.some((node) =>
+  const hasStandaloneTrue = decoratorMetadata.some((node) =>
     node.getText().includes('standalone: true')
+  );
+
+  if (hasStandaloneTrue) {
+    return true;
+  }
+
+  // standalone: true is the default, so we need to check that standalone: false
+  // is not set
+  return !decoratorMetadata.some((node) =>
+    node.getText().includes('standalone: false')
   );
 }
 
@@ -678,25 +695,31 @@ function getListOfRoutes(
 
 export function isNgStandaloneApp(tree: Tree, projectName: string) {
   const project = readProjectConfiguration(tree, projectName);
-  const mainFile =
+  let mainFile =
     project.targets?.build?.options?.main ??
     project.targets?.build?.options?.browser;
+  let hasMainFile = false;
+  if (mainFile) {
+    hasMainFile = true;
+  } else {
+    const sourceRoot = getProjectSourceRoot(project, tree);
+    mainFile = joinPathFragments(sourceRoot, 'main.ts');
+    hasMainFile = tree.exists(mainFile);
+  }
 
-  if (project.projectType !== 'application' || !mainFile) {
+  if (project.projectType !== 'application' || !hasMainFile) {
     return false;
   }
 
   ensureTypescript();
-  const { tsquery } = require('@phenomnomnominal/tsquery');
+  const { ast, query } = require('@phenomnomnominal/tsquery');
 
   const mainFileContents = tree.read(mainFile, 'utf-8');
 
   const BOOTSTRAP_APPLICATION_SELECTOR =
     'CallExpression:has(Identifier[name=bootstrapApplication])';
-  const ast = tsquery.ast(mainFileContents);
-  const nodes = tsquery(ast, BOOTSTRAP_APPLICATION_SELECTOR, {
-    visitAllChildren: true,
-  });
+  const sourceFile = ast(mainFileContents);
+  const nodes = query(sourceFile, BOOTSTRAP_APPLICATION_SELECTOR);
   return nodes.length > 0;
 }
 
@@ -712,15 +735,13 @@ export function addProviderToBootstrapApplication(
   providerToAdd: string
 ) {
   ensureTypescript();
-  const { tsquery } = require('@phenomnomnominal/tsquery');
+  const { ast, query } = require('@phenomnomnominal/tsquery');
   const PROVIDERS_ARRAY_SELECTOR =
     'CallExpression:has(Identifier[name=bootstrapApplication]) ObjectLiteralExpression > PropertyAssignment:has(Identifier[name=providers]) > ArrayLiteralExpression';
 
   const fileContents = tree.read(filePath, 'utf-8');
-  const ast = tsquery.ast(fileContents);
-  const providersArrayNodes = tsquery(ast, PROVIDERS_ARRAY_SELECTOR, {
-    visitAllChildren: true,
-  });
+  const sourceFile = ast(fileContents);
+  const providersArrayNodes = query(sourceFile, PROVIDERS_ARRAY_SELECTOR);
   if (providersArrayNodes.length === 0) {
     throw new Error(
       `Providers does not exist in the bootstrapApplication call within ${filePath}.`
@@ -753,15 +774,13 @@ export function addProviderToAppConfig(
   providerToAdd: string
 ) {
   ensureTypescript();
-  const { tsquery } = require('@phenomnomnominal/tsquery');
+  const { ast, query } = require('@phenomnomnominal/tsquery');
   const PROVIDERS_ARRAY_SELECTOR =
     'VariableDeclaration:has(TypeReference > Identifier[name=ApplicationConfig]) > ObjectLiteralExpression  PropertyAssignment:has(Identifier[name=providers]) > ArrayLiteralExpression';
 
   const fileContents = tree.read(filePath, 'utf-8');
-  const ast = tsquery.ast(fileContents);
-  const providersArrayNodes = tsquery(ast, PROVIDERS_ARRAY_SELECTOR, {
-    visitAllChildren: true,
-  });
+  const sourceFile = ast(fileContents);
+  const providersArrayNodes = query(sourceFile, PROVIDERS_ARRAY_SELECTOR);
   if (providersArrayNodes.length === 0) {
     throw new Error(
       `'providers' does not exist in the application configuration at '${filePath}'.`
@@ -896,10 +915,15 @@ export function readBootstrapInfo(
   }
   const config = readProjectConfiguration(host, app);
 
-  let mainPath;
+  let mainPath: string;
   try {
     mainPath =
-      config.targets.build.options.main ?? config.targets.build.options.browser;
+      config.targets.build.options?.main ??
+      config.targets.build.options?.browser;
+    if (!mainPath) {
+      const sourceRoot = getProjectSourceRoot(config, host);
+      mainPath = joinPathFragments(sourceRoot, 'main.ts');
+    }
   } catch (e) {
     throw new Error('Main file cannot be located');
   }

@@ -18,7 +18,8 @@ export async function filterAffected(
   graph: ProjectGraph,
   touchedFiles: FileChange[],
   nxJson: NxJsonConfiguration = readNxJson(),
-  packageJson: any = readPackageJson()
+  packageJson: any = readPackageJson(),
+  projectDeletionAffectsAllProjects = true
 ): Promise<ProjectGraph> {
   // Additional affected logic should be in this array.
   const touchedProjectLocators: TouchedProjectLocator[] = [
@@ -30,12 +31,20 @@ export async function filterAffected(
 
   const touchedProjects = [];
   for (const locator of touchedProjectLocators) {
+    performance.mark(locator.name + ':start');
     const projects = await locator(
       touchedFiles,
       graph.nodes,
       nxJson,
       packageJson,
-      graph
+      graph,
+      projectDeletionAffectsAllProjects
+    );
+    performance.mark(locator.name + ':end');
+    performance.measure(
+      locator.name,
+      locator.name + ':start',
+      locator.name + ':end'
     );
     touchedProjects.push(...projects);
   }
@@ -59,12 +68,17 @@ function filterAffectedProjects(
     dependencies: {},
   };
   const reversed = reverse(graph);
-  ctx.touchedProjects.forEach((p) => {
-    addAffectedNodes(p, reversed, result, new Set());
-  });
-  ctx.touchedProjects.forEach((p) => {
-    addAffectedDependencies(p, reversed, result, new Set());
-  });
+  // Share visited Sets across all touched projects to avoid redundant traversal
+  // Previously, each touched project got its own Set, causing shared dependencies
+  // to be visited multiple times (O(touchedProjects × sharedDeps) → O(nodes))
+  const visitedNodes = new Set<string>();
+  const visitedDeps = new Set<string>();
+  for (const p of ctx.touchedProjects) {
+    addAffectedNodes(p, reversed, result, visitedNodes);
+  }
+  for (const p of ctx.touchedProjects) {
+    addAffectedDependencies(p, reversed, result, visitedDeps);
+  }
   return result;
 }
 

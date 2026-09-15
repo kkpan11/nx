@@ -1,5 +1,9 @@
 import type { GeneratorCallback, Tree } from '@nx/devkit';
 import {
+  determineProjectNameAndRootOptions,
+  ensureRootProjectName,
+} from '@nx/devkit/internal';
+import {
   addDependenciesToPackageJson,
   formatFiles,
   readNxJson,
@@ -7,15 +11,19 @@ import {
   toJS,
   updateJson,
 } from '@nx/devkit';
-import { determineProjectNameAndRootOptions } from '@nx/devkit/src/generators/project-name-and-root-utils';
+import { normalizeLinterOption, isUsingTsSolutionSetup } from '@nx/js/internal';
 import { applicationGenerator as nodeApplicationGenerator } from '@nx/node';
-import { tslibVersion } from '@nx/node/src/utils/versions';
+import { tslibVersion } from '@nx/node/internal';
 import { join } from 'path';
+import { assertSupportedExpressVersion } from '../../utils/assert-supported-express-version';
 import { nxVersion } from '../../utils/versions';
 import { initGenerator } from '../init/init';
+import type { LinterType } from '@nx/js';
 import type { Schema } from './schema';
 
 interface NormalizedSchema extends Schema {
+  // `normalizeOptions` always resolves this, so it is no longer optional.
+  linter: LinterType;
   appProjectName: string;
   appProjectRoot: string;
 }
@@ -66,12 +74,14 @@ server.on('error', console.error);
 export async function applicationGenerator(tree: Tree, schema: Schema) {
   return await applicationGeneratorInternal(tree, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
+    useProjectJson: true,
     ...schema,
   });
 }
 
 export async function applicationGeneratorInternal(tree: Tree, schema: Schema) {
+  assertSupportedExpressVersion(tree);
+
   const options = await normalizeOptions(tree, schema);
 
   const tasks: GeneratorCallback[] = [];
@@ -80,6 +90,7 @@ export async function applicationGeneratorInternal(tree: Tree, schema: Schema) {
   const applicationTask = await nodeApplicationGenerator(tree, {
     ...options,
     bundler: 'webpack',
+    framework: 'express',
     skipFormat: true,
   });
   tasks.push(applicationTask);
@@ -87,7 +98,7 @@ export async function applicationGeneratorInternal(tree: Tree, schema: Schema) {
   addTypes(tree, options);
 
   if (!options.skipPackageJson) {
-    tasks.push(ensureDependencies(tree));
+    tasks.push(ensureDependencies(tree, options));
   }
 
   if (!options.skipFormat) {
@@ -103,35 +114,42 @@ async function normalizeOptions(
   host: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
-  const {
-    projectName: appProjectName,
-    projectRoot: appProjectRoot,
-    projectNameAndRootFormat,
-  } = await determineProjectNameAndRootOptions(host, {
-    name: options.name,
-    projectType: 'application',
-    directory: options.directory,
-    projectNameAndRootFormat: options.projectNameAndRootFormat,
-    callingGenerator: '@nx/express:application',
-  });
-  options.projectNameAndRootFormat = projectNameAndRootFormat;
+  await ensureRootProjectName(options, 'application');
+  const { projectName: appProjectName, projectRoot: appProjectRoot } =
+    await determineProjectNameAndRootOptions(host, {
+      name: options.name,
+      projectType: 'application',
+      directory: options.directory,
+    });
   const nxJson = readNxJson(host);
   const addPlugin =
     process.env.NX_ADD_PLUGINS !== 'false' &&
     nxJson.useInferencePlugins !== false;
   options.addPlugin ??= addPlugin;
 
+  const useProjectJson =
+    options.useProjectJson ?? !isUsingTsSolutionSetup(host);
+
   return {
     ...options,
+    // Resolved after the spread so the type guarantees it downstream; this
+    // generator forwards its options straight into `@nx/node:application`.
+    linter: await normalizeLinterOption(host, options.linter),
     appProjectName,
     appProjectRoot,
+    useProjectJson,
   };
 }
 
-function ensureDependencies(tree: Tree): GeneratorCallback {
+function ensureDependencies(
+  tree: Tree,
+  options: NormalizedSchema
+): GeneratorCallback {
   return addDependenciesToPackageJson(
     tree,
     { tslib: tslibVersion },
-    { '@nx/express': nxVersion }
+    { '@nx/express': nxVersion },
+    undefined,
+    options.keepExistingVersions ?? true
   );
 }

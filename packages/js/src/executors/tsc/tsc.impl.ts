@@ -1,17 +1,20 @@
 import * as ts from 'typescript';
-import { ExecutorContext, isDaemonEnabled, output } from '@nx/devkit';
-import type { TypeScriptCompilationOptions } from '@nx/workspace/src/utilities/typescript/compilation';
+import {
+  ExecutorContext,
+  isDaemonEnabled,
+  joinPathFragments,
+  output,
+  readJsonFile,
+} from '@nx/devkit';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import type { TypeScriptCompilationOptions } from '../../utils/typescript/compilation';
 import { CopyAssetsHandler } from '../../utils/assets/copy-assets-handler';
 import { checkDependencies } from '../../utils/check-dependencies';
 import {
   getHelperDependency,
   HelperDependency,
 } from '../../utils/compiler-helper-dependency';
-import {
-  handleInliningBuild,
-  isInlineGraphEmpty,
-  postProcessInlinedDependencies,
-} from '../../utils/inline';
 import { updatePackageJson } from '../../utils/package-json/update-package-json';
 import { ExecutorOptions, NormalizedExecutorOptions } from '../../utils/schema';
 import { compileTypeScriptFiles } from '../../utils/typescript/compile-typescript-files';
@@ -21,9 +24,33 @@ import { readTsConfig } from '../../utils/typescript/ts-config';
 import { createEntryPoints } from '../../utils/package-json/create-entry-points';
 
 export function determineModuleFormatFromTsConfig(
-  absolutePathToTsConfig: string
+  absolutePathToTsConfig: string,
+  projectRoot?: string,
+  workspaceRoot?: string
 ): 'cjs' | 'esm' {
   const tsConfig = readTsConfig(absolutePathToTsConfig);
+
+  // NodeNext is context-dependent - check package.json type field
+  // NodeNext outputs ESM only when package.json has "type": "module"
+  // Otherwise it outputs CJS (when "type": "commonjs" or no type field)
+  if (tsConfig.options.module === ts.ModuleKind.NodeNext) {
+    if (projectRoot && workspaceRoot) {
+      const packageJsonPath = join(workspaceRoot, projectRoot, 'package.json');
+      if (existsSync(packageJsonPath)) {
+        try {
+          const packageJson = readJsonFile(packageJsonPath);
+          if (packageJson.type === 'module') {
+            return 'esm';
+          }
+        } catch {
+          // Fall through to default CJS
+        }
+      }
+    }
+    // NodeNext defaults to CJS when no type field or when we can't check
+    return 'cjs';
+  }
+
   if (
     tsConfig.options.module === ts.ModuleKind.ES2015 ||
     tsConfig.options.module === ts.ModuleKind.ES2020 ||
@@ -41,11 +68,15 @@ export function createTypeScriptCompilationOptions(
   context: ExecutorContext
 ): TypeScriptCompilationOptions {
   return {
-    outputPath: normalizedOptions.outputPath,
+    outputPath: joinPathFragments(normalizedOptions.outputPath),
     projectName: context.projectName,
     projectRoot: normalizedOptions.projectRoot,
-    rootDir: normalizedOptions.rootDir,
-    tsConfig: normalizedOptions.tsConfig,
+    // Keep the Windows drive letter on rootDir/tsConfig (only forward-slash them).
+    // joinPathFragments strips it via normalizePath, leaving them drive-less while
+    // the generated path mappings stay absolute drive-full, so alias-resolved files
+    // fail TypeScript's rootDir containment check (TS6059) on Windows.
+    rootDir: normalizedOptions.rootDir.replace(/\\/g, '/'),
+    tsConfig: normalizedOptions.tsConfig.replace(/\\/g, '/'),
     watch: normalizedOptions.watch,
     deleteOutputPath: normalizedOptions.clean,
     getCustomTransformers: getCustomTrasformersFactory(
@@ -87,6 +118,7 @@ export async function* tscExecutor(
     rootDir: context.root,
     outputDir: _options.outputPath,
     assets: _options.assets,
+    includeIgnoredFiles: _options.includeIgnoredAssetFiles,
   });
 
   const tsCompilationOptions = createTypeScriptCompilationOptions(
@@ -94,42 +126,32 @@ export async function* tscExecutor(
     context
   );
 
-  const inlineProjectGraph = handleInliningBuild(
-    context,
-    options,
-    tsCompilationOptions.tsConfig
-  );
-
-  if (!isInlineGraphEmpty(inlineProjectGraph)) {
-    tsCompilationOptions.rootDir = '.';
-  }
-
   const typescriptCompilation = compileTypeScriptFiles(
     options,
     tsCompilationOptions,
     async () => {
       await assetHandler.processAllAssetsOnce();
-      updatePackageJson(
-        {
-          ...options,
-          additionalEntryPoints: createEntryPoints(
-            options.additionalEntryPoints,
-            context.root
-          ),
-          format: [determineModuleFormatFromTsConfig(options.tsConfig)],
-          // As long as d.ts files match their .js counterparts, we don't need to emit them.
-          // TSC can match them correctly based on file names.
-          skipTypings: true,
-        },
-        context,
-        target,
-        dependencies
-      );
-      postProcessInlinedDependencies(
-        tsCompilationOptions.outputPath,
-        tsCompilationOptions.projectRoot,
-        inlineProjectGraph
-      );
+      if (options.generatePackageJson) {
+        updatePackageJson(
+          {
+            ...options,
+            additionalEntryPoints: createEntryPoints(
+              options.additionalEntryPoints,
+              context.root
+            ),
+            format: [
+              determineModuleFormatFromTsConfig(
+                options.tsConfig,
+                options.projectRoot,
+                context.root
+              ),
+            ],
+          },
+          context,
+          target,
+          dependencies
+        );
+      }
     }
   );
 
@@ -143,32 +165,38 @@ export async function* tscExecutor(
   if (isDaemonEnabled() && options.watch) {
     const disposeWatchAssetChanges =
       await assetHandler.watchAndProcessOnAssetChange();
-    const disposePackageJsonChanges = await watchForSingleFileChanges(
-      context.projectName,
-      options.projectRoot,
-      'package.json',
-      () =>
-        updatePackageJson(
-          {
-            ...options,
-            additionalEntryPoints: createEntryPoints(
-              options.additionalEntryPoints,
-              context.root
-            ),
-            // As long as d.ts files match their .js counterparts, we don't need to emit them.
-            // TSC can match them correctly based on file names.
-            skipTypings: true,
-            format: [determineModuleFormatFromTsConfig(options.tsConfig)],
-          },
-          context,
-          target,
-          dependencies
-        )
-    );
+    let disposePackageJsonChanges: undefined | (() => void);
+    if (options.generatePackageJson) {
+      disposePackageJsonChanges = await watchForSingleFileChanges(
+        context.projectName,
+        options.projectRoot,
+        'package.json',
+        () =>
+          updatePackageJson(
+            {
+              ...options,
+              additionalEntryPoints: createEntryPoints(
+                options.additionalEntryPoints,
+                context.root
+              ),
+              format: [
+                determineModuleFormatFromTsConfig(
+                  options.tsConfig,
+                  options.projectRoot,
+                  context.root
+                ),
+              ],
+            },
+            context,
+            target,
+            dependencies
+          )
+      );
+    }
     const handleTermination = async (exitCode: number) => {
       await typescriptCompilation.close();
       disposeWatchAssetChanges();
-      disposePackageJsonChanges();
+      disposePackageJsonChanges?.();
       process.exit(exitCode);
     };
     process.on('SIGINT', () => handleTermination(128 + 2));

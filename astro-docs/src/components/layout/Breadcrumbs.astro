@@ -1,0 +1,131 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import { getCollection } from 'astro:content';
+
+type Crumb = {
+  label: string;
+  href?: string;
+  current: boolean;
+};
+
+function slugify(label: string): string {
+  return label
+    .replace(/\.NET/g, 'dotnet')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// --- Primary: Sidebar-based breadcrumbs ---
+const sidebar = Astro.locals.starlightRoute.sidebar;
+
+function findBreadcrumbPath(
+  entries: typeof sidebar,
+  path: Crumb[] = [],
+  slugSegments: string[] = []
+): Crumb[] | null {
+  for (const entry of entries) {
+    if (entry.type === 'link' && entry.isCurrent) {
+      return [...path, { label: entry.label, href: entry.href, current: true }];
+    }
+    if (entry.type === 'group') {
+      const currentSlugs = [...slugSegments, slugify(entry.label)];
+      const groupHref = `/docs/${currentSlugs.join('/')}`;
+      const result = findBreadcrumbPath(
+        entry.entries,
+        [...path, { label: entry.label, href: groupHref, current: false }],
+        currentSlugs
+      );
+      if (result) return result;
+    }
+  }
+  return null;
+}
+
+let crumbs: Crumb[] = findBreadcrumbPath(sidebar) ?? [];
+
+// --- Fallback: URL-path-based breadcrumbs ---
+if (crumbs.length === 0) {
+  const { pathname } = Astro.url;
+  const cleanedPath = pathname.split('?')[0];
+  const allDocs = await getCollection('docs');
+  const pathSegments = cleanedPath.split('/').filter(Boolean);
+
+  function findDocByPath(path: string) {
+    path = path.replace(/^docs\//, '');
+    return (
+      allDocs.find((d) => d.id === `${path}`) ??
+      allDocs.find((d) => d.id === `${path}/index`)
+    );
+  }
+
+  function createNameFromSegment(segment: string): string {
+    segment = segment.split('#')[0];
+    if (segment === 'kb') return 'Knowledge Base';
+    return segment
+      .split('-')
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+      .join(' ');
+  }
+
+  crumbs = pathSegments
+    .map((segment, index) => {
+      const docPath = pathSegments.slice(0, index + 1).join('/');
+      const doc = findDocByPath(docPath);
+      const label =
+        doc?.data?.sidebar?.label ||
+        doc?.data?.title ||
+        createNameFromSegment(segment);
+      // If `base` is set in config, don't include it in breadcrumbs
+      if (index === 0 && import.meta.env.BASE_URL) return null;
+      return {
+        label,
+        href: doc ? `/${docPath}` : undefined,
+        current: index === pathSegments.length - 1,
+      };
+    })
+    .filter(Boolean) as Crumb[];
+}
+
+// Splash indexes render their own page title, so breadcrumbs are redundant.
+const path = Astro.url.pathname.replace(/\/$/, '');
+const hideBreadcrumbs =
+  path === '/docs/kb' ||
+  path.startsWith('/docs/kb/') ||
+  path === '/docs/templates' ||
+  path.startsWith('/docs/templates/');
+---
+
+{
+  !hideBreadcrumbs && (
+    <nav class="not-content mb-4 flex" aria-label="Breadcrumb">
+      <ol
+        role="list"
+        class="m-0 flex flex-wrap items-center space-x-2 p-0 text-sm"
+      >
+        {crumbs.map((crumb, index) => (
+          <li class="flex items-center">
+            {index > 0 && <Icon name="right-caret" class="mr-2 ml-2 h-5 w-5" />}
+            {crumb.href ? (
+              <a
+                href={crumb.href}
+                class={`no-underline text-sm${
+                  crumb.current
+                    ? 'font-semibold text-slate-900 dark:text-slate-100'
+                    : 'font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                } transition-colors`}
+                aria-current={crumb.current ? 'page' : undefined}
+              >
+                {crumb.label}
+              </a>
+            ) : (
+              <span class="text-sm font-medium text-slate-500 dark:text-slate-400">
+                {crumb.label}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  )
+}

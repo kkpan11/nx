@@ -2,9 +2,13 @@
  * Special thanks to changelogen for the original inspiration for many of these utilities:
  * https://github.com/unjs/changelogen
  */
+import { relative } from 'node:path';
+import { coerce as semverCoerce, gte as semverGte } from 'semver';
 import { interpolate } from '../../../tasks-runner/utils';
-import { workspaceRoot } from '../../../utils/app-root';
+import { workspaceRoot } from '../../../utils/workspace-root';
 import { execCommand } from './exec-command';
+import type { CheckAllBranchesWhen, RepoGitTags } from './repository-git-tags';
+import { isPrerelease } from './shared';
 
 export interface GitCommitAuthor {
   name: string;
@@ -23,6 +27,11 @@ export interface Reference {
   value: string;
 }
 
+export interface GitTagAndVersion {
+  tag: string;
+  extractedVersion: string;
+}
+
 export interface GitCommit extends RawGitCommit {
   description: string;
   type: string;
@@ -34,6 +43,13 @@ export interface GitCommit extends RawGitCommit {
   revertedHashes: string[];
 }
 
+export interface GetLatestGitTagForPatternOptions {
+  checkAllBranchesWhen?: CheckAllBranchesWhen;
+  preid?: string;
+  requireSemver: boolean;
+  strictPreid: boolean;
+}
+
 function escapeRegExp(string) {
   return string.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&');
 }
@@ -42,35 +58,97 @@ function escapeRegExp(string) {
 const SEMVER_REGEX =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/g;
 
+/**
+ * Characters that are invalid in git ref names according to git-check-ref-format.
+ * Note: We don't include ':' here as we handle it specially (replace with '/').
+ */
+const GIT_INVALID_REF_CHARS_REGEX = /[\x00-\x1f\x7f ~^?*\[\\]/g;
+
+/**
+ * Sanitizes a project name to be valid for use in git tag names.
+ *
+ * Git tag names have specific restrictions per git-check-ref-format.
+ * This function handles:
+ * - Colons (:) - replaced with slashes (/) for Gradle-style module paths
+ * - Other invalid characters - replaced with hyphens (-)
+ * - Consecutive slashes - collapsed to single slash
+ * - Leading/trailing slashes - removed
+ * - Consecutive dots - replaced with single dot
+ *
+ * @param name - The project name to sanitize
+ * @returns The sanitized name suitable for git tags
+ */
+export function sanitizeProjectNameForGitTag(name: string): string {
+  return (
+    name
+      // Replace colons with slashes (for Gradle module paths like :common:lib)
+      .replace(/:/g, '/')
+      // Replace other git-invalid characters with hyphens
+      .replace(GIT_INVALID_REF_CHARS_REGEX, '-')
+      // Collapse consecutive slashes to single slash
+      .replace(/\/+/g, '/')
+      // Collapse consecutive dots (invalid in git refs)
+      .replace(/\.{2,}/g, '.')
+      // Remove leading slashes
+      .replace(/^\/+/, '')
+      // Remove trailing slashes
+      .replace(/\/+$/, '')
+  );
+}
+
+/**
+ * Extract the tag and version from a tag string
+ *
+ * @param tag - The tag string to extract the tag and version from
+ * @param tagRegexp - The regex to use to extract the tag and version from the tag string
+ *
+ * @returns The tag and version
+ */
+export function extractTagAndVersion(
+  tag: string,
+  tagRegexp: string,
+  options: GetLatestGitTagForPatternOptions
+): GitTagAndVersion {
+  const { requireSemver } = options;
+
+  const [latestMatchingTag, ...rest] = tag.match(tagRegexp);
+  let version = requireSemver
+    ? rest.filter((r) => {
+        return r.match(SEMVER_REGEX);
+      })[0]
+    : rest[0];
+
+  return {
+    tag: latestMatchingTag,
+    extractedVersion: version ?? null,
+  };
+}
+
+/**
+ * Get the latest git tag for the configured release tag pattern.
+ *
+ * This function will:
+ * - Get all tags from the git repo, sorted by version
+ * - Filter the tags into a list with SEMVER-compliant tags, matching the release tag pattern
+ * - If a preid is provided, prioritise tags for that preid, then semver tags without a preid
+ * - If no preid is provided, search only for stable semver tags (i.e. no pre-release or build metadata)
+ *
+ * @param releaseTagPattern - The pattern to filter the tags list by
+ * @param additionalInterpolationData - Additional data used when interpolating the release tag pattern
+ * @param options - The options to use when getting the latest git tag for the pattern
+ *
+ * @returns The tag and version
+ */
 export async function getLatestGitTagForPattern(
   releaseTagPattern: string,
-  additionalInterpolationData = {}
-): Promise<{ tag: string; extractedVersion: string } | null> {
+  additionalInterpolationData = {},
+  resolveTags: RepoGitTags['resolveTags'],
+  options: GetLatestGitTagForPatternOptions
+): Promise<GitTagAndVersion | null> {
+  const { requireSemver, strictPreid, preid, checkAllBranchesWhen } = options;
+
   try {
-    let tags: string[];
-    tags = await execCommand('git', [
-      'tag',
-      '--sort',
-      '-v:refname',
-      '--merged',
-    ]).then((r) =>
-      r
-        .trim()
-        .split('\n')
-        .map((t) => t.trim())
-        .filter(Boolean)
-    );
-    if (!tags.length) {
-      // try again, but include all tags on the repo instead of just --merged ones
-      tags = await execCommand('git', ['tag', '--sort', '-v:refname']).then(
-        (r) =>
-          r
-            .trim()
-            .split('\n')
-            .map((t) => t.trim())
-            .filter(Boolean)
-      );
-    }
+    let tags: string[] = await resolveTags(checkAllBranchesWhen);
 
     if (!tags.length) {
       return null;
@@ -79,33 +157,103 @@ export async function getLatestGitTagForPattern(
     const interpolatedTagPattern = interpolate(releaseTagPattern, {
       version: '%v%',
       projectName: '%p%',
+      releaseGroupName: '%rg%',
       ...additionalInterpolationData,
     });
 
     const tagRegexp = `^${escapeRegExp(interpolatedTagPattern)
       .replace('%v%', '(.+)')
-      .replace('%p%', '(.+)')}`;
+      .replace('%p%', '(.+)')
+      .replace('%rg%', '(.+)')}`;
 
-    const matchingSemverTags = tags.filter(
-      (tag) =>
-        // Do the match against SEMVER_REGEX to ensure that we skip tags that aren't valid semver versions
-        !!tag.match(tagRegexp) &&
-        tag.match(tagRegexp).some((r) => r.match(SEMVER_REGEX))
-    );
+    const matchingTags = tags.filter((tag) => {
+      if (requireSemver) {
+        // Match against Semver Regex when using semverVersioning to ensure only valid semver tags are matched
+        return (
+          !!tag.match(tagRegexp) &&
+          tag.match(tagRegexp).some((r) => r.match(SEMVER_REGEX))
+        );
+      } else {
+        return !!tag.match(tagRegexp);
+      }
+    });
 
-    if (!matchingSemverTags.length) {
+    if (!matchingTags.length) {
       return null;
     }
 
-    const [latestMatchingTag, ...rest] = matchingSemverTags[0].match(tagRegexp);
-    const version = rest.filter((r) => {
-      return r.match(SEMVER_REGEX);
-    })[0];
+    if (!strictPreid) {
+      // If not using strict preid, we can just return the first matching tag
+      return extractTagAndVersion(matchingTags[0], tagRegexp, options);
+    }
 
-    return {
-      tag: latestMatchingTag,
-      extractedVersion: version,
-    };
+    // Find stable release tags
+    const stableReleaseTags = matchingTags.filter((tag) => {
+      const matches = tag.match(tagRegexp);
+      if (!matches) return false;
+      const [, version] = matches;
+      return version && !isPrerelease(version);
+    });
+
+    if (preid && preid.length > 0) {
+      // When a preid is provided, find tags matching that preid
+      const preidReleaseTags = matchingTags.filter((tag) => {
+        const match = tag.match(tagRegexp);
+        if (!match) return false;
+
+        const version = match.find((part) => part.match(SEMVER_REGEX));
+        return version && version.includes(`-${preid}.`);
+      });
+
+      // If both preid and stable tags exist, compare them to determine which is truly "latest"
+      if (preidReleaseTags.length > 0 && stableReleaseTags.length > 0) {
+        const preidResult = extractTagAndVersion(
+          preidReleaseTags[0],
+          tagRegexp,
+          options
+        );
+        const stableResult = extractTagAndVersion(
+          stableReleaseTags[0],
+          tagRegexp,
+          options
+        );
+
+        // Get the base version of the preid release (e.g., "1.2.4" from "1.2.4-alpha.1")
+        const preidBaseVersion = semverCoerce(
+          preidResult.extractedVersion
+        )?.version;
+        const stableVersion = stableResult.extractedVersion;
+
+        // If the stable version is >= the preid's base version, use the stable tag
+        // This handles the case where a stable release was made after the prerelease
+        // (e.g., 1.1.1 stable was released after 1.1.0-alpha.3)
+        if (
+          preidBaseVersion &&
+          stableVersion &&
+          semverGte(stableVersion, preidBaseVersion)
+        ) {
+          return stableResult;
+        }
+
+        // Otherwise, use the preid tag (prerelease's base is ahead of stable)
+        return preidResult;
+      }
+
+      // If only preid tags exist (no stable), use the latest preid tag
+      if (preidReleaseTags.length > 0) {
+        return extractTagAndVersion(preidReleaseTags[0], tagRegexp, options);
+      }
+
+      // If no matching preid tags, fall through to find stable tags below
+    }
+
+    // If there are stable release tags, use the latest one
+    if (stableReleaseTags.length > 0) {
+      return extractTagAndVersion(stableReleaseTags[0], tagRegexp, options);
+    }
+
+    // Otherwise return null
+    return null;
   } catch {
     return null;
   }
@@ -122,22 +270,33 @@ export async function getGitDiff(
     range = `${from}..${to}`;
   }
 
+  // Use unique enough separators that we can be relatively certain will not occur within the commit message itself
+  const commitMetadataSeparator = '§§§';
+  const commitsSeparator = '|@-------@|';
   // https://git-scm.com/docs/pretty-formats
-  const r = await execCommand('git', [
+  const args = [
     '--no-pager',
     'log',
     range,
-    '--pretty="----%n%s|%h|%an|%ae%n%b"',
+    `--pretty="${commitsSeparator}%n%s${commitMetadataSeparator}%h${commitMetadataSeparator}%an${commitMetadataSeparator}%ae%n%b"`,
     '--name-status',
-  ]);
+  ];
+  // Support cases where the nx workspace root is located at a nested path within the git repo
+  const relativePath = await getGitRootRelativePath();
+  if (relativePath) {
+    args.push(`--relative=${relativePath}`);
+  }
+
+  const r = await execCommand('git', args);
 
   return r
-    .split('----\n')
+    .split(`${commitsSeparator}\n`)
     .splice(1)
     .map((line) => {
       const [firstLine, ..._body] = line.split('\n');
-      const [message, shortHash, authorName, authorEmail] =
-        firstLine.split('|');
+      const [message, shortHash, authorName, authorEmail] = firstLine.split(
+        commitMetadataSeparator
+      );
       const r: RawGitCommit = {
         message,
         shortHash,
@@ -193,7 +352,7 @@ export async function gitAdd({
       if (isFileIgnored) {
         ignoredFiles.push(f);
         // git add will fail if trying to add an untracked file that doesn't exist
-      } else if (changedTrackedFiles.has(f)) {
+      } else if (changedTrackedFiles.has(f) || dryRun) {
         filesToAdd.push(f);
       }
     }
@@ -248,7 +407,7 @@ export async function gitCommit({
   logFn,
 }: {
   messages: string[];
-  additionalArgs?: string;
+  additionalArgs?: string | string[];
   dryRun?: boolean;
   verbose?: boolean;
   logFn?: (message: string) => void;
@@ -260,7 +419,11 @@ export async function gitCommit({
     commandArgs.push('--message', message);
   }
   if (additionalArgs) {
-    commandArgs.push(...additionalArgs.split(' '));
+    if (Array.isArray(additionalArgs)) {
+      commandArgs.push(...additionalArgs);
+    } else {
+      commandArgs.push(...additionalArgs.split(' '));
+    }
   }
 
   if (verbose) {
@@ -302,7 +465,7 @@ export async function gitTag({
 }: {
   tag: string;
   message?: string;
-  additionalArgs?: string;
+  additionalArgs?: string | string[];
   dryRun?: boolean;
   verbose?: boolean;
   logFn?: (message: string) => void;
@@ -318,7 +481,11 @@ export async function gitTag({
     message || tag,
   ];
   if (additionalArgs) {
-    commandArgs.push(...additionalArgs.split(' '));
+    if (Array.isArray(additionalArgs)) {
+      commandArgs.push(...additionalArgs);
+    } else {
+      commandArgs.push(...additionalArgs.split(' '));
+    }
   }
 
   if (verbose) {
@@ -345,10 +512,12 @@ export async function gitPush({
   gitRemote,
   dryRun,
   verbose,
+  additionalArgs,
 }: {
   gitRemote?: string;
   dryRun?: boolean;
   verbose?: boolean;
+  additionalArgs?: string | string[];
 }) {
   const commandArgs = [
     'push',
@@ -359,6 +528,13 @@ export async function gitPush({
     // Set custom git remote if provided
     ...(gitRemote ? [gitRemote] : []),
   ];
+  if (additionalArgs) {
+    if (Array.isArray(additionalArgs)) {
+      commandArgs.push(...additionalArgs);
+    } else {
+      commandArgs.push(...additionalArgs.split(' '));
+    }
+  }
 
   if (verbose) {
     console.log(
@@ -392,7 +568,12 @@ export function parseConventionalCommitsMessage(message: string): {
 } | null {
   const match = message.match(ConventionalCommitRegex);
   if (!match) {
-    return null;
+    return {
+      type: '__INVALID__',
+      scope: '',
+      description: message,
+      breaking: false,
+    };
   }
 
   return {
@@ -403,15 +584,80 @@ export function parseConventionalCommitsMessage(message: string): {
   };
 }
 
+export function extractReferencesFromCommit(commit: RawGitCommit): Reference[] {
+  const references: Reference[] = [];
+
+  // Extract GitHub style PR references from commit message
+  for (const m of commit.message.matchAll(PullRequestRE)) {
+    references.push({ type: 'pull-request', value: m[1] });
+  }
+
+  // Extract GitLab style merge request references from commit body
+  for (const m of commit.body.matchAll(GitLabMergeRequestRE)) {
+    if (m[1]) {
+      references.push({ type: 'pull-request', value: m[1] });
+    }
+  }
+
+  // Extract issue references from commit message
+  for (const m of commit.message.matchAll(IssueRE)) {
+    if (!references.some((i) => i.value === m[1])) {
+      references.push({ type: 'issue', value: m[1] });
+    }
+  }
+
+  // Extract issue references from commit body, only when linked via a closing
+  // keyword so that other repos' issue numbers mentioned in prose are not
+  // picked up (e.g. "web-infra-dev/rspack#2292")
+  for (const m of commit.body.matchAll(IssueClosingKeywordRE)) {
+    if (!references.some((i) => i.value === m[1])) {
+      references.push({ type: 'issue', value: m[1] });
+    }
+  }
+
+  // Add commit hash reference
+  references.push({ value: commit.shortHash, type: 'hash' });
+
+  return references;
+}
+
+function getAllAuthorsForCommit(commit: RawGitCommit): GitCommitAuthor[] {
+  const authors: GitCommitAuthor[] = [commit.author];
+  // Additional authors can be specified in the commit body (depending on the VCS provider)
+  for (const match of commit.body.matchAll(CoAuthoredByRegex)) {
+    authors.push({
+      name: (match.groups.name || '').trim(),
+      email: (match.groups.email || '').trim(),
+    });
+  }
+  return authors;
+}
+
 // https://www.conventionalcommits.org/en/v1.0.0/
 // https://regex101.com/r/FSfNvA/1
 const ConventionalCommitRegex =
-  /(?<type>[a-z]+)(\((?<scope>.+)\))?(?<breaking>!)?: (?<description>.+)/i;
+  /^(?<type>[^\s():!]+)(?:\s*\((?<scope>.+)\))?(?<breaking>!)?: (?<description>.+)$/u;
 const CoAuthoredByRegex = /co-authored-by:\s*(?<name>.+)(<(?<email>.+)>)/gim;
+// GitHub style PR references
 const PullRequestRE = /\([ a-z]*(#\d+)\s*\)/gm;
+// GitLab style merge request references
+const GitLabMergeRequestRE = /See merge request (?:[a-z0-9/-]+)?(![\d]+)/gim;
 const IssueRE = /(#\d+)/gm;
+// GitHub style issue closing keywords, e.g. "Fixes #1234"
+const IssueClosingKeywordRE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(#\d+)/gim;
 const ChangedFileRegex = /(A|M|D|R\d*|C\d*)\t([^\t\n]*)\t?(.*)?/gm;
 const RevertHashRE = /This reverts commit (?<hash>[\da-f]{40})./gm;
+
+export function parseVersionPlanCommit(commit: RawGitCommit): {
+  references: Reference[];
+  authors: GitCommitAuthor[];
+} {
+  return {
+    references: extractReferencesFromCommit(commit),
+    authors: getAllAuthorsForCommit(commit),
+  };
+}
 
 export function parseGitCommit(commit: RawGitCommit): GitCommit | null {
   const parsedMessage = parseConventionalCommitsMessage(commit.message);
@@ -424,19 +670,10 @@ export function parseGitCommit(commit: RawGitCommit): GitCommit | null {
     parsedMessage.breaking || commit.body.includes('BREAKING CHANGE:');
   let description = parsedMessage.description;
 
-  // Extract references from message
-  const references: Reference[] = [];
-  for (const m of description.matchAll(PullRequestRE)) {
-    references.push({ type: 'pull-request', value: m[1] });
-  }
-  for (const m of description.matchAll(IssueRE)) {
-    if (!references.some((i) => i.value === m[1])) {
-      references.push({ type: 'issue', value: m[1] });
-    }
-  }
-  references.push({ value: commit.shortHash, type: 'hash' });
+  // Extract issue and PR references from the commit
+  const references = extractReferencesFromCommit(commit);
 
-  // Remove references and normalize
+  // Remove GitHub style references from description (NOTE: GitLab style references only seem to appear in the body, so we don't need to remove them here)
   description = description.replace(PullRequestRE, '').trim();
 
   let type = parsedMessage.type;
@@ -452,13 +689,7 @@ export function parseGitCommit(commit: RawGitCommit): GitCommit | null {
   }
 
   // Find all authors
-  const authors: GitCommitAuthor[] = [commit.author];
-  for (const match of commit.body.matchAll(CoAuthoredByRegex)) {
-    authors.push({
-      name: (match.groups.name || '').trim(),
-      email: (match.groups.email || '').trim(),
-    });
-  }
+  const authors = getAllAuthorsForCommit(commit);
 
   // Extract file changes from commit body
   const affectedFiles = Array.from(
@@ -504,4 +735,60 @@ export async function getFirstGitCommit() {
   } catch (e) {
     throw new Error(`Unable to find first commit in git history`);
   }
+}
+
+/**
+ * Returns the parent of the first commit that touched the given project root,
+ * so that `from..HEAD` ranges include the project's creation commit.
+ * Falls back to getFirstGitCommit() if the project history cannot be determined.
+ */
+export async function getFirstProjectCommit(
+  projectRoot: string
+): Promise<string> {
+  try {
+    const result = (
+      await execCommand('git', [
+        'rev-list',
+        '--reverse',
+        'HEAD',
+        '--first-parent',
+        '--',
+        projectRoot,
+      ])
+    ).trim();
+    const firstCommit = result.split('\n')[0];
+
+    if (firstCommit) {
+      // Return the parent so the creation commit is included in from..to ranges
+      try {
+        return (
+          await execCommand('git', ['rev-parse', `${firstCommit}~1`])
+        ).trim();
+      } catch {
+        // No parent (project was added in the repo's very first commit)
+        return firstCommit;
+      }
+    }
+  } catch {
+    // fall through to fallback
+  }
+  return getFirstGitCommit();
+}
+
+async function getGitRoot() {
+  try {
+    return (await execCommand('git', ['rev-parse', '--show-toplevel'])).trim();
+  } catch (e) {
+    throw new Error('Unable to find git root');
+  }
+}
+
+let gitRootRelativePath: string;
+
+async function getGitRootRelativePath() {
+  if (!gitRootRelativePath) {
+    const gitRoot = await getGitRoot();
+    gitRootRelativePath = relative(gitRoot, workspaceRoot);
+  }
+  return gitRootRelativePath;
 }

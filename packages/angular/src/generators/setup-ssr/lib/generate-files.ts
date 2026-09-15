@@ -1,44 +1,61 @@
 import type { Tree } from '@nx/devkit';
+import { generateFiles, readProjectConfiguration } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { join } from 'path';
+import { gte } from 'semver';
+import { getAppComponentInfo } from '../../utils/app-components-info';
 import {
-  generateFiles,
-  joinPathFragments,
-  readProjectConfiguration,
-} from '@nx/devkit';
-import type { Schema } from '../schema';
+  getComponentType,
+  getModuleTypeSeparator,
+} from '../../utils/artifact-types';
+import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
+import type { NormalizedGeneratorOptions } from '../schema';
 
 export function generateSSRFiles(
   tree: Tree,
-  schema: Schema,
-  isUsingApplicationBuilder: boolean
+  options: NormalizedGeneratorOptions
 ) {
-  const { root: projectRoot, targets } = readProjectConfiguration(
-    tree,
-    schema.project
-  );
+  const project = readProjectConfiguration(tree, options.project);
 
   if (
-    targets.server ||
-    (isUsingApplicationBuilder && targets.build.options?.server !== undefined)
+    project.targets.server ||
+    (options.isUsingApplicationBuilder &&
+      project.targets.build.options?.server !== undefined)
   ) {
     // server has already been added
     return;
   }
 
-  const pathToFiles = joinPathFragments(__dirname, '..', 'files');
+  const { version: angularVersion } = getInstalledAngularVersionInfo(tree);
+  const pathToFiles = join(
+    __dirname,
+    '..',
+    'files',
+    'v20+',
+    options.isUsingApplicationBuilder || options.isRspack
+      ? 'application-builder'
+      : 'server-builder',
+    options.standalone ? 'standalone-src' : 'ngmodule-src'
+  );
 
-  if (schema.standalone) {
-    generateFiles(
-      tree,
-      joinPathFragments(pathToFiles, 'standalone'),
-      projectRoot,
-      { ...schema, tpl: '' }
-    );
-  } else {
-    generateFiles(
-      tree,
-      joinPathFragments(pathToFiles, 'ngmodule'),
-      projectRoot,
-      { ...schema, tpl: '' }
-    );
-  }
+  const sourceRoot = getProjectSourceRoot(project, tree);
+
+  const componentType = getComponentType(tree);
+  const appComponentInfo = getAppComponentInfo(
+    tree,
+    componentType ? `.${componentType}` : '',
+    project
+  );
+  const moduleTypeSeparator = getModuleTypeSeparator(tree);
+  // https://github.com/angular/angular-cli/releases/tag/20.3.0
+  const useBootstrapContext = gte(angularVersion, '20.3.0');
+
+  generateFiles(tree, pathToFiles, sourceRoot, {
+    ...options,
+    appFileName: appComponentInfo.extensionlessFileName,
+    appSymbolName: appComponentInfo.symbolName,
+    moduleTypeSeparator,
+    useBootstrapContext,
+    tpl: '',
+  });
 }

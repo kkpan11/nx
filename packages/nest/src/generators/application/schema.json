@@ -6,24 +6,20 @@
   "cli": "nx",
   "type": "object",
   "properties": {
-    "name": {
-      "description": "The name of the application.",
+    "directory": {
+      "description": "The directory of the new application.",
       "type": "string",
       "$default": {
         "$source": "argv",
         "index": 0
       },
-      "x-prompt": "What name would you like to use for the node application?",
-      "pattern": "^[a-zA-Z][^:]*$"
+      "x-prompt": "Which directory do you want to create the application in?"
     },
-    "directory": {
-      "description": "The directory of the new application.",
-      "type": "string"
-    },
-    "projectNameAndRootFormat": {
-      "description": "Whether to generate the project name and root directory as provided (`as-provided`) or generate them composing their values and taking the configured layout into account (`derived`).",
+    "name": {
+      "description": "The name of the application.",
       "type": "string",
-      "enum": ["as-provided", "derived"]
+      "pattern": "(?:^@[a-zA-Z0-9-*~][a-zA-Z0-9-*._~]*\\/[a-zA-Z0-9-~][a-zA-Z0-9-._~]*|^[a-zA-Z][^:]*)$",
+      "x-priority": "important"
     },
     "skipFormat": {
       "description": "Skip formatting files.",
@@ -38,16 +34,22 @@
       "x-priority": "internal"
     },
     "linter": {
-      "description": "The tool to use for running lint checks.",
+      "description": "The tool to use for running lint checks. Defaults to the linter the workspace already uses.",
       "type": "string",
-      "enum": ["eslint", "none"],
-      "default": "eslint"
+      "enum": ["eslint", "oxlint", "none"],
+      "x-priority": "important"
+    },
+    "formatter": {
+      "description": "The tool to use for code formatting.",
+      "type": "string",
+      "enum": ["none", "prettier", "oxfmt"]
     },
     "unitTestRunner": {
       "description": "Test runner to use for unit tests.",
       "type": "string",
-      "enum": ["jest", "none"],
-      "default": "jest"
+      "enum": ["jest", "vitest", "none"],
+      "default": "none",
+      "x-prompt": "Which unit test runner would you like to use?"
     },
     "e2eTestRunner": {
       "type": "string",
@@ -64,23 +66,27 @@
       "type": "string",
       "x-priority": "important"
     },
-    "standaloneConfig": {
-      "description": "Split the project configuration into `<projectRoot>/project.json` rather than including it inside `workspace.json`.",
+    "enableTypedLinting": {
       "type": "boolean",
-      "default": true,
-      "x-deprecated": "Nx only supports standaloneConfig"
+      "description": "Whether to enable typed linting. For flat configs, this configures the recommended `parserOptions.projectService` and `tsconfigRootDir`. For legacy `.eslintrc` configs, this configures `parserOptions.project`. We do not enable this by default for lint performance reasons.",
+      "default": false
     },
     "setParserOptionsProject": {
       "type": "boolean",
-      "description": "Whether or not to configure the ESLint `parserOptions.project` option. We do not do this by default for lint performance reasons.",
-      "default": false
+      "description": "Deprecated alias for `enableTypedLinting`.",
+      "default": false,
+      "x-deprecated": "Use `enableTypedLinting` instead. This option will be removed in Nx v24."
     },
     "strict": {
       "type": "boolean",
       "description": "Adds strictNullChecks, noImplicitAny, strictBindCallApply, forceConsistentCasingInFileNames and noFallthroughCasesInSwitch to tsconfig.",
       "default": false
+    },
+    "useProjectJson": {
+      "type": "boolean",
+      "description": "Use a `project.json` configuration file instead of inlining the Nx configuration in the `package.json` file."
     }
   },
   "additionalProperties": false,
-  "required": ["name"]
+  "required": ["directory"]
 }

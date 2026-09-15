@@ -1,24 +1,14 @@
-import type {
-  NormalizedSchema,
-  Schema,
-  SchemaWithBrowserTarget,
-  SchemaWithBuildTarget,
-} from '../schema';
+import type { NormalizedSchema, Schema } from '../schema';
 
 export function normalizeOptions(schema: Schema): NormalizedSchema {
-  let buildTarget = (schema as SchemaWithBuildTarget).buildTarget;
-  if ((schema as SchemaWithBrowserTarget).browserTarget) {
-    buildTarget ??= (schema as SchemaWithBrowserTarget).browserTarget;
-    delete (schema as SchemaWithBrowserTarget).browserTarget;
-  }
-
   return {
     ...schema,
-    buildTarget,
     host: schema.host ?? 'localhost',
     port: schema.port ?? 4200,
     liveReload: schema.liveReload ?? true,
+    hmr: schema.hmr,
     open: schema.open ?? false,
     ssl: schema.ssl ?? false,
+    watchDependencies: schema.watchDependencies ?? true,
   };
 }

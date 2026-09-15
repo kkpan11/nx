@@ -1,20 +1,22 @@
+import { addBuildTargetDefaults, type PackageJson } from '@nx/devkit/internal';
 import {
   addProjectConfiguration,
+  joinPathFragments,
   ProjectConfiguration,
-  readNxJson,
+  readJson,
   TargetConfiguration,
   Tree,
+  writeJson,
 } from '@nx/devkit';
-
 import { hasExpoPlugin } from '../../../utils/has-expo-plugin';
+import { warnExpoExecutorGenerating } from '../../../utils/deprecation';
 import { NormalizedSchema } from './normalize-options';
-import { addBuildTargetDefaults } from '@nx/devkit/src/generators/add-build-target-defaults';
 
 export function addProject(host: Tree, options: NormalizedSchema) {
-  const nxJson = readNxJson(host);
   const hasPlugin = hasExpoPlugin(host);
 
   if (!hasPlugin) {
+    warnExpoExecutorGenerating();
     addBuildTargetDefaults(host, '@nx/expo:build');
   }
 
@@ -26,12 +28,41 @@ export function addProject(host: Tree, options: NormalizedSchema) {
     tags: options.parsedTags,
   };
 
-  addProjectConfiguration(
+  const templatedPackageJson = readJson(
     host,
-    options.projectName,
-    projectConfiguration,
-    options.standaloneConfig
+    joinPathFragments(options.appProjectRoot, 'package.json')
   );
+
+  const packageJson: PackageJson = {
+    ...templatedPackageJson,
+    name: options.importPath,
+    version: '0.0.1',
+    private: true,
+  };
+
+  if (!options.useProjectJson) {
+    if (options.importPath !== options.projectName) {
+      packageJson.nx = { name: options.projectName };
+    }
+    if (!hasPlugin) {
+      packageJson.nx ??= {};
+      packageJson.nx.targets = getTargets(options);
+    }
+    if (options.parsedTags?.length) {
+      packageJson.nx ??= {};
+      packageJson.nx.tags = options.parsedTags;
+    }
+  } else {
+    addProjectConfiguration(host, options.projectName, projectConfiguration);
+  }
+
+  if (!options.useProjectJson || options.isTsSolutionSetup) {
+    writeJson(
+      host,
+      joinPathFragments(options.appProjectRoot, 'package.json'),
+      packageJson
+    );
+  }
 }
 
 function getTargets(options: NormalizedSchema) {
@@ -110,7 +141,7 @@ function getTargets(options: NormalizedSchema) {
     outputs: ['{options.outputDir}'],
     options: {
       platform: 'all',
-      outputDir: `dist/${options.appProjectRoot}`,
+      outputDir: `${options.appProjectRoot}/dist`,
     },
   };
 

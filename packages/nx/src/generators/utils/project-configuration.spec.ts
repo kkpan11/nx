@@ -137,6 +137,30 @@ describe('project configuration', () => {
     expect(tree.exists('test/project.json')).toBeFalsy();
   });
 
+  it('should round-trip spread tokens through read + update', () => {
+    // `'...'` only resolves during project-graph construction. Generators
+    // read the raw file, so the token must survive read → update unchanged.
+    writeJson(tree, 'libs/test/project.json', {
+      name: 'test',
+      targets: {
+        build: {
+          inputs: ['...', '{projectRoot}/extra.json'],
+        },
+      },
+    });
+
+    const config = readProjectConfiguration(tree, 'test');
+    expect(config.targets.build.inputs).toEqual([
+      '...',
+      '{projectRoot}/extra.json',
+    ]);
+
+    updateProjectConfiguration(tree, 'test', config);
+    expect(
+      readJson(tree, 'libs/test/project.json').targets.build.inputs
+    ).toEqual(['...', '{projectRoot}/extra.json']);
+  });
+
   describe('JSON schema', () => {
     it('should have JSON $schema in project configuration for standalone projects', () => {
       addProjectConfiguration(tree, 'test', projectConfiguration, true);
@@ -170,6 +194,38 @@ describe('project configuration', () => {
       $schema: '../node_modules/nx/schemas/project-schema.json',
       name: 'proj',
       root: 'proj',
+    });
+  });
+
+  it('should find projects created during generator run when called from callback', () => {
+    // Simulate what happens during a generator callback:
+    // 1. A project is created during generator execution
+    addProjectConfiguration(tree, 'test-proj', {
+      root: 'libs/test-proj',
+    });
+
+    // Verify the project is found before callback
+    let projects = getProjects(tree);
+    expect(projects.size).toEqual(1);
+    expect(projects.has('test-proj')).toBeTruthy();
+
+    // 2. Simulate changes being flushed to disk by modifying the tree
+    // to mark the file as UPDATE instead of CREATE
+    const projectJsonPath = 'libs/test-proj/project.json';
+    const projectJsonContent = tree.read(projectJsonPath, 'utf-8');
+
+    // Clear the tree and write the file again to simulate it being flushed
+    // This creates a scenario similar to what happens in callbacks
+    tree.write(projectJsonPath, projectJsonContent);
+
+    // 3. getProjects should still find the project even when it's marked as UPDATE
+    projects = getProjects(tree);
+    expect(projects.size).toEqual(1);
+    expect(projects.has('test-proj')).toBeTruthy();
+    expect(projects.get('test-proj')).toEqual({
+      $schema: '../../node_modules/nx/schemas/project-schema.json',
+      name: 'test-proj',
+      root: 'libs/test-proj',
     });
   });
 
@@ -276,6 +332,99 @@ describe('project configuration', () => {
         name: 'proj',
         root: 'proj',
       });
+    });
+
+    it('should handle reading + writing project configuration', () => {
+      writeJson(tree, 'proj/package.json', {
+        name: 'proj',
+        nx: {},
+      });
+
+      const proj = readProjectConfiguration(tree, 'proj');
+      expect(proj).toEqual({
+        name: 'proj',
+        root: 'proj',
+      });
+
+      updateProjectConfiguration(tree, 'proj', {
+        name: 'proj',
+        root: 'proj',
+        sourceRoot: 'proj/src',
+        targets: {
+          build: {
+            command: 'echo "building"',
+          },
+        },
+      });
+
+      const updatedProj = readProjectConfiguration(tree, 'proj');
+      expect(updatedProj).toEqual({
+        name: 'proj',
+        root: 'proj',
+        sourceRoot: 'proj/src',
+        targets: {
+          build: {
+            command: 'echo "building"',
+          },
+        },
+      });
+
+      expect(tree.read('proj/package.json', 'utf-8')).toMatchInlineSnapshot(`
+        "{
+          "name": "proj",
+          "nx": {
+            "sourceRoot": "proj/src",
+            "targets": {
+              "build": {
+                "command": "echo \\"building\\""
+              }
+            }
+          }
+        }
+        "
+      `);
+      expect(tree.exists('proj/project.json')).toBeFalsy();
+    });
+
+    it('should avoid writing empty nx property', () => {
+      writeJson(tree, 'proj/package.json', {
+        name: 'proj',
+      });
+
+      updateProjectConfiguration(tree, 'proj', {
+        root: 'proj',
+      });
+
+      const updatedProj = readProjectConfiguration(tree, 'proj');
+      expect(updatedProj).toEqual({
+        name: 'proj',
+        root: 'proj',
+      });
+
+      expect(tree.read('proj/package.json', 'utf-8')).toMatchInlineSnapshot(`
+        "{
+          "name": "proj"
+        }
+        "
+      `);
+      expect(tree.exists('proj/project.json')).toBeFalsy();
+
+      // Adding tags will add nx property
+      updateProjectConfiguration(tree, 'proj', {
+        root: 'proj',
+        tags: ['test'],
+      });
+      expect(tree.read('proj/package.json', 'utf-8')).toMatchInlineSnapshot(`
+        "{
+          "name": "proj",
+          "nx": {
+            "tags": [
+              "test"
+            ]
+          }
+        }
+        "
+      `);
     });
   });
 });

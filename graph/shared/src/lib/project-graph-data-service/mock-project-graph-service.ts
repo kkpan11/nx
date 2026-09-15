@@ -1,4 +1,3 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type {
   ProjectGraphDependency,
@@ -10,7 +9,6 @@ import type {
   TaskGraphClientResponse,
 } from 'nx/src/command-line/graph/graph';
 import { ProjectGraphService } from './get-project-graph-data-service';
-/* eslint-enable @nx/enforce-module-boundaries */
 
 export class MockProjectGraphService implements ProjectGraphService {
   private projectGraphsResponse: ProjectGraphClientResponse = {
@@ -65,11 +63,17 @@ export class MockProjectGraphService implements ProjectGraphService {
   };
 
   private taskGraphsResponse: TaskGraphClientResponse = {
-    taskGraphs: {},
-    errors: {},
+    taskGraph: {
+      roots: [],
+      tasks: {},
+      dependencies: {},
+      continuousDependencies: {},
+    },
+    plans: {},
+    error: null,
   };
 
-  constructor(updateFrequency: number = 5000) {
+  constructor(updateFrequency = 5000) {
     setInterval(() => this.updateResponse(), updateFrequency);
   }
 
@@ -77,18 +81,41 @@ export class MockProjectGraphService implements ProjectGraphService {
     return new Promise((resolve) => resolve(this.projectGraphsResponse.hash));
   }
 
-  getProjectGraph(url: string): Promise<ProjectGraphClientResponse> {
+  getProjectGraph(_url: string): Promise<ProjectGraphClientResponse> {
     return new Promise((resolve) => resolve(this.projectGraphsResponse));
   }
 
-  getTaskGraph(url: string): Promise<TaskGraphClientResponse> {
+  getTaskGraph(_url: string): Promise<TaskGraphClientResponse> {
+    return new Promise((resolve) => resolve(this.taskGraphsResponse));
+  }
+
+  getSpecificTaskGraph(
+    _url: string,
+    projects: string | string[] | null,
+    targets: string[],
+    configuration?: string
+  ): Promise<TaskGraphClientResponse> {
+    // In mock mode, return the full task graph
     return new Promise((resolve) => resolve(this.taskGraphsResponse));
   }
 
   getSourceMaps(
-    url: string
+    _url: string
   ): Promise<Record<string, Record<string, string[]>>> {
     return new Promise((resolve) => resolve({}));
+  }
+
+  async getExpandedTaskInputs(
+    taskId: string
+  ): Promise<Record<string, string[]>> {
+    // Generate mock data for the task
+    const mockInputs: Record<string, string[]> = {
+      general: ['src/**/*.ts', 'package.json'],
+      [taskId.split(':')[0]]: [`${taskId.split(':')[0]}/src/**/*.ts`],
+      external: ['node_modules/**/*'],
+    };
+
+    return new Promise((resolve) => resolve(mockInputs));
   }
 
   private createNewProject(): ProjectGraphProjectNode {

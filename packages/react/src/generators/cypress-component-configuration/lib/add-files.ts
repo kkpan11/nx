@@ -1,3 +1,4 @@
+import type { FoundTarget } from '@nx/cypress/internal';
 import {
   addDependenciesToPackageJson,
   joinPathFragments,
@@ -6,11 +7,11 @@ import {
   Tree,
   visitNotIgnoredFiles,
 } from '@nx/devkit';
-import { nxVersion } from 'nx/src/utils/versions';
+import { getProjectSourceRoot } from '@nx/js/internal';
+import { getActualBundler, isComponent } from '../../../utils/ct-utils';
 import { componentTestGenerator } from '../../component-test/component-test';
 import type { CypressComponentConfigurationSchema } from '../schema';
-import { getActualBundler, isComponent } from '../../../utils/ct-utils';
-import { FoundTarget } from '@nx/cypress/src/utils/find-target-options';
+import { nxVersion } from '@nx/devkit/internal';
 
 export async function addFiles(
   tree: Tree,
@@ -18,11 +19,13 @@ export async function addFiles(
   options: CypressComponentConfigurationSchema,
   found: FoundTarget
 ) {
-  // must dyanmicaly import to prevent packages not using cypress from erroring out
+  // must dynamicaly import to prevent packages not using cypress from erroring out
   // when importing react
-  const { addMountDefinition, addDefaultCTConfig } = await import(
-    '@nx/cypress/src/utils/config'
-  );
+  const {
+    addMountDefinition,
+    getInstalledCypressMajorVersion,
+  }: typeof import('@nx/cypress/internal') = require('@nx/cypress/internal');
+  const installedCypressMajorVersion = getInstalledCypressMajorVersion(tree);
 
   // Specifically undefined to allow Remix workaround of passing an empty string
   const actualBundler = await getActualBundler(tree, options, found);
@@ -46,28 +49,43 @@ export async function addFiles(
   const updatedCommandFile = await addMountDefinition(
     tree.read(commandFile, 'utf-8')
   );
+  const moduleSpecifier =
+    installedCypressMajorVersion >= 14 ? 'cypress/react' : 'cypress/react18';
   tree.write(
     commandFile,
-    `import { mount } from 'cypress/react18';\n${updatedCommandFile}`
+    `import { mount } from '${moduleSpecifier}';\n${updatedCommandFile}`
   );
 
   if (
     options.bundler === 'webpack' ||
     (!options.bundler && actualBundler === 'webpack')
   ) {
-    addDependenciesToPackageJson(tree, {}, { '@nx/webpack': nxVersion });
+    addDependenciesToPackageJson(
+      tree,
+      {},
+      { '@nx/webpack': nxVersion },
+      undefined,
+      true
+    );
   }
 
   if (
     options.bundler === 'vite' ||
     (!options.bundler && actualBundler === 'vite')
   ) {
-    addDependenciesToPackageJson(tree, {}, { '@nx/vite': nxVersion });
+    addDependenciesToPackageJson(
+      tree,
+      {},
+      { '@nx/vite': nxVersion },
+      undefined,
+      true
+    );
   }
 
   if (options.generateTests) {
     const filePaths = [];
-    visitNotIgnoredFiles(tree, projectConfig.sourceRoot, (filePath) => {
+    const sourceRoot = getProjectSourceRoot(projectConfig, tree);
+    visitNotIgnoredFiles(tree, sourceRoot, (filePath) => {
       if (isComponent(tree, filePath)) {
         filePaths.push(filePath);
       }

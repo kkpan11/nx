@@ -1,48 +1,59 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { names } from '@nx/devkit';
+import type { LinterType } from '@nx/js';
 import type { SupportedStyles } from '../../../typings/style';
 
 export interface Schema {
-  name: string;
+  directory: string;
+  name?: string;
   style: SupportedStyles;
   skipFormat?: boolean;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   tags?: string;
   unitTestRunner?: 'jest' | 'vitest' | 'none';
   inSourceTests?: boolean;
   e2eTestRunner: 'cypress' | 'playwright' | 'none';
-  linter: Linter;
-  pascalCaseFiles?: boolean;
+  linter?: LinterType;
   classComponent?: boolean;
   routing?: boolean;
+  useReactRouter?: boolean;
   skipNxJson?: boolean;
   js?: boolean;
   globalCss?: boolean;
   strict?: boolean;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   compiler?: 'babel' | 'swc';
   remotes?: string[];
+  /** @deprecated Use {@link Schema.port} instead. This option will be removed in Nx v25. */
   devServerPort?: number;
   skipPackageJson?: boolean;
   rootProject?: boolean;
-  bundler?: 'webpack' | 'vite' | 'rspack';
+  bundler?: 'webpack' | 'vite' | 'rspack' | 'rsbuild';
   minimal?: boolean;
+  // Internal options
   addPlugin?: boolean;
+  nxCloudToken?: string;
+  useTsSolution?: boolean;
+  formatter?: 'prettier' | 'oxfmt' | 'none';
+  useProjectJson?: boolean;
+  port?: number;
 }
 
 export interface NormalizedSchema<T extends Schema = Schema> extends T {
+  // `normalizeOptions` always resolves this, so it is no longer optional.
+  linter: LinterType;
   projectName: string;
   appProjectRoot: string;
   e2eProjectName: string;
   e2eProjectRoot: string;
-  e2eWebServerAddress: string;
-  e2eWebServerTarget: string;
-  e2ePort: number;
+  importPath: string;
   parsedTags: string[];
   fileName: string;
-  styledModule: null | SupportedStyles;
   hasStyles: boolean;
   unitTestRunner: 'jest' | 'vitest' | 'none';
   addPlugin?: boolean;
+  names: ReturnType<typeof names>;
+  isUsingTsSolutionConfig?: boolean;
 }

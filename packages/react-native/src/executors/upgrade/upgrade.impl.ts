@@ -1,8 +1,10 @@
 import { ExecutorContext } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 
 import { UpgradeExecutorSchema } from './schema';
+import { warnReactNativeExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ReactNativeUpgradeOutput {
   success: boolean;
@@ -16,6 +18,8 @@ export default async function* upgradeExecutor(
   options: UpgradeExecutorSchema,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeUpgradeOutput> {
+  warnReactNativeExecutorDeprecation('upgrade');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -53,7 +57,8 @@ export function runCliUpgrade(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(childProcess);
       } else {

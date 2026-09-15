@@ -3,6 +3,19 @@ export interface Example {
   description: string;
 }
 
+export interface CliDocsCommandMetadata {
+  supportedVersionRange?: string;
+}
+
+/**
+ * Docs-only metadata keyed by the full command name as rendered in the CLI docs.
+ */
+export const cliDocsCommandMetadata: Record<string, CliDocsCommandMetadata> = {
+  'show target': {
+    supportedVersionRange: 'Nx 22.6+',
+  },
+};
+
 export const examples: Record<string, Example[]> = {
   affected: [
     {
@@ -169,10 +182,6 @@ export const examples: Record<string, Example[]> = {
         'Show the graph where every node is either an ancestor or a descendant of todos-feature-main',
     },
     {
-      command: 'graph --include=project-one,project-two',
-      description: 'Include project-one and project-two in the project graph',
-    },
-    {
       command: 'graph --exclude=project-one,project-two',
       description: 'Exclude project-one and project-two from the project graph',
     },
@@ -318,7 +327,7 @@ export const examples: Record<string, Example[]> = {
     {
       command: 'migrate latest --interactive',
       description:
-        'Collect package updates and migrations in interactive mode. In this mode, the user will be prompted whether to apply any optional package update and migration',
+        "Collect package updates and migrations in interactive mode. In this mode, the user will be prompted whether to apply any optional package update and migration. Deprecated and slated for removal in Nx v24. Use '--include' instead.",
     },
     {
       command: 'migrate latest --from=nx@14.5.0 --exclude-applied-migrations',
@@ -371,6 +380,12 @@ export const examples: Record<string, Example[]> = {
     },
 
     {
+      command: 'show projects --projects tag:ui-*',
+      description:
+        'Show all projects with a tag starting with "ui-". The "projects" option is useful to see which projects would be selected by run-many',
+    },
+
+    {
       command: 'show projects --with-target serve',
       description: 'Show all projects with a serve target',
     },
@@ -412,6 +427,36 @@ export const examples: Record<string, Example[]> = {
       description:
         'Opens a web browser to explore the configuration of "my-app"',
     },
+
+    {
+      command: 'show target my-app:build',
+      description:
+        'Prints the specified + inferred configuration for `my-app:build`',
+    },
+
+    {
+      command: 'show target inputs my-app:build',
+      description: 'Prints the resolved inputs for `my-app:build`',
+    },
+
+    {
+      command:
+        'show target inputs my-app:build --check packages/my-app/index.html',
+      description:
+        'Checks if `packages/my-app/index.html` is an input for `my-app:build`',
+    },
+
+    {
+      command: 'show target outputs my-app:build',
+      description: 'Prints the outputs detected on disk for `my-app:build`',
+    },
+
+    {
+      command:
+        'show target outputs my-app:build --check packages/my-app/dist/index.html',
+      description:
+        'Checks if `packages/my-app/dist/index.html` is an output for `my-app:build`',
+    },
   ],
   watch: [
     {
@@ -422,7 +467,7 @@ export const examples: Record<string, Example[]> = {
     },
     {
       command:
-        'watch --projects=app1,app2 --includeDependentProjects -- echo \\$NX_PROJECT_NAME',
+        'watch --projects=app1,app2 --includeDependencies -- echo \\$NX_PROJECT_NAME',
       description:
         'Watch "app1" and "app2" and echo the project name whenever a specified project or its dependencies change',
     },

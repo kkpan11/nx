@@ -4,10 +4,13 @@ import {
   names,
   offsetFromRoot,
 } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { ChildProcess, fork } from 'child_process';
 import { resolve as pathResolve } from 'path';
 
 import { ExportExecutorSchema } from './schema';
+import { warnExpoExecutorDeprecation } from '../../utils/deprecation';
+import { resolveExpoCliPath } from '../../utils/resolve-expo-cli';
 
 export interface ExpoExportOutput {
   success: boolean;
@@ -19,6 +22,8 @@ export default async function* exportExecutor(
   options: ExportExecutorSchema,
   context: ExecutorContext
 ): AsyncGenerator<ExpoExportOutput> {
+  warnExpoExecutorDeprecation('export');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -41,9 +46,12 @@ function exportAsync(
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     childProcess = fork(
-      require.resolve('@expo/cli/build/bin/cli'),
+      resolveExpoCliPath(),
       [`export`, ...createExportOptions(options, projectRoot)],
-      { cwd: pathResolve(workspaceRoot, projectRoot), env: process.env }
+      {
+        cwd: pathResolve(workspaceRoot, projectRoot),
+        env: process.env,
+      }
     );
 
     // Ensure the child process is killed when the parent exits
@@ -53,7 +61,8 @@ function exportAsync(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

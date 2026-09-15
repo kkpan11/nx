@@ -4,7 +4,7 @@ import '../../../internal-testing-utils/mock-fs';
 
 import { ProjectJsonProjectsPlugin } from './project-json';
 import { CreateNodesContext } from '../../../project-graph/plugins';
-const { createNodes } = ProjectJsonProjectsPlugin;
+const createNodes = ProjectJsonProjectsPlugin.createNodes!;
 
 describe('nx project.json plugin', () => {
   let context: CreateNodesContext;
@@ -12,11 +12,10 @@ describe('nx project.json plugin', () => {
     context = {
       nxJsonConfiguration: {},
       workspaceRoot: '/root',
-      configFiles: [],
     };
   });
 
-  it('should build projects from project.json', () => {
+  it('should build projects from project.json', async () => {
     memfs.vol.fromJSON(
       {
         'project.json': JSON.stringify({
@@ -36,36 +35,46 @@ describe('nx project.json plugin', () => {
       '/root'
     );
 
-    expect(createNodes[1]('project.json', undefined, context))
-      .toMatchInlineSnapshot(`
-      {
-        "projects": {
-          ".": {
-            "name": "root",
-            "root": ".",
-            "targets": {
-              "command": "echo root project",
-            },
-          },
-        },
-      }
-    `);
-    expect(createNodes[1]('packages/lib-a/project.json', undefined, context))
-      .toMatchInlineSnapshot(`
-      {
-        "projects": {
-          "packages/lib-a": {
-            "name": "lib-a",
-            "root": "packages/lib-a",
-            "targets": {
-              "build": {
-                "executor": "nx:run-commands",
-                "options": {},
+    expect(
+      await createNodes[1](
+        ['project.json', 'packages/lib-a/project.json'],
+        undefined,
+        context
+      )
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "project.json",
+          {
+            "projects": {
+              ".": {
+                "name": "root",
+                "root": ".",
+                "targets": {
+                  "command": "echo root project",
+                },
               },
             },
           },
-        },
-      }
+        ],
+        [
+          "packages/lib-a/project.json",
+          {
+            "projects": {
+              "packages/lib-a": {
+                "name": "lib-a",
+                "root": "packages/lib-a",
+                "targets": {
+                  "build": {
+                    "executor": "nx:run-commands",
+                    "options": {},
+                  },
+                },
+              },
+            },
+          },
+        ],
+      ]
     `);
   });
 });

@@ -1,9 +1,8 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
-import { readJson } from '@nx/devkit';
-import initGenerator from './init';
-import { remixInitGeneratorInternal } from './init';
+import { addDependenciesToPackageJson, readJson } from '@nx/devkit';
+import initGenerator, { remixInitGeneratorInternal } from './init';
 
 describe('Remix Init Generator', () => {
   it('should setup the workspace and add dependencies', async () => {
@@ -18,13 +17,14 @@ describe('Remix Init Generator', () => {
     const pkgJson = readJson(tree, 'package.json');
     expect(pkgJson.dependencies).toMatchInlineSnapshot(`
       {
-        "@remix-run/serve": "^2.8.1",
+        "@remix-run/serve": "^2.17.3",
       }
     `);
     expect(pkgJson.devDependencies).toMatchInlineSnapshot(`
       {
         "@nx/web": "0.0.1",
-        "@remix-run/dev": "^2.8.1",
+        "@remix-run/dev": "^2.17.3",
+        "typescript": "~5.9.2",
       }
     `);
 
@@ -37,10 +37,13 @@ describe('Remix Init Generator', () => {
         "plugins": [
           {
             "options": {
+              "buildDepsTargetName": "build-deps",
               "buildTargetName": "build",
               "devTargetName": "dev",
+              "serveStaticTargetName": "serve-static",
               "startTargetName": "start",
               "typecheckTargetName": "typecheck",
+              "watchDepsTargetName": "watch-deps",
             },
             "plugin": "@nx/remix/plugin",
           },
@@ -69,15 +72,25 @@ describe('Remix Init Generator', () => {
       const pkgJson = readJson(tree, 'package.json');
       expect(pkgJson.dependencies).toMatchInlineSnapshot(`
         {
-          "@remix-run/serve": "^2.8.1",
+          "@remix-run/serve": "^2.17.3",
         }
       `);
       expect(pkgJson.devDependencies).toMatchInlineSnapshot(`
         {
           "@nx/web": "0.0.1",
-          "@remix-run/dev": "^2.8.1",
+          "@remix-run/dev": "^2.17.3",
+          "typescript": "~5.9.2",
         }
       `);
     });
+  });
+
+  it('should throw when the workspace declares TypeScript 6', async () => {
+    const tree = createTreeWithEmptyWorkspace();
+    addDependenciesToPackageJson(tree, {}, { typescript: '~6.0.3' });
+
+    await expect(remixInitGeneratorInternal(tree, {})).rejects.toThrow(
+      /Remix does not support TypeScript 6/
+    );
   });
 });

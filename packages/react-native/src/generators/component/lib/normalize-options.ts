@@ -1,47 +1,52 @@
 import { getProjects, logger, names, Tree } from '@nx/devkit';
+import {
+  determineArtifactNameAndDirectoryOptions,
+  type FileExtensionType,
+} from '@nx/devkit/internal';
 import { Schema } from '../schema';
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
+import { getProjectType } from '@nx/js/internal';
 
 export interface NormalizedSchema extends Schema {
+  directory: string;
   projectSourceRoot: string;
   fileName: string;
   className: string;
   filePath: string;
+  fileExtension: string;
+  fileExtensionType: FileExtensionType;
   projectName: string;
+  projectRoot: string;
 }
 
 export async function normalizeOptions(
   host: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
-  assertValidOptions(options);
-
   const {
     artifactName: name,
     directory,
     fileName,
     filePath,
+    fileExtension,
+    fileExtensionType,
     project: projectName,
   } = await determineArtifactNameAndDirectoryOptions(host, {
-    artifactType: 'component',
-    callingGenerator: '@nx/react-native:component',
+    path: options.path,
     name: options.name,
-    directory: options.directory,
-    derivedDirectory: options.directory,
-    flat: options.flat,
-    nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-    project: options.project,
+    allowedFileExtensions: ['js', 'jsx', 'ts', 'tsx'],
     fileExtension: 'tsx',
-    pascalCaseFile: options.pascalCaseFiles,
   });
 
   const project = getProjects(host).get(projectName);
 
   const { className } = names(name);
 
-  const { sourceRoot: projectSourceRoot, projectType } = project;
+  const { root, sourceRoot: projectSourceRoot, projectType } = project;
 
-  if (options.export && projectType === 'application') {
+  if (
+    options.export &&
+    getProjectType(host, root, projectType) === 'application'
+  ) {
     logger.warn(
       `The "--export" option should not be used with applications and will do nothing.`
     );
@@ -51,27 +56,15 @@ export async function normalizeOptions(
 
   return {
     ...options,
+    name,
     directory,
     className,
     fileName,
     filePath,
+    fileExtension,
+    fileExtensionType,
     projectSourceRoot,
     projectName,
+    projectRoot: root,
   };
-}
-
-function assertValidOptions(options: Schema) {
-  const slashes = ['/', '\\'];
-  slashes.forEach((s) => {
-    if (options.name.indexOf(s) !== -1) {
-      const [name, ...rest] = options.name.split(s).reverse();
-      let suggestion = rest.map((x) => x.toLowerCase()).join(s);
-      if (options.directory) {
-        suggestion = `${options.directory}${s}${suggestion}`;
-      }
-      throw new Error(
-        `Found "${s}" in the component name. Did you mean to use the --directory option (e.g. \`nx g c ${name} --directory ${suggestion}\`)?`
-      );
-    }
-  });
 }

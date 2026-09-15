@@ -1,21 +1,28 @@
-import { FetchProjectGraphService } from './fetch-project-graph-service';
-import { LocalProjectGraphService } from './local-project-graph-service';
-import { MockProjectGraphService } from './mock-project-graph-service';
-import { NxConsoleProjectGraphService } from './nx-console-project-graph-service';
-
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import type {
   ProjectGraphClientResponse,
   TaskGraphClientResponse,
 } from 'nx/src/command-line/graph/graph';
+import { FetchProjectGraphService } from './fetch-project-graph-service';
+import { LocalProjectGraphService } from './local-project-graph-service';
+import { MockProjectGraphService } from './mock-project-graph-service';
+import { NxConsoleProjectGraphService } from './nx-console-project-graph-service';
 
 let projectGraphService: ProjectGraphService;
 
 export interface ProjectGraphService {
   getHash: () => Promise<string>;
-  getProjectGraph: (url: string) => Promise<ProjectGraphClientResponse>;
+  getProjectGraph: (
+    url: string,
+    requestFull?: boolean
+  ) => Promise<ProjectGraphClientResponse>;
   getTaskGraph: (url: string) => Promise<TaskGraphClientResponse>;
+  getSpecificTaskGraph?: (
+    url: string,
+    projects: string | string[] | null,
+    targets: string[],
+    configuration?: string
+  ) => Promise<TaskGraphClientResponse>;
   setTaskInputsUrl?: (url: string) => void;
   getExpandedTaskInputs?: (taskId: string) => Promise<Record<string, string[]>>;
   getSourceMaps?: (

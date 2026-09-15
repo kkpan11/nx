@@ -1,29 +1,34 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import {
   readJson,
+  readNxJson,
   readProjectConfiguration,
-  Tree,
   updateJson,
+  updateNxJson,
+  type Tree,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
+import { E2eTestRunner } from '../../utils/test-runners';
+import { nxVersion, webpackMergeVersion } from '../../utils/versions';
 import { generateTestApplication } from '../utils/testing';
 import { setupMf } from './setup-mf';
-import { E2eTestRunner } from '../../utils/test-runners';
 
 describe('Init MF', () => {
   let tree: Tree;
 
   beforeEach(async () => {
-    tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
+    tree = createTreeWithEmptyWorkspace();
     await generateTestApplication(tree, {
-      name: 'app1',
+      directory: 'app1',
+      bundler: 'webpack',
       routing: true,
       standalone: false,
       skipFormat: true,
     });
     await generateTestApplication(tree, {
-      name: 'remote1',
+      directory: 'remote1',
+      bundler: 'webpack',
       routing: true,
       standalone: false,
       skipFormat: true,
@@ -58,6 +63,26 @@ describe('Init MF', () => {
         'utf-8'
       );
       expect(mfConfigContents).toMatchSnapshot();
+    }
+  );
+
+  test.each([
+    ['app1', 'host'],
+    ['remote1', 'remote'],
+  ])(
+    'should add @nx/webpack and webpack-merge for the webpack build target ("%s", %s)',
+    async (app, type: 'host' | 'remote') => {
+      await setupMf(tree, {
+        appName: app,
+        mfType: type,
+        typescriptConfiguration: false,
+        standalone: false,
+        skipFormat: true,
+      });
+
+      const { devDependencies } = readJson(tree, 'package.json');
+      expect(devDependencies['@nx/webpack']).toBe(nxVersion);
+      expect(devDependencies['webpack-merge']).toBe(webpackMergeVersion);
     }
   );
 
@@ -232,10 +257,10 @@ describe('Init MF', () => {
 
     // ASSERT
     expect(
-      tree.read('remote1/src/app/remote-entry/entry.component.ts', 'utf-8')
+      tree.read('remote1/src/app/remote-entry/entry.ts', 'utf-8')
     ).toMatchSnapshot();
     expect(
-      tree.read('remote1/src/app/remote-entry/entry.module.ts', 'utf-8')
+      tree.read('remote1/src/app/remote-entry/entry-module.ts', 'utf-8')
     ).toMatchSnapshot();
   });
 
@@ -250,7 +275,7 @@ describe('Init MF', () => {
 
     // ASSERT
     expect(
-      tree.read('remote1/src/app/remote-entry/entry.component.ts', 'utf-8')
+      tree.read('remote1/src/app/remote-entry/entry.ts', 'utf-8')
     ).toMatchSnapshot();
   });
 
@@ -346,7 +371,7 @@ describe('Init MF', () => {
   it('should add a remote application and add it to a specified host applications webpack config that contains a remote application already', async () => {
     // ARRANGE
     await generateTestApplication(tree, {
-      name: 'remote2',
+      directory: 'remote2',
       standalone: false,
       skipFormat: true,
     });
@@ -388,7 +413,7 @@ describe('Init MF', () => {
   it('should add a remote application and add it to a specified host applications webpack config that contains a remote application already when --typescriptConfiguration=true', async () => {
     // ARRANGE
     await generateTestApplication(tree, {
-      name: 'remote2',
+      directory: 'remote2',
       standalone: false,
       skipFormat: true,
     });
@@ -430,7 +455,7 @@ describe('Init MF', () => {
   it('should add a remote application and add it to a specified host applications router config', async () => {
     // ARRANGE
     await generateTestApplication(tree, {
-      name: 'remote2',
+      directory: 'remote2',
       routing: true,
       standalone: false,
       skipFormat: true,
@@ -473,7 +498,7 @@ describe('Init MF', () => {
   it('should modify the associated cypress project to add the workaround correctly', async () => {
     // ARRANGE
     await generateTestApplication(tree, {
-      name: 'test-app',
+      directory: 'test-app',
       routing: true,
       standalone: false,
       skipFormat: true,
@@ -573,7 +598,7 @@ describe('Init MF', () => {
       expect(
         readJson(tree, 'app1/public/module-federation.manifest.json')
       ).toEqual({
-        remote1: 'http://localhost:4201',
+        remote1: 'http://localhost:4201/mf-manifest.json',
       });
       expect(
         tree.read('app1/src/app/app.routes.ts', 'utf-8')
@@ -608,7 +633,7 @@ describe('Init MF', () => {
       expect(
         readJson(tree, 'app1/public/module-federation.manifest.json')
       ).toEqual({
-        remote1: 'http://localhost:4201',
+        remote1: 'http://localhost:4201/mf-manifest.json',
       });
       expect(
         tree.read('app1/src/app/app.routes.ts', 'utf-8')
@@ -647,7 +672,7 @@ describe('Init MF', () => {
     expect(
       readJson(tree, 'app1/public/module-federation.manifest.json')
     ).toEqual({
-      remote1: 'http://localhost:4201',
+      remote1: 'http://localhost:4201/mf-manifest.json',
     });
     expect(tree.read('app1/src/app/app.routes.ts', 'utf-8')).toMatchSnapshot();
   });
@@ -683,7 +708,7 @@ describe('Init MF', () => {
     expect(
       readJson(tree, 'app1/public/module-federation.manifest.json')
     ).toEqual({
-      remote1: 'http://localhost:4201',
+      remote1: 'http://localhost:4201/mf-manifest.json',
     });
     expect(tree.read('app1/src/app/app.routes.ts', 'utf-8')).toMatchSnapshot();
   });
@@ -716,113 +741,274 @@ describe('Init MF', () => {
       prefix: 'my-org',
     });
 
-    expect(tree.read('app1/src/app/app.component.spec.ts', 'utf-8'))
+    expect(tree.read('app1/src/app/app.spec.ts', 'utf-8'))
       .toMatchInlineSnapshot(`
-      "import { fakeAsync, TestBed, tick } from '@angular/core/testing';
-      import { AppComponent } from './app.component';
-      import { NxWelcomeComponent } from './nx-welcome.component';
+      "import { TestBed } from '@angular/core/testing';
+      import { App } from './app';
+      import { NxWelcome } from './nx-welcome';
       import { Router, RouterModule } from '@angular/router';
 
-      describe('AppComponent', () => {
+      describe('App', () => {
         beforeEach(async () => {
           await TestBed.configureTestingModule({
-            imports: [
-              RouterModule.forRoot([{ path: '', component: NxWelcomeComponent }]),
-              AppComponent,
-              NxWelcomeComponent,
-            ],
+            imports: [RouterModule.forRoot([{ path: '', component: NxWelcome }]), App, NxWelcome],
           }).compileComponents();
         });
 
         it('should create the app', () => {
-          const fixture = TestBed.createComponent(AppComponent);
+          const fixture = TestBed.createComponent(App);
           const app = fixture.componentInstance;
           expect(app).toBeTruthy();
         });
 
         it(\`should have as title 'app1'\`, () => {
-          const fixture = TestBed.createComponent(AppComponent);
+          const fixture = TestBed.createComponent(App);
           const app = fixture.componentInstance;
           expect(app.title).toEqual('app1');
         });
 
-        it('should render title', fakeAsync(() => {
-          const fixture = TestBed.createComponent(AppComponent);
+        it('should render title', async () => {
+          const fixture = TestBed.createComponent(App);
           const router = TestBed.inject(Router);
-          fixture.ngZone?.run(() => router.navigate(['']));
-          tick();
-          fixture.detectChanges();
+          await router.navigate(['']);
+          await fixture.whenStable();
           const compiled = fixture.nativeElement as HTMLElement;
           expect(compiled.querySelector('h1')?.textContent).toContain('Welcome app1');
-        }));
+        });
       });
       "
     `);
   });
 
-  describe('angular compat support', () => {
-    beforeEach(() => {
-      updateJson(tree, 'package.json', (json) => ({
-        ...json,
-        dependencies: {
-          ...json.dependencies,
-          '@angular/core': '~17.2.0',
-        },
-      }));
+  it('should move the @nx/angular plugin to dependencies when --mfType=host', async () => {
+    updateJson(tree, 'package.json', (json) => ({
+      ...json,
+      devDependencies: {
+        ...json.devDependencies,
+        '@nx/angular': nxVersion,
+      },
+    }));
+
+    await setupMf(tree, { appName: 'app1', mfType: 'host' });
+
+    const { devDependencies, dependencies } = readJson(tree, 'package.json');
+    expect(devDependencies['@nx/angular']).toBeUndefined();
+    expect(dependencies['@nx/angular']).toBe(nxVersion);
+  });
+
+  it('should move the @nx/angular plugin to dependencies when --federationType=dynamic', async () => {
+    updateJson(tree, 'package.json', (json) => ({
+      ...json,
+      devDependencies: {
+        ...json.devDependencies,
+        '@nx/angular': nxVersion,
+      },
+    }));
+
+    await setupMf(tree, {
+      appName: 'app1',
+      mfType: 'remote',
+      federationType: 'dynamic',
     });
 
-    it('should generate the host app component test file using RouterTestingModule', async () => {
-      await setupMf(tree, {
-        appName: 'app1',
-        mfType: 'host',
-        prefix: 'my-org',
-      });
+    const { devDependencies, dependencies } = readJson(tree, 'package.json');
+    expect(devDependencies['@nx/angular']).toBeUndefined();
+    expect(dependencies['@nx/angular']).toBe(nxVersion);
+  });
 
-      expect(tree.read('app1/src/app/app.component.spec.ts', 'utf-8'))
-        .toMatchInlineSnapshot(`
-        "import { fakeAsync, TestBed, tick } from '@angular/core/testing';
-        import { AppComponent } from './app.component';
-        import { NxWelcomeComponent } from './nx-welcome.component';
-        import { RouterTestingModule } from '@angular/router/testing';
-        import { Router } from '@angular/router';
+  it('should generate the entry component respecting the "type" option in component generator defaults', async () => {
+    const nxJson = readNxJson(tree);
+    nxJson.generators = {
+      ...nxJson.generators,
+      '@nx/angular:component': {
+        ...nxJson.generators?.['@nx/angular:component'],
+        type: 'component',
+      },
+    };
+    updateNxJson(tree, nxJson);
 
-        describe('AppComponent', () => {
-          beforeEach(async () => {
-            await TestBed.configureTestingModule({
-              imports: [
-                RouterTestingModule.withRoutes([
-                  { path: '', component: NxWelcomeComponent },
-                ]),
-                AppComponent,
-                NxWelcomeComponent,
-              ],
-            }).compileComponents();
-          });
-
-          it('should create the app', () => {
-            const fixture = TestBed.createComponent(AppComponent);
-            const app = fixture.componentInstance;
-            expect(app).toBeTruthy();
-          });
-
-          it(\`should have as title 'app1'\`, () => {
-            const fixture = TestBed.createComponent(AppComponent);
-            const app = fixture.componentInstance;
-            expect(app.title).toEqual('app1');
-          });
-
-          it('should render title', fakeAsync(() => {
-            const fixture = TestBed.createComponent(AppComponent);
-            const router = TestBed.inject(Router);
-            fixture.ngZone?.run(() => router.navigate(['']));
-            tick();
-            fixture.detectChanges();
-            const compiled = fixture.nativeElement as HTMLElement;
-            expect(compiled.querySelector('h1')?.textContent).toContain('Welcome app1');
-          }));
-        });
-        "
-      `);
+    await setupMf(tree, {
+      appName: 'app1',
+      mfType: 'host',
+      routing: true,
+      standalone: false,
+      skipFormat: true,
     });
+    await setupMf(tree, {
+      appName: 'remote1',
+      mfType: 'remote',
+      host: 'app1',
+      port: 4201,
+      routing: true,
+      standalone: false,
+      skipFormat: true,
+    });
+
+    expect(
+      tree.read('remote1/src/app/remote-entry/entry.component.ts', 'utf-8')
+    ).toMatchInlineSnapshot(`
+      "import { Component } from '@angular/core';
+
+      @Component({
+        selector: 'app-remote1-entry',
+        standalone: false,
+        template: \`<app-nx-welcome></app-nx-welcome>\`
+      })
+      export class RemoteEntryComponent {}
+      "
+    `);
+    expect(tree.read('remote1/src/app/remote-entry/entry-module.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { NgModule } from '@angular/core';
+      import { CommonModule } from '@angular/common';
+      import { RouterModule } from '@angular/router';
+
+      import { RemoteEntryComponent } from './entry.component';
+      import { NxWelcome } from './nx-welcome';
+      import { remoteRoutes } from './entry.routes';
+
+      @NgModule({
+        declarations: [RemoteEntryComponent, NxWelcome],
+        imports: [
+          CommonModule,
+          RouterModule.forChild(remoteRoutes),
+        ],
+        providers: [],
+      })
+      export class RemoteEntryModule {}"
+    `);
+    expect(tree.read('remote1/src/app/remote-entry/entry.routes.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { Route } from '@angular/router';
+      import { RemoteEntryComponent } from './entry.component';
+
+      export const remoteRoutes: Route[] = [{ path: '', component: RemoteEntryComponent }];"
+    `);
+    expect(tree.read('app1/src/app/app.routes.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { NxWelcome } from './nx-welcome';
+      import { Route } from '@angular/router';
+
+      export const appRoutes: Route[] = [
+          {
+          path: 'remote1',
+          loadChildren: () => import('remote1/Module').then(m => m!.RemoteEntryModule)
+          },
+          {
+            path: '',
+            component: NxWelcome
+          },];
+      "
+    `);
+  });
+
+  it('should handle app and nx welcome components with the "component" type', async () => {
+    tree = createTreeWithEmptyWorkspace();
+    const nxJson = readNxJson(tree);
+    nxJson.generators = {
+      ...nxJson.generators,
+      '@nx/angular:component': {
+        ...nxJson.generators?.['@nx/angular:component'],
+        type: 'component',
+      },
+    };
+    updateNxJson(tree, nxJson);
+    await generateTestApplication(tree, {
+      directory: 'app1',
+      bundler: 'webpack',
+      routing: true,
+      standalone: false,
+      skipFormat: true,
+    });
+    await generateTestApplication(tree, {
+      directory: 'remote1',
+      bundler: 'webpack',
+      routing: true,
+      standalone: false,
+      skipFormat: true,
+    });
+
+    await setupMf(tree, {
+      appName: 'app1',
+      mfType: 'host',
+      routing: true,
+      standalone: false,
+      skipFormat: true,
+    });
+    await setupMf(tree, {
+      appName: 'remote1',
+      mfType: 'remote',
+      host: 'app1',
+      port: 4201,
+      routing: true,
+      standalone: false,
+      skipFormat: true,
+    });
+
+    expect(
+      tree.read('remote1/src/app/remote-entry/entry.component.ts', 'utf-8')
+    ).toMatchInlineSnapshot(`
+      "import { Component } from '@angular/core';
+
+      @Component({
+        selector: 'app-remote1-entry',
+        standalone: false,
+        template: \`<app-nx-welcome></app-nx-welcome>\`
+      })
+      export class RemoteEntryComponent {}
+      "
+    `);
+    expect(tree.read('remote1/src/app/remote-entry/entry-module.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { NgModule } from '@angular/core';
+      import { CommonModule } from '@angular/common';
+      import { RouterModule } from '@angular/router';
+
+      import { RemoteEntryComponent } from './entry.component';
+      import { NxWelcomeComponent } from './nx-welcome.component';
+      import { remoteRoutes } from './entry.routes';
+
+      @NgModule({
+        declarations: [RemoteEntryComponent, NxWelcomeComponent],
+        imports: [
+          CommonModule,
+          RouterModule.forChild(remoteRoutes),
+        ],
+        providers: [],
+      })
+      export class RemoteEntryModule {}"
+    `);
+    expect(tree.read('remote1/src/app/remote-entry/entry.routes.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { Route } from '@angular/router';
+      import { RemoteEntryComponent } from './entry.component';
+
+      export const remoteRoutes: Route[] = [{ path: '', component: RemoteEntryComponent }];"
+    `);
+    expect(tree.read('app1/src/app/app.routes.ts', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "import { NxWelcomeComponent } from './nx-welcome.component';
+      import { Route } from '@angular/router';
+
+      export const appRoutes: Route[] = [
+          {
+          path: 'remote1',
+          loadChildren: () => import('remote1/Module').then(m => m!.RemoteEntryModule)
+          },
+          {
+            path: '',
+            component: NxWelcomeComponent
+          },];
+      "
+    `);
+    expect(tree.read('app1/src/app/app.component.html', 'utf-8'))
+      .toMatchInlineSnapshot(`
+      "<ul class="remote-menu">
+      <li><a routerLink="/">Home</a></li>
+      <li><a routerLink="remote1">Remote1</a></li>
+      </ul>
+      <router-outlet></router-outlet>
+      "
+    `);
   });
 });

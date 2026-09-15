@@ -1,4 +1,4 @@
-import type { Tree } from '@nx/devkit';
+import type { TargetConfiguration, Tree } from '@nx/devkit';
 import {
   joinPathFragments,
   offsetFromRoot,
@@ -17,6 +17,7 @@ import type {
 import { convertToNxProject } from '../../utilities';
 import type { BuilderMigratorClassType } from '../builders';
 import {
+  AngularBuildUnitTestMigrator,
   AngularDevkitKarmaMigrator,
   AngularEslintLintMigrator,
 } from '../builders';
@@ -34,6 +35,7 @@ type SupportedTargets =
 const supportedTargets: Record<SupportedTargets, Target> = {
   build: {
     builders: [
+      '@angular/build:application',
       '@angular-devkit/build-angular:application',
       '@angular-devkit/build-angular:browser',
       '@angular-devkit/build-angular:browser-esbuild',
@@ -46,14 +48,24 @@ const supportedTargets: Record<SupportedTargets, Target> = {
       '@cypress/schematic:cypress',
     ],
   },
-  i18n: { builders: ['@angular-devkit/build-angular:extract-i18n'] },
+  i18n: {
+    builders: [
+      '@angular/build:extract-i18n',
+      '@angular-devkit/build-angular:extract-i18n',
+    ],
+  },
   prerender: {
     builders: [
       '@nguniversal/builders:prerender',
       '@angular-devkit/build-angular:prerender',
     ],
   },
-  serve: { builders: ['@angular-devkit/build-angular:dev-server'] },
+  serve: {
+    builders: [
+      '@angular/build:dev-server',
+      '@angular-devkit/build-angular:dev-server',
+    ],
+  },
   server: { builders: ['@angular-devkit/build-angular:server'] },
   serveSsr: {
     builders: [
@@ -65,6 +77,7 @@ const supportedTargets: Record<SupportedTargets, Target> = {
 
 // TODO(leo): this will replace `supportedTargets` once the full refactor is done.
 const supportedBuilderMigrators: BuilderMigratorClassType[] = [
+  AngularBuildUnitTestMigrator,
   AngularDevkitKarmaMigrator,
   AngularEslintLintMigrator,
 ];
@@ -231,14 +244,48 @@ export class AppMigrator extends ProjectMigrator<SupportedTargets> {
     this.updateTsConfigFileUsedByServerTarget(projectOffsetFromRoot);
   }
 
-  private convertBuildOptions(buildOptions: any): void {
-    buildOptions.outputPath =
-      buildOptions.outputPath &&
-      joinPathFragments(
-        'dist',
-        this.project.newRoot,
-        this.targetNames.server ? 'browser' : ''
-      );
+  private convertBuildOptions(
+    buildOptions: any,
+    target: TargetConfiguration,
+    updateOutputs: boolean = true
+  ): void {
+    const { executor } = target;
+    const isApplicationBuilder =
+      executor === '@angular/build:application' ||
+      executor === '@angular-devkit/build-angular:application';
+
+    if (updateOutputs) {
+      if (buildOptions.outputPath) {
+        if (isApplicationBuilder) {
+          if (typeof buildOptions.outputPath === 'string') {
+            buildOptions.outputPath = joinPathFragments(
+              'dist',
+              this.project.newRoot
+            );
+          } else if (buildOptions.outputPath.base) {
+            buildOptions.outputPath.base = joinPathFragments(
+              'dist',
+              this.project.newRoot
+            );
+          }
+        } else {
+          buildOptions.outputPath = joinPathFragments(
+            'dist',
+            this.project.newRoot,
+            this.targetNames.server ? 'browser' : ''
+          );
+        }
+      } else if (isApplicationBuilder) {
+        buildOptions.outputPath = joinPathFragments('dist', this.projectName);
+      }
+
+      if (typeof buildOptions.outputPath === 'string') {
+        target.outputs = ['{options.outputPath}'];
+      } else if (buildOptions.outputPath?.base) {
+        target.outputs = ['{options.outputPath.base}'];
+      }
+    }
+
     if (buildOptions.index) {
       if (typeof buildOptions.index === 'string') {
         buildOptions.index = this.convertAsset(buildOptions.index);
@@ -355,9 +402,9 @@ export class AppMigrator extends ProjectMigrator<SupportedTargets> {
       }
     }
 
-    this.convertBuildOptions(buildTarget.options ?? {});
+    this.convertBuildOptions(buildTarget.options ?? {}, buildTarget);
     Object.values(buildTarget.configurations ?? {}).forEach((config) =>
-      this.convertBuildOptions(config)
+      this.convertBuildOptions(config, buildTarget, false)
     );
   }
 

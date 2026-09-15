@@ -1,69 +1,116 @@
-import { Tree } from 'nx/src/generators/tree';
-import { Linter, lintProjectGenerator } from '@nx/eslint';
-import { joinPathFragments } from 'nx/src/utils/path';
-import { addDependenciesToPackageJson, runTasksInSerial } from '@nx/devkit';
-import { extraEslintDependencies } from './lint';
+import {
+  addDependenciesToPackageJson,
+  GeneratorCallback,
+  runTasksInSerial,
+  Tree,
+  joinPathFragments,
+} from '@nx/devkit';
+import { LinterType } from '@nx/js';
 import {
   addExtendsToLintConfig,
+  addOverrideToLintConfig,
+  addPredefinedConfigToFlatLintConfig,
   isEslintConfigSupported,
+  isTypedLintingEnabled,
   lintConfigHasOverride,
   replaceOverridesInLintConfig,
   updateOverrideInLintConfig,
-} from '@nx/eslint/src/generators/utils/eslint-file';
+  useFlatConfig,
+  versions,
+} from '@nx/eslint/internal';
 import type { Linter as EsLintLinter } from 'eslint';
+import {
+  eslintPluginVueVersion,
+  vueEslintConfigPrettierVersion,
+  vueEslintConfigTypescriptVersion,
+} from './versions';
+import { addLintingToProject } from '@nx/js/internal';
 
 export async function addLinting(
   host: Tree,
   options: {
-    linter: Linter;
+    linter: LinterType;
     name: string;
     projectRoot: string;
     unitTestRunner?: 'vitest' | 'none';
+    enableTypedLinting?: boolean;
+    /**
+     * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+     */
     setParserOptionsProject?: boolean;
     skipPackageJson?: boolean;
     rootProject?: boolean;
     addPlugin?: boolean;
+    projectName: string;
   },
   projectType: 'lib' | 'app'
 ) {
-  if (options.linter === Linter.EsLint) {
-    const lintTask = await lintProjectGenerator(host, {
+  const tasks: GeneratorCallback[] = [];
+  tasks.push(
+    await addLintingToProject(host, {
+      oxlintPlugins: ['vue'],
       linter: options.linter,
-      project: options.name,
+      project: options.projectName,
       tsConfigPaths: [
         joinPathFragments(options.projectRoot, `tsconfig.${projectType}.json`),
       ],
       unitTestRunner: options.unitTestRunner,
-      skipFormat: true,
-      setParserOptionsProject: options.setParserOptionsProject,
+      enableTypedLinting: isTypedLintingEnabled(options),
       rootProject: options.rootProject,
       addPlugin: options.addPlugin,
-    });
+      skipPackageJson: options.skipPackageJson,
+    })
+  );
 
-    addExtendsToLintConfig(host, options.projectRoot, [
-      'plugin:vue/vue3-essential',
-      'eslint:recommended',
-      '@vue/eslint-config-typescript',
-      '@vue/eslint-config-prettier/skip-formatting',
-    ]);
-    editEslintConfigFiles(host, options.projectRoot);
-
-    let installTask = () => {};
-    if (!options.skipPackageJson) {
-      installTask = addDependenciesToPackageJson(
+  // Everything below configures ESLint — predefined configs, `extends`, ignore
+  // entries — which have no equivalent in other linters.
+  if (options.linter === 'eslint') {
+    if (useFlatConfig(host)) {
+    } else {
+      const addExtendsTask = addExtendsToLintConfig(
         host,
-        extraEslintDependencies.dependencies,
-        extraEslintDependencies.devDependencies
+        options.projectRoot,
+        [
+          'plugin:vue/vue3-essential',
+          'eslint:recommended',
+          '@vue/eslint-config-typescript',
+          '@vue/eslint-config-prettier/skip-formatting',
+        ].filter(Boolean)
       );
+      tasks.push(addExtendsTask);
     }
 
-    return runTasksInSerial(lintTask, installTask);
-  } else {
-    return () => {};
+    editEslintConfigFiles(host, options.projectRoot);
+
+    const devDependencies = {
+      '@vue/eslint-config-prettier': vueEslintConfigPrettierVersion,
+      '@vue/eslint-config-typescript': vueEslintConfigTypescriptVersion,
+      'eslint-plugin-vue': eslintPluginVueVersion,
+    };
+    if (
+      isEslintConfigSupported(host, options.projectRoot) &&
+      useFlatConfig(host)
+    ) {
+      devDependencies['@typescript-eslint/parser'] =
+        versions(host).typescriptESLintVersion;
+    }
+
+    if (!options.skipPackageJson) {
+      const installTask = addDependenciesToPackageJson(
+        host,
+        {},
+        devDependencies,
+        undefined,
+        true
+      );
+      tasks.push(installTask);
+    }
   }
+
+  return runTasksInSerial(...tasks);
 }
 
-export function editEslintConfigFiles(tree: Tree, projectRoot: string) {
+function editEslintConfigFiles(tree: Tree, projectRoot: string) {
   const hasVueFiles = (
     o: EsLintLinter.ConfigOverride<EsLintLinter.RulesRecord>
   ) =>
@@ -84,30 +131,57 @@ export function editEslintConfigFiles(tree: Tree, projectRoot: string) {
   };
 
   if (isEslintConfigSupported(tree, projectRoot)) {
-    if (
-      lintConfigHasOverride(
+    if (useFlatConfig(tree)) {
+      addPredefinedConfigToFlatLintConfig(
         tree,
         projectRoot,
-        (o) => o.parserOptions && !hasVueFiles(o),
-        true
-      )
-    ) {
-      updateOverrideInLintConfig(
-        tree,
-        projectRoot,
-        (o) => !!o.parserOptions,
-        (o) => {
-          addVueFiles(o);
-          return o;
-        }
+        'flat/recommended',
+        { moduleName: 'vue', moduleImportPath: 'eslint-plugin-vue' }
       );
-    } else {
-      replaceOverridesInLintConfig(tree, projectRoot, [
+      // This allows .vue files to be parsed
+      addOverrideToLintConfig(
+        tree,
+        projectRoot,
         {
-          files: ['*.ts', '*.tsx', '*.js', '*.jsx', '*.vue'],
-          rules: { 'vue/multi-word-component-names': 'off' },
-        },
-      ]);
+          files: ['**/*.vue'],
+          languageOptions: {
+            parserOptions: {
+              parser: '@typescript-eslint/parser',
+            },
+          },
+        } as unknown // languageOptions is not present on eslintrc override, but it is for flat config
+      );
+      // Add an empty rules object to users know how to add/override rules
+      addOverrideToLintConfig(tree, projectRoot, {
+        files: ['*.ts', '*.tsx', '*.js', '*.jsx', '*.vue'],
+        rules: { 'vue/multi-word-component-names': 'off' },
+      });
+    } else {
+      if (
+        lintConfigHasOverride(
+          tree,
+          projectRoot,
+          (o) => o.parserOptions && !hasVueFiles(o),
+          true
+        )
+      ) {
+        updateOverrideInLintConfig(
+          tree,
+          projectRoot,
+          (o) => !!o.parserOptions,
+          (o) => {
+            addVueFiles(o);
+            return o;
+          }
+        );
+      } else {
+        replaceOverridesInLintConfig(tree, projectRoot, [
+          {
+            files: ['*.ts', '*.tsx', '*.js', '*.jsx', '*.vue'],
+            rules: { 'vue/multi-word-component-names': 'off' },
+          },
+        ]);
+      }
     }
   }
 

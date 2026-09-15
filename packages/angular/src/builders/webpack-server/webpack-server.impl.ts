@@ -1,3 +1,5 @@
+import type { BuilderContext } from '@angular-devkit/architect';
+import type { ServerBuilderOutput } from '@angular-devkit/build-angular';
 import {
   joinPathFragments,
   normalizePath,
@@ -7,14 +9,38 @@ import { existsSync } from 'fs';
 import { relative } from 'path';
 import { Observable, from } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
+import { assertPackageIsInstalled } from '../../executors/utilities/builder-package';
 import { createTmpTsConfigForBuildableLibs } from '../utilities/buildable-libs';
-import { mergeCustomWebpackConfig } from '../utilities/webpack';
 import { Schema } from './schema';
+// This is required to ensure that the webpack version used by the Module Federation is the same as the one used by the builders.
+const Module = require('module');
+
+const originalResolveFilename = Module._resolveFilename;
+const patchedWebpackPath = require.resolve('webpack', {
+  paths: [require.resolve('@angular-devkit/build-angular')],
+});
+
+// Override the resolve function
+Module._resolveFilename = function (request, parent, isMain, options) {
+  // Intercept webpack specifically
+  if (request === 'webpack') {
+    // Force webpack to resolve from your specific path
+    return patchedWebpackPath;
+  }
+
+  // For all other modules, use the original resolver
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
 
 function buildServerApp(
   options: Schema,
-  context: import('@angular-devkit/architect').BuilderContext
-): Observable<import('@angular-devkit/build-angular').ServerBuilderOutput> {
+  context: BuilderContext
+): Observable<ServerBuilderOutput> {
+  assertPackageIsInstalled(
+    '@angular-devkit/build-angular',
+    '@nx/angular:webpack-server'
+  );
+
   const { buildLibsFromSource, customWebpackConfig, ...delegateOptions } =
     options;
   // If there is a path to custom webpack config
@@ -47,11 +73,17 @@ function buildServerApp(
 
 function buildServerAppWithCustomWebpackConfiguration(
   options: Schema,
-  context: import('@angular-devkit/architect').BuilderContext,
+  context: BuilderContext,
   pathToWebpackConfig: string
 ) {
-  return from(import('@angular-devkit/build-angular')).pipe(
-    switchMap(({ executeServerBuilder }) =>
+  assertPackageIsInstalled('webpack-merge', '@nx/angular:webpack-server');
+  return from(
+    Promise.all([
+      import('@angular-devkit/build-angular'),
+      import('../utilities/webpack.js'),
+    ])
+  ).pipe(
+    switchMap(([{ executeServerBuilder }, { mergeCustomWebpackConfig }]) =>
       executeServerBuilder(options, context as any, {
         webpackConfiguration: async (baseWebpackConfig) => {
           // Angular auto includes code from @angular/platform-server
@@ -67,11 +99,7 @@ function buildServerAppWithCustomWebpackConfiguration(
             context.target
           );
 
-          if (
-            mergedConfig.plugins
-              .map((p) => p.constructor.name)
-              .includes('UniversalFederationPlugin')
-          ) {
+          if (mergedConfig.target === 'async-node') {
             mergedConfig.entry.main = mergedConfig.entry.main.filter(
               (m) => !m.startsWith('@angular/platform-server/init')
             );
@@ -93,8 +121,10 @@ function buildServerAppWithCustomWebpackConfiguration(
 
 export function executeWebpackServerBuilder(
   options: Schema,
-  context: import('@angular-devkit/architect').BuilderContext
-): Observable<import('@angular-devkit/build-angular').ServerBuilderOutput> {
+  context: BuilderContext
+): Observable<ServerBuilderOutput> {
+  assertPackageIsInstalled('@nx/webpack', '@nx/angular:webpack-server');
+
   options.buildLibsFromSource ??= true;
 
   process.env.NX_BUILD_LIBS_FROM_SOURCE = `${options.buildLibsFromSource}`;

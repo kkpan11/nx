@@ -1,7 +1,7 @@
 import { calculateFileChanges } from '../../project-graph/file-utils';
 import { runCommand } from '../../tasks-runner/run-command';
 import { output } from '../../utils/output';
-import { connectToNxCloudIfExplicitlyAsked } from '../connect/connect-to-nx-cloud';
+import { connectToNxCloudIfExplicitlyAsked } from '../nx-cloud/connect/connect-to-nx-cloud';
 import type { NxArgs } from '../../utils/command-line-utils';
 import {
   parseFiles,
@@ -18,11 +18,9 @@ import { projectHasTarget } from '../../utils/project-graph-utils';
 import { filterAffected } from '../../project-graph/affected/affected-project-graph';
 import { TargetDependencyConfig } from '../../config/workspace-json-project-json';
 import { readNxJson } from '../../config/configuration';
-import { workspaceConfigurationCheck } from '../../utils/workspace-configuration-check';
 import { findMatchingProjects } from '../../utils/find-matching-projects';
 import { generateGraph } from '../graph/graph';
 import { allFileData } from '../../utils/all-file-data';
-import { NX_PREFIX, logger } from '../../utils/logger';
 
 export async function affected(
   command: 'graph' | 'print-affected' | 'affected',
@@ -32,7 +30,7 @@ export async function affected(
     (TargetDependencyConfig | string)[]
   > = {},
   extraOptions = {
-    excludeTaskDependencies: false,
+    excludeTaskDependencies: args.excludeTaskDependencies,
     loadDotEnvFiles: process.env.NX_LOAD_DOT_ENV_FILES !== 'false',
   } as {
     excludeTaskDependencies: boolean;
@@ -41,7 +39,6 @@ export async function affected(
 ): Promise<void> {
   performance.mark('code-loading:end');
   performance.measure('code-loading', 'init-local', 'code-loading:end');
-  workspaceConfigurationCheck();
 
   const nxJson = readNxJson();
   const { nxArgs, overrides } = splitArgsIntoNxArgsAndOverrides(
@@ -54,13 +51,11 @@ export async function affected(
     nxJson
   );
 
-  if (nxArgs.verbose) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
-
   await connectToNxCloudIfExplicitlyAsked(nxArgs);
 
-  const projectGraph = await createProjectGraphAsync({ exitOnError: true });
+  const projectGraph = await createProjectGraphAsync({
+    exitOnError: true,
+  });
   const projects = await getAffectedGraphNodes(nxArgs, projectGraph);
 
   try {
@@ -77,6 +72,9 @@ export async function affected(
               open: true,
               view: 'tasks',
               targets: nxArgs.targets,
+              all:
+                nxArgs.all &&
+                (!nxArgs.projects || nxArgs.projects.length === 0),
               projects: projectNames,
               file,
             },
@@ -93,6 +91,7 @@ export async function affected(
             extraTargetDependencies,
             extraOptions
           );
+          await output.drain();
           process.exit(status);
         }
         break;
@@ -113,11 +112,7 @@ export async function getAffectedGraphNodes(
     ? projectGraph
     : await filterAffected(
         projectGraph,
-        calculateFileChanges(
-          parseFiles(nxArgs).files,
-          await allFileData(),
-          nxArgs
-        )
+        calculateFileChanges(parseFiles(nxArgs).files, nxArgs)
       );
 
   if (nxArgs.exclude) {

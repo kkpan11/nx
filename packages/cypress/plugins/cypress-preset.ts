@@ -1,13 +1,18 @@
 import { workspaceRoot } from '@nx/devkit';
-import { dirname, join, relative } from 'path';
-import { existsSync, lstatSync } from 'fs';
-
-import vitePreprocessor from '../src/plugins/preprocessor-vite';
-import { NX_PLUGIN_OPTIONS } from '../src/utils/constants';
-
-import { spawn } from 'child_process';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import { execSync, spawn } from 'child_process';
+import { lstatSync } from 'fs';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
+import { dirname, join, relative } from 'path';
+import { fileURLToPath } from 'url';
+// TODO(jack): Remove this when @nx/cypress switches to moduleResolution:
+// "nodenext". Vite 8 ships ESM-only type declarations (.d.mts) which are not
+// resolvable under moduleResolution: "node".
+type InlineConfig = Record<string, any>;
+import vitePreprocessor from '../src/plugins/preprocessor-vite';
+import { NX_PLUGIN_OPTIONS } from '../src/utils/constants';
+const treeKill = require('tree-kill');
 
 // Importing the cypress type here causes the angular and next unit
 // tests to fail when transpiling, it seems like the cypress types are
@@ -36,8 +41,10 @@ export interface NxComponentTestingOptions {
 
 // The bundler is only used while generating the component testing configuration
 // It cannot be changed after the configuration is generated
-export interface NxComponentTestingPresetOptions
-  extends Omit<NxComponentTestingOptions, 'bundler'> {}
+export interface NxComponentTestingPresetOptions extends Omit<
+  NxComponentTestingOptions,
+  'bundler'
+> {}
 
 export function nxBaseCypressPreset(
   pathToConfig: string,
@@ -46,21 +53,29 @@ export function nxBaseCypressPreset(
   // used to set babel settings for react CT.
   process.env.NX_CYPRESS_COMPONENT_TEST =
     options?.testingType === 'component' ? 'true' : 'false';
+  // ESM-shape configs pass `import.meta.url` (a `file://...` URL string) so
+  // the same expression works under both Node's native TS strip (ESM,
+  // import.meta.url defined) and Cypress's bundled tsx CJS loader, which
+  // exposes `import.meta.url` but not `import.meta.dirname`. CJS-shape
+  // configs still pass `__filename` directly. Normalize either form to a
+  // filesystem path before stat-checking.
+  const resolvedPath = pathToConfig?.startsWith('file://')
+    ? fileURLToPath(pathToConfig)
+    : pathToConfig;
   // prevent from placing path outside the root of the workspace
   // if they pass in a file or directory
-  const normalizedPath = lstatSync(pathToConfig).isDirectory()
-    ? pathToConfig
-    : dirname(pathToConfig);
+  const normalizedPath = lstatSync(resolvedPath).isDirectory()
+    ? resolvedPath
+    : dirname(resolvedPath);
   const projectPath = relative(workspaceRoot, normalizedPath);
   const offset = relative(normalizedPath, workspaceRoot);
-  const videosFolder = join(offset, 'dist', 'cypress', projectPath, 'videos');
-  const screenshotsFolder = join(
-    offset,
-    'dist',
-    'cypress',
-    projectPath,
-    'screenshots'
-  );
+  const isTsSolutionSetup = isUsingTsSolutionSetup();
+  const videosFolder = isTsSolutionSetup
+    ? join('test-output', 'cypress', 'videos')
+    : join(offset, 'dist', 'cypress', projectPath, 'videos');
+  const screenshotsFolder = isTsSolutionSetup
+    ? join('test-output', 'cypress', 'screenshots')
+    : join(offset, 'dist', 'cypress', projectPath, 'screenshots');
 
   return {
     videosFolder,
@@ -77,15 +92,37 @@ function startWebServer(webServerCommand: string) {
     // Windows is fine so we leave it attached to this process
     detached: process.platform !== 'win32',
     stdio: 'inherit',
+    windowsHide: true,
   });
 
-  return () => {
+  return async () => {
     if (process.platform === 'win32') {
-      serverProcess.kill();
+      try {
+        execSync('taskkill /pid ' + serverProcess.pid + ' /T /F', {
+          windowsHide: true,
+        });
+      } catch (e) {
+        if (process.env.NX_VERBOSE_LOGGING === 'true') {
+          console.error(e);
+        }
+      }
     } else {
-      // child.kill() does not work on linux
-      // process.kill will kill the whole process group on unix
-      process.kill(-serverProcess.pid, 'SIGKILL');
+      return new Promise<void>((res, rej) => {
+        if (process.platform === 'win32' || process.platform === 'darwin') {
+          if (serverProcess.kill()) {
+            res();
+          } else {
+            rej('Unable to kill process');
+          }
+        } else {
+          treeKill(serverProcess.pid, (err) => {
+            if (err) {
+              rej(err);
+            }
+            res();
+          });
+        }
+      });
     }
   };
 }
@@ -124,6 +161,8 @@ export function nxE2EPreset(
       webServerCommand: options?.webServerCommands?.default,
       webServerCommands: options?.webServerCommands,
       ciWebServerCommand: options?.ciWebServerCommand,
+      ciBaseUrl: options?.ciBaseUrl,
+      reuseExistingServer: options?.webServerConfig?.reuseExistingServer,
     },
 
     async setupNodeEvents(on, config) {
@@ -133,7 +172,7 @@ export function nxE2EPreset(
         config.env?.webServerCommand ?? webServerCommands?.default;
 
       if (options?.bundler === 'vite') {
-        on('file:preprocessor', vitePreprocessor());
+        on('file:preprocessor', vitePreprocessor(options?.viteConfigOverrides));
       }
 
       if (!options?.webServerCommands) {
@@ -163,7 +202,7 @@ export function nxE2EPreset(
         const killWebServer = startWebServer(webServerCommand);
 
         on('after:run', () => {
-          killWebServer();
+          return killWebServer();
         });
         await waitForServer(config.baseUrl, options.webServerConfig);
       }
@@ -262,7 +301,17 @@ export type NxCypressE2EPresetOptions = {
   ciWebServerCommand?: string;
 
   /**
+   * The url of the web server for ciWebServerCommand
+   */
+  ciBaseUrl?: string;
+
+  /**
    * Configures how the web server command is started and monitored.
    */
   webServerConfig?: WebServerConfig;
+
+  /**
+   * Configure override inside the vite config
+   */
+  viteConfigOverrides?: InlineConfig;
 };

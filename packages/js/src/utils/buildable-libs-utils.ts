@@ -8,17 +8,21 @@ import {
   getOutputsForTargetAndConfiguration,
   parseTargetString,
   readJsonFile,
-  stripIndents,
-  workspaceRoot,
   writeJsonFile,
+  output,
 } from '@nx/devkit';
 import { unlinkSync } from 'fs';
-import { isNpmProject } from 'nx/src/project-graph/operators';
-import { directoryExists, fileExists } from 'nx/src/utils/fileutils';
-import { output } from 'nx/src/utils/output';
-import { dirname, join, relative, isAbsolute } from 'path';
+import { dirname, isAbsolute, join, relative, extname, resolve } from 'path';
 import type * as ts from 'typescript';
-import { readTsConfigPaths } from './typescript/ts-config';
+import { readTsConfigPaths, resolvePathsBaseUrl } from './typescript/ts-config';
+import { stripGlobToBaseDir } from './strip-glob-to-base-dir';
+import { randomUUID } from 'crypto';
+import {
+  isNpmProject,
+  fileExists,
+  isProjectGraphExternalNode,
+  isProjectGraphProjectNode,
+} from '@nx/devkit/internal';
 
 function isBuildable(target: string, node: ProjectGraphProjectNode): boolean {
   return (
@@ -111,7 +115,7 @@ export function calculateProjectDependencies(
     .map(({ name: dep, isTopLevel }) => {
       let project: DependentBuildableProjectNode = null;
       const depNode = projGraph.nodes[dep] || projGraph.externalNodes[dep];
-      if (depNode.type === 'lib') {
+      if (isProjectGraphProjectNode(depNode) && depNode.type === 'lib') {
         if (isBuildable(targetName, depNode)) {
           const libPackageJsonPath = join(
             root,
@@ -137,7 +141,7 @@ export function calculateProjectDependencies(
         } else {
           nonBuildableDependencies.push(dep);
         }
-      } else if (depNode.type === 'npm') {
+      } else if (isProjectGraphExternalNode(depNode)) {
         project = {
           name: depNode.data.packageName,
           outputs: [],
@@ -194,20 +198,35 @@ function collectDependencies(
 }
 
 function readTsConfigWithRemappedPaths(
-  tsConfig: string,
-  generatedTsConfigPath: string,
-  dependencies: DependentBuildableProjectNode[]
+  originalTsconfigPath: string,
+  generatedTsconfigPath: string,
+  dependencies: DependentBuildableProjectNode[],
+  workspaceRoot: string
 ) {
   const generatedTsConfig: any = { compilerOptions: {} };
-  const dirnameTsConfig = dirname(generatedTsConfigPath);
-  const relativeTsconfig = isAbsolute(dirnameTsConfig)
-    ? relative(workspaceRoot, dirnameTsConfig)
-    : dirnameTsConfig;
-  generatedTsConfig.extends = relative(relativeTsconfig, tsConfig);
-  generatedTsConfig.compilerOptions.paths = computeCompilerOptionsPaths(
-    tsConfig,
-    dependencies
+  const normalizedTsConfig = resolve(workspaceRoot, originalTsconfigPath);
+  const normalizedGeneratedTsConfigDir = resolve(
+    workspaceRoot,
+    dirname(generatedTsconfigPath)
   );
+  generatedTsConfig.extends = relative(
+    normalizedGeneratedTsConfigDir,
+    normalizedTsConfig
+  );
+  const paths = computeCompilerOptionsPaths(normalizedTsConfig, dependencies);
+  // Resolve paths to absolute so they work regardless of the tmp tsconfig
+  // location and without needing baseUrl (deprecated in TS 6, removed in TS 7).
+  const pathsBase = resolvePathsBaseUrl(normalizedTsConfig);
+  for (const key of Object.keys(paths)) {
+    paths[key] = paths[key].map((p) => {
+      if (isAbsolute(p)) {
+        return p;
+      }
+      const stripped = p.startsWith('./') ? p.slice(2) : p;
+      return resolve(pathsBase, stripped).replace(/\\/g, '/');
+    });
+  }
+  generatedTsConfig.compilerOptions.paths = paths;
 
   if (process.env.NX_VERBOSE_LOGGING_PATH_MAPPINGS === 'true') {
     output.log({
@@ -438,19 +457,18 @@ export function createTmpTsConfig(
     'tmp',
     projectRoot,
     process.env.NX_TASK_TARGET_TARGET ?? 'build',
-    'tsconfig.generated.json'
+    `tsconfig.generated.${randomUUID()}.json`
   );
+  if (tsconfigPath === tmpTsConfigPath) {
+    return tsconfigPath;
+  }
   const parsedTSConfig = readTsConfigWithRemappedPaths(
     tsconfigPath,
     tmpTsConfigPath,
-    dependencies
+    dependencies,
+    workspaceRoot
   );
   process.on('exit', () => cleanupTmpTsConfigFile(tmpTsConfigPath));
-
-  if (useWorkspaceAsBaseUrl) {
-    parsedTSConfig.compilerOptions ??= {};
-    parsedTSConfig.compilerOptions.baseUrl = workspaceRoot;
-  }
 
   writeJsonFile(tmpTsConfigPath, parsedTSConfig);
   return join(tmpTsConfigPath);
@@ -464,98 +482,78 @@ function cleanupTmpTsConfigFile(tmpTsConfigPath) {
   } catch (e) {}
 }
 
-export function checkDependentProjectsHaveBeenBuilt(
-  root: string,
-  projectName: string,
-  targetName: string,
-  projectDependencies: DependentBuildableProjectNode[]
-): boolean {
-  const missing = findMissingBuildDependencies(
-    root,
-    projectName,
-    targetName,
-    projectDependencies
-  );
-  if (missing.length > 0) {
-    console.error(stripIndents`
-      It looks like all of ${projectName}'s dependencies have not been built yet:
-      ${missing.map((x) => ` - ${x.node.name}`).join('\n')}
-
-      You might be missing a "targetDefaults" configuration in your root nx.json (https://nx.dev/reference/project-configuration#target-defaults),
-      or "dependsOn" configured in ${projectName}'s project.json (https://nx.dev/reference/project-configuration#dependson) 
-    `);
-    return false;
-  } else {
-    return true;
-  }
-}
-
-export function findMissingBuildDependencies(
-  root: string,
-  projectName: string,
-  targetName: string,
-  projectDependencies: DependentBuildableProjectNode[]
-): DependentBuildableProjectNode[] {
-  const depLibsToBuildFirst: DependentBuildableProjectNode[] = [];
-
-  // verify whether all dependent libraries have been built
-  projectDependencies.forEach((dep) => {
-    if (dep.node.type !== 'lib') {
-      return;
-    }
-
-    const paths = dep.outputs.map((p) => join(root, p));
-
-    if (!paths.some(directoryExists)) {
-      depLibsToBuildFirst.push(dep);
-    }
-  });
-
-  return depLibsToBuildFirst;
-}
-
 export function updatePaths(
   dependencies: DependentBuildableProjectNode[],
   paths: Record<string, string[]>
 ) {
   const pathsKeys = Object.keys(paths);
   // For each registered dependency
-  dependencies.forEach((dep) => {
-    // If there are outputs
-    if (dep.outputs && dep.outputs.length > 0) {
-      // Directly map the dependency name to the output paths (dist/packages/..., etc.)
-      paths[dep.name] = dep.outputs;
+  dependencies
+    .filter((dep) => isProjectGraphProjectNode(dep.node))
+    .forEach((dep) => {
+      // If there are outputs
+      if (dep.outputs && dep.outputs.length > 0) {
+        // Directly map the dependency name to the output paths (dist/packages/..., etc.)
+        paths[dep.name] = dep.outputs.map((output) =>
+          output.replace(/(\*|\/[^\/]*\*).*$/, '')
+        );
 
-      // check for secondary entrypoints
-      // For each registered path
-      for (const path of pathsKeys) {
-        const nestedName = `${dep.name}/`;
+        // check for secondary entrypoints
+        // For each registered path
+        for (const path of pathsKeys) {
+          const nestedName = `${dep.name}/`;
 
-        // If the path points to the current dependency and is nested (/)
-        if (path.startsWith(nestedName)) {
-          const nestedPart = path.slice(nestedName.length);
+          // If the path points to the current dependency and is nested (/)
+          if (path.startsWith(nestedName)) {
+            const nestedPart = path.slice(nestedName.length);
 
-          // Bind secondary endpoints for ng-packagr projects
-          let mappedPaths = dep.outputs.map(
-            (output) => `${output}/${nestedPart}`
-          );
+            // Bind potential secondary endpoints for ng-packagr projects
+            let mappedPaths = dep.outputs.map(
+              (output) => `${output}/${nestedPart}`
+            );
 
-          // Get the dependency's package name
-          const { root } = (dep.node?.data || {}) as any;
-          if (root) {
+            const { root } = (dep.node as ProjectGraphProjectNode).data;
             // Update nested mappings to point to the dependency's output paths
             mappedPaths = mappedPaths.concat(
-              paths[path].flatMap((path) =>
-                dep.outputs.map((output) => path.replace(root, output))
+              paths[path].flatMap((p) =>
+                dep.outputs.flatMap((output) => {
+                  // Re-map the root prefix to the output. Match root only as a
+                  // leading segment (after an optional `./`) so a root that
+                  // also appears later in the value (e.g. output `dist/libs/base`
+                  // for root `base`) isn't doubled.
+                  const dotPrefix = p.startsWith('./') ? './' : '';
+                  const value = dotPrefix ? p.slice(2) : p;
+                  const basePath =
+                    value === root || value.startsWith(`${root}/`)
+                      ? `${dotPrefix}${output}${value.slice(root.length)}`
+                      : p;
+                  return [
+                    // extension-less path to support compiled output
+                    basePath.replace(
+                      new RegExp(`${extname(basePath)}$`, 'gi'),
+                      ''
+                    ),
+                    // original path with the root re-mapped to the output path
+                    basePath,
+                  ];
+                })
               )
             );
-          }
 
-          paths[path] = mappedPaths;
+            paths[path] = mappedPaths;
+          }
         }
       }
-    }
-  });
+    });
+
+  // Ensure all path values use ./ prefix for TS 6+ compatibility (no baseUrl)
+  for (const key of Object.keys(paths)) {
+    paths[key] = paths[key].map((p) =>
+      p.startsWith('./') || p.startsWith('../') || p.startsWith('/')
+        ? p
+        : `./${p}`
+    );
+  }
 }
 
 /**
@@ -581,7 +579,7 @@ export function updateBuildableProjectPackageJsonDependencies(
     node
   );
 
-  const packageJsonPath = `${outputs[0]}/package.json`;
+  const packageJsonPath = `${stripGlobToBaseDir(outputs[0])}/package.json`;
   let packageJson;
   let workspacePackageJson;
   try {
@@ -608,7 +606,10 @@ export function updateBuildableProjectPackageJsonDependencies(
     ) {
       try {
         let depVersion;
-        if (entry.node.type === 'lib') {
+        if (
+          isProjectGraphProjectNode(entry.node) &&
+          entry.node.type === 'lib'
+        ) {
           const outputs = getOutputsForTargetAndConfiguration(
             {
               project: projectName,
@@ -619,7 +620,11 @@ export function updateBuildableProjectPackageJsonDependencies(
             entry.node
           );
 
-          const depPackageJsonPath = join(root, outputs[0], 'package.json');
+          const depPackageJsonPath = join(
+            root,
+            stripGlobToBaseDir(outputs[0]),
+            'package.json'
+          );
           depVersion = readJsonFile(depPackageJsonPath).version;
 
           packageJson[typeOfDependency][packageName] = depVersion;

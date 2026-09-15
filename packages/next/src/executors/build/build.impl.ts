@@ -6,12 +6,11 @@ import {
   workspaceRoot,
   writeJsonFile,
 } from '@nx/devkit';
-import { createLockFile, createPackageJson, getLockFileName } from '@nx/js';
+import { createPackageJson, generatePrunedDeployOutput } from '@nx/js';
 import { join, resolve as pathResolve } from 'path';
-import { copySync, existsSync, mkdir, writeFileSync } from 'fs-extra';
+import { cpSync, existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { gte } from 'semver';
-import { directoryExists } from '@nx/workspace/src/utilities/fileutils';
-import { checkAndCleanWithSemver } from '@nx/devkit/src/utils/semver';
 
 import { updatePackageJson } from './lib/update-package-json';
 import { createNextConfigFile } from './lib/create-next-config-file';
@@ -19,7 +18,9 @@ import { checkPublicDirectory } from './lib/check-project';
 import { NextBuildBuilderOptions } from '../../utils/types';
 import { ChildProcess, fork } from 'child_process';
 import { createCliOptions } from '../../utils/create-cli-options';
-import { signalToCode } from 'nx/src/utils/exit-codes';
+import { signalToCode, checkAndCleanWithSemver } from '@nx/devkit/internal';
+import { getInstalledNextVersionRuntime } from '../../utils/runtime-version-utils';
+import { warnNextBuildExecutorDeprecation } from '../../utils/deprecation';
 
 let childProcess: ChildProcess;
 
@@ -27,6 +28,8 @@ export default async function buildExecutor(
   options: NextBuildBuilderOptions,
   context: ExecutorContext
 ) {
+  warnNextBuildExecutorDeprecation();
+
   // Cast to any to overwrite NODE_ENV
   (process.env as any).NODE_ENV ||= 'production';
 
@@ -70,9 +73,7 @@ export default async function buildExecutor(
     }
   }
 
-  if (!directoryExists(options.outputPath)) {
-    mkdir(options.outputPath);
-  }
+  await mkdir(options.outputPath, { recursive: true });
 
   const builtPackageJson = createPackageJson(
     context.projectName,
@@ -81,6 +82,8 @@ export default async function buildExecutor(
       target: context.targetName,
       root: context.root,
       isProduction: !options.includeDevDependenciesInPackageJson, // By default we remove devDependencies since this is a production build.
+      skipOverrides: options.skipOverrides,
+      skipPackageManager: options.skipPackageManager,
     }
   );
 
@@ -90,30 +93,29 @@ export default async function buildExecutor(
   };
 
   updatePackageJson(builtPackageJson, context);
-  writeJsonFile(`${options.outputPath}/package.json`, builtPackageJson);
 
+  const packageManager = detectPackageManager(context.root);
   if (options.generateLockfile) {
-    const packageManager = detectPackageManager(context.root);
-    const lockFile = createLockFile(
+    generatePrunedDeployOutput(
       builtPackageJson,
       context.projectGraph,
-      packageManager
-    );
-    writeFileSync(
-      `${options.outputPath}/${getLockFileName(packageManager)}`,
-      lockFile,
+      projectRoot,
       {
-        encoding: 'utf-8',
+        outputDirectory: options.outputPath,
+        packageManager,
+        workspaceRoot: context.root,
       }
     );
   }
+  writeJsonFile(`${options.outputPath}/package.json`, builtPackageJson);
 
   // If output path is different from source path, then copy over the config and public files.
   // This is the default behavior when running `nx build <app>`.
   if (options.outputPath.replace(/\/$/, '') !== projectRoot) {
     createNextConfigFile(options, context);
-    copySync(join(projectRoot, 'public'), join(options.outputPath, 'public'), {
+    cpSync(join(projectRoot, 'public'), join(options.outputPath, 'public'), {
       dereference: true,
+      recursive: true,
     });
   }
   return { success: true };
@@ -130,18 +132,54 @@ function runCliBuild(
     profile,
     debug,
     outputPath,
+    turbo,
+    webpack,
   } = options;
 
   // Set output path here since it can also be set via CLI
   // We can retrieve it inside plugins/with-nx
   process.env.NX_NEXT_OUTPUT_PATH ??= outputPath;
 
-  const args = createCliOptions({
+  // Check for conflicting flags
+  if (turbo && webpack) {
+    throw new Error(
+      'Cannot specify both --turbo and --webpack flags. Please use only one bundler option.'
+    );
+  }
+
+  // Determine bundler flag based on Next.js version and options
+  const cliOptions: Record<string, string | number | boolean> = {
     experimentalAppOnly,
     experimentalBuildMode,
     profile,
     debug,
-  });
+  };
+
+  const nextJsVersion = getInstalledNextVersionRuntime();
+  const isNext16Plus = nextJsVersion !== null && nextJsVersion >= 16;
+
+  if (isNext16Plus) {
+    // Next.js 16+: Turbopack is default, use --webpack to opt-in to webpack
+    if (webpack) {
+      cliOptions.webpack = true;
+      logger.info('Using webpack bundler for build (Next.js 16+ detected)');
+    } else if (turbo) {
+      logger.warn(
+        'The --turbo flag is redundant in Next.js 16+ as Turbopack is now the default bundler. You can remove this flag.'
+      );
+    }
+  } else {
+    // Next.js 15 and below: webpack is default, use --turbo to opt-in to turbopack
+    if (turbo) {
+      cliOptions.turbo = true;
+    } else if (webpack) {
+      logger.warn(
+        'The --webpack flag is only applicable in Next.js 16 and above. It will be ignored.'
+      );
+    }
+  }
+
+  const args = createCliOptions(cliOptions);
   return new Promise((resolve, reject) => {
     childProcess = fork(
       require.resolve('next/dist/bin/next'),
@@ -168,6 +206,7 @@ function runCliBuild(
     });
 
     childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve({ code, signal });
       } else {

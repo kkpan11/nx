@@ -1,16 +1,25 @@
 import {
+  findTargetDefault,
+  resolveImportPath,
+  isInteractive,
+  textPrompt,
+  upsertTargetDefault,
+  PackageJson,
+} from '@nx/devkit/internal';
+import {
   addDependenciesToPackageJson,
-  ensurePackage,
   formatFiles,
   generateFiles,
   GeneratorCallback,
   getPackageManagerCommand,
   joinPathFragments,
+  logger,
   offsetFromRoot,
   output,
   readNxJson,
   readProjectConfiguration,
   runTasksInSerial,
+  type TargetConfiguration,
   toJS,
   Tree,
   updateJson,
@@ -20,13 +29,28 @@ import {
   writeJson,
 } from '@nx/devkit';
 import { getRelativePathToRootTsConfig } from '@nx/js';
-import { typescriptVersion } from '@nx/js/src/utils/versions';
+import {
+  normalizeLinterOption,
+  getProjectPackageManagerWorkspaceState,
+  getProjectPackageManagerWorkspaceStateWarningTask,
+  ensureTypescript,
+  isUsingTsSolutionSetup,
+} from '@nx/js/internal';
+import { warnPlaywrightExecutorGenerating } from '../../utils/deprecation';
 import { execSync } from 'child_process';
 import * as path from 'path';
 import { addLinterToPlaywrightProject } from '../../utils/add-linter';
+import { assertSupportedPlaywrightVersion } from '../../utils/assert-supported-playwright-version';
 import { nxVersion } from '../../utils/versions';
 import { initGenerator } from '../init/init';
-import { ConfigurationGeneratorSchema } from './schema';
+import type {
+  ConfigurationGeneratorSchema,
+  NormalizedGeneratorOptions,
+} from './schema';
+import {
+  addIgnoresToLintConfig,
+  isTypedLintingEnabled,
+} from '@nx/eslint/internal';
 
 export function configurationGenerator(
   tree: Tree,
@@ -37,12 +61,12 @@ export function configurationGenerator(
 
 export async function configurationGeneratorInternal(
   tree: Tree,
-  options: ConfigurationGeneratorSchema
+  rawOptions: ConfigurationGeneratorSchema
 ) {
-  const nxJson = readNxJson(tree);
-  options.addPlugin ??=
-    process.env.NX_ADD_PLUGINS !== 'false' &&
-    nxJson.useInferencePlugins !== false;
+  assertSupportedPlaywrightVersion(tree);
+
+  const options = await normalizeOptions(tree, rawOptions);
+
   const tasks: GeneratorCallback[] = [];
   tasks.push(
     await initGenerator(tree, {
@@ -51,49 +75,143 @@ export async function configurationGeneratorInternal(
       addPlugin: options.addPlugin,
     })
   );
+
   const projectConfig = readProjectConfiguration(tree, options.project);
-
-  const hasTsConfig = tree.exists(
-    joinPathFragments(projectConfig.root, 'tsconfig.json')
-  );
-
   const offsetFromProjectRoot = offsetFromRoot(projectConfig.root);
 
+  const isTsSolutionSetup = isUsingTsSolutionSetup(tree);
+
+  // Always emit `playwright.config.mts`. Node forces `.mts` to ESM
+  // regardless of workspace `type`, so Playwright's runtime routes it
+  // through the ESM loader (`requireOrImport` -> dynamic `import()`),
+  // bypassing the pirates CJS-compile path that breaks ESM-shape `.ts`
+  // configs. Nx's native TS strip loads `.mts` directly via `loadTsFile`.
+  // Playwright's configLoader auto-discovers `.mts` (extension list at
+  // configLoader.js:313 is `.ts/.js/.mts/.mjs/.cts/.cjs`).
   generateFiles(tree, path.join(__dirname, 'files'), projectConfig.root, {
     offsetFromRoot: offsetFromProjectRoot,
     projectRoot: projectConfig.root,
     webServerCommand: options.webServerCommand ?? null,
     webServerAddress: options.webServerAddress ?? null,
+    isTsSolutionSetup,
     ...options,
   });
-
-  if (!hasTsConfig) {
-    tree.write(
-      `${projectConfig.root}/tsconfig.json`,
-      JSON.stringify(
-        {
-          extends: getRelativePathToRootTsConfig(tree, projectConfig.root),
-          compilerOptions: {
-            allowJs: true,
-            outDir: `${offsetFromProjectRoot}dist/out-tsc`,
-            module: 'commonjs',
-            sourceMap: false,
-          },
-          include: [
-            '**/*.ts',
-            '**/*.js',
-            'playwright.config.ts',
-            'src/**/*.spec.ts',
-            'src/**/*.spec.js',
-            'src/**/*.test.ts',
-            'src/**/*.test.js',
-            'src/**/*.d.ts',
-          ],
+  const playwrightConfigFile = options.js
+    ? 'playwright.config.mjs'
+    : 'playwright.config.mts';
+  const tsconfigPath = joinPathFragments(projectConfig.root, 'tsconfig.json');
+  if (tree.exists(tsconfigPath)) {
+    if (isTsSolutionSetup) {
+      const tsconfig: any = {
+        extends: getRelativePathToRootTsConfig(tree, projectConfig.root),
+        compilerOptions: {
+          allowJs: true,
+          outDir: 'out-tsc/playwright',
+          sourceMap: false,
         },
-        null,
-        2
-      )
+        include: [
+          joinPathFragments(options.directory, '**/*.ts'),
+          joinPathFragments(options.directory, '**/*.js'),
+          playwrightConfigFile,
+        ],
+        exclude: ['out-tsc', 'test-output'],
+      };
+
+      // skip eslint from typechecking since it extends from root file that is outside rootDir
+      if (options.linter === 'eslint') {
+        tsconfig.exclude.push(
+          'eslint.config.js',
+          'eslint.config.mjs',
+          'eslint.config.cjs'
+        );
+      }
+
+      writeJson(
+        tree,
+        joinPathFragments(projectConfig.root, 'tsconfig.e2e.json'),
+        tsconfig
+      );
+
+      updateJson(tree, tsconfigPath, (json) => {
+        // add the project tsconfig to the workspace root tsconfig.json references
+        json.references ??= [];
+        json.references.push({ path: './tsconfig.e2e.json' });
+        return json;
+      });
+    }
+  } else {
+    const tsconfig: any = {
+      extends: getRelativePathToRootTsConfig(tree, projectConfig.root),
+      compilerOptions: {
+        allowJs: true,
+        outDir: `${offsetFromProjectRoot}dist/out-tsc`,
+        sourceMap: false,
+      },
+      include: [
+        '**/*.ts',
+        '**/*.js',
+        playwrightConfigFile,
+        'src/**/*.spec.ts',
+        'src/**/*.spec.js',
+        'src/**/*.test.ts',
+        'src/**/*.test.js',
+        'src/**/*.d.ts',
+      ],
+    };
+
+    if (isTsSolutionSetup) {
+      tsconfig.exclude = ['out-tsc', 'test-output'];
+      // skip eslint from typechecking since it extends from root file that is outside rootDir
+      if (options.linter === 'eslint') {
+        tsconfig.exclude.push(
+          'eslint.config.js',
+          'eslint.config.mjs',
+          'eslint.config.cjs'
+        );
+      }
+
+      tsconfig.compilerOptions.outDir = 'out-tsc/playwright';
+
+      if (!options.rootProject) {
+        updateJson(tree, 'tsconfig.json', (json) => {
+          // add the project tsconfig to the workspace root tsconfig.json references
+          json.references ??= [];
+          json.references.push({ path: './' + projectConfig.root });
+          return json;
+        });
+      }
+    } else {
+      tsconfig.compilerOptions.outDir = `${offsetFromProjectRoot}dist/out-tsc`;
+      tsconfig.compilerOptions.module = 'commonjs';
+    }
+
+    writeJson(tree, tsconfigPath, tsconfig);
+  }
+
+  if (isTsSolutionSetup) {
+    const packageJsonPath = joinPathFragments(
+      projectConfig.root,
+      'package.json'
     );
+    if (!tree.exists(packageJsonPath)) {
+      const importPath = resolveImportPath(
+        tree,
+        projectConfig.name,
+        projectConfig.root
+      );
+
+      const packageJson: PackageJson = {
+        name: importPath,
+        version: '0.0.1',
+        private: true,
+      };
+      if (options.project !== importPath) {
+        packageJson.nx = { name: options.project };
+      }
+      writeJson(tree, packageJsonPath, packageJson);
+    }
+
+    ignoreTestOutput(tree, options);
   }
 
   const hasPlugin = readNxJson(tree).plugins?.some((p) =>
@@ -103,6 +221,7 @@ export async function configurationGeneratorInternal(
   );
 
   if (!hasPlugin) {
+    warnPlaywrightExecutorGenerating();
     addE2eTarget(tree, options);
     setupE2ETargetDefaults(tree);
   }
@@ -114,18 +233,15 @@ export async function configurationGeneratorInternal(
       skipPackageJson: options.skipPackageJson,
       js: options.js,
       directory: options.directory,
-      setParserOptionsProject: options.setParserOptionsProject,
+      enableTypedLinting: isTypedLintingEnabled(options),
       rootProject: options.rootProject ?? projectConfig.root === '.',
       addPlugin: options.addPlugin,
     })
   );
 
   if (options.js) {
-    const { ModuleKind } = ensurePackage(
-      'typescript',
-      typescriptVersion
-    ) as typeof import('typescript');
-    toJS(tree, { extension: '.cjs', module: ModuleKind.CommonJS });
+    const { ModuleKind } = ensureTypescript();
+    toJS(tree, { extension: '.mjs', module: ModuleKind.ESNext });
   }
 
   recommendVsCodeExtensions(tree);
@@ -151,7 +267,77 @@ export async function configurationGeneratorInternal(
     await formatFiles(tree);
   }
 
+  if (isTsSolutionSetup) {
+    const projectPackageManagerWorkspaceState =
+      getProjectPackageManagerWorkspaceState(tree, projectConfig.root);
+
+    if (projectPackageManagerWorkspaceState !== 'included') {
+      tasks.push(
+        getProjectPackageManagerWorkspaceStateWarningTask(
+          projectPackageManagerWorkspaceState,
+          tree.root
+        )
+      );
+    }
+  }
+
   return runTasksInSerial(...tasks);
+}
+
+async function normalizeOptions(
+  tree: Tree,
+  options: ConfigurationGeneratorSchema
+): Promise<NormalizedGeneratorOptions> {
+  const nxJson = readNxJson(tree);
+  const addPlugin =
+    options.addPlugin ??
+    (process.env.NX_ADD_PLUGINS !== 'false' &&
+      nxJson.useInferencePlugins !== false);
+
+  const linter = await normalizeLinterOption(tree, options.linter);
+
+  if (!options.webServerCommand || !options.webServerAddress) {
+    const { webServerCommand, webServerAddress } =
+      await promptForMissingServeData(options.project);
+    options.webServerCommand = webServerCommand;
+    options.webServerAddress = webServerAddress;
+  }
+
+  return {
+    ...options,
+    addPlugin,
+    linter,
+    directory: options.directory ?? 'e2e',
+  };
+}
+
+async function promptForMissingServeData(projectName: string) {
+  if (!isInteractive()) {
+    return {
+      webServerCommand: `npx nx serve ${projectName}`,
+      webServerAddress: 'http://localhost:3000',
+    };
+  }
+
+  const command = await textPrompt({
+    message: 'What command should be run to serve the application locally?',
+    initialValue: `npx nx serve ${projectName}`,
+  });
+  const port = Number(
+    await textPrompt({
+      message: 'What port will the application be served on?',
+      initialValue: '3000',
+      validate: (value) =>
+        value !== '' && !Number.isNaN(Number(value))
+          ? undefined
+          : 'Please enter a number',
+    })
+  );
+
+  return {
+    webServerCommand: command,
+    webServerAddress: `http://localhost:${port}`,
+  };
 }
 
 function getBrowsersInstallTask() {
@@ -161,7 +347,10 @@ function getBrowsersInstallTask() {
       bodyLines: ['use --skipInstall to skip installation.'],
     });
     const pmc = getPackageManagerCommand();
-    execSync(`${pmc.exec} playwright install`, { cwd: workspaceRoot });
+    execSync(`${pmc.exec} playwright install`, {
+      cwd: workspaceRoot,
+      windowsHide: true,
+    });
   };
 }
 
@@ -191,17 +380,31 @@ function setupE2ETargetDefaults(tree: Tree) {
   }
 
   // E2e targets depend on all their project's sources + production sources of dependencies
-  nxJson.targetDefaults ??= {};
-
   const productionFileSet = !!nxJson.namedInputs?.production;
-  nxJson.targetDefaults.e2e ??= {};
-  nxJson.targetDefaults.e2e.cache ??= true;
-  nxJson.targetDefaults.e2e.inputs ??= [
-    'default',
-    productionFileSet ? '^production' : '^default',
-  ];
-
-  updateNxJson(tree, nxJson);
+  // Either a `target: 'e2e'` default or a default keyed on the executor
+  // we're about to scaffold will apply to the new target — consider both
+  // before deciding to add cache/inputs. Target-keyed wins when both are
+  // present.
+  const existingForTarget = findTargetDefault(nxJson.targetDefaults, {
+    target: 'e2e',
+  });
+  const existingForExecutor = findTargetDefault(nxJson.targetDefaults, {
+    executor: '@nx/playwright:playwright',
+  });
+  const existingCache = existingForTarget?.cache ?? existingForExecutor?.cache;
+  const existingInputs =
+    existingForTarget?.inputs ?? existingForExecutor?.inputs;
+  const patch: Partial<TargetConfiguration> = {};
+  if (existingCache === undefined) {
+    patch.cache = true;
+  }
+  if (existingInputs === undefined) {
+    patch.inputs = ['default', productionFileSet ? '^production' : '^default'];
+  }
+  if (Object.keys(patch).length > 0) {
+    upsertTargetDefault(tree, nxJson, { target: 'e2e', ...patch });
+    updateNxJson(tree, nxJson);
+  }
 }
 
 function addE2eTarget(tree: Tree, options: ConfigurationGeneratorSchema) {
@@ -215,12 +418,37 @@ Rename or remove the existing e2e target.`);
     executor: '@nx/playwright:playwright',
     outputs: [`{workspaceRoot}/dist/.playwright/${projectConfig.root}`],
     options: {
+      // Generator emits `playwright.config.mts` (`.mjs` for `--js`) so the
+      // legacy executor's `--config` flag must point at the same extension.
       config: `${projectConfig.root}/playwright.config.${
-        options.js ? 'cjs' : 'ts'
+        options.js ? 'mjs' : 'mts'
       }`,
     },
   };
   updateProjectConfiguration(tree, options.project, projectConfig);
+}
+
+function ignoreTestOutput(
+  tree: Tree,
+  options: ConfigurationGeneratorSchema
+): void {
+  // Make sure playwright outputs are not linted.
+  if (options.linter === 'eslint') {
+    addIgnoresToLintConfig(tree, '', ['**/test-output']);
+  }
+
+  // Handle gitignore
+  if (!tree.exists('.gitignore')) {
+    logger.warn(`Couldn't find a root .gitignore file to update.`);
+  }
+
+  let content = tree.read('.gitignore', 'utf-8');
+  if (/^test-output$/gm.test(content)) {
+    return;
+  }
+
+  content = `${content}\ntest-output\n`;
+  tree.write('.gitignore', content);
 }
 
 export default configurationGenerator;

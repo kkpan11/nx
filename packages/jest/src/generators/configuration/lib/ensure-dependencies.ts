@@ -1,21 +1,29 @@
-import { addDependenciesToPackageJson, type Tree } from '@nx/devkit';
 import {
-  babelJestVersion,
-  jestTypesVersion,
-  jestVersion,
-  nxVersion,
-  swcJestVersion,
-  tsJestVersion,
-  tslibVersion,
-  tsNodeVersion,
-  typesNodeVersion,
-} from '../../../utils/versions';
+  addDependenciesToPackageJson,
+  detectPackageManager,
+  type Tree,
+} from '@nx/devkit';
+import { acknowledgeBuildScripts } from '@nx/devkit/internal';
+import { swcCoreVersion } from '@nx/js/internal';
+import { versions } from '../../../utils/versions';
 import type { NormalizedJestProjectSchema } from '../schema';
 
 export function ensureDependencies(
   tree: Tree,
   options: Partial<NormalizedJestProjectSchema>
 ) {
+  const {
+    babelJestVersion,
+    jestTypesVersion,
+    jestVersion,
+    nxVersion,
+    swcJestVersion,
+    tsJestVersion,
+    tslibVersion,
+    tsNodeVersion,
+    typesNodeVersion,
+  } = versions(tree);
+
   const dependencies: Record<string, string> = {
     tslib: tslibVersion,
   };
@@ -24,6 +32,8 @@ export function ensureDependencies(
     // jest will throw an error if it's not installed
     // even if not using it in overriding transformers
     'ts-jest': tsJestVersion,
+    // peer dependency of ts-jest
+    'jest-util': jestVersion,
   };
 
   if (options.testEnvironment !== 'none') {
@@ -42,7 +52,20 @@ export function ensureDependencies(
     devDeps['@nx/js'] = nxVersion;
   } else if (options.compiler === 'swc') {
     devDeps['@swc/jest'] = swcJestVersion;
+    // peer dependency of @swc/jest
+    devDeps['@swc/core'] = swcCoreVersion;
+    // @swc/core's postinstall only installs a wasm fallback for platforms not
+    // covered by its prebuilt optional dependencies, so skip it.
+    acknowledgeBuildScripts(tree, detectPackageManager(tree.root), {
+      '@swc/core': false,
+    });
   }
 
-  return addDependenciesToPackageJson(tree, dependencies, devDeps);
+  return addDependenciesToPackageJson(
+    tree,
+    dependencies,
+    devDeps,
+    undefined,
+    options.keepExistingVersions ?? true
+  );
 }

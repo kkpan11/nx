@@ -5,6 +5,7 @@
   "type": "object",
   "outputCapture": "pipe",
   "cli": "nx",
+  "x-deprecated": "The `@nx/cypress:cypress` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/cypress:convert-to-inferred` to migrate to the `@nx/cypress/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "presets": [
     {
       "name": "Starting Dev Server",
@@ -31,13 +32,6 @@
       "description": "Recompile and run tests when files change.",
       "default": false
     },
-    "tsConfig": {
-      "x-deprecated": "This option no longer has any effect. Cypress supports typescript out of the box. Add any options directly to <projectRoot>/tsconfig.json or <projectRoot>/cypress/tsconfig.json",
-      "type": "string",
-      "description": "The path of the Cypress tsconfig configuration json file.",
-      "x-completion-type": "file",
-      "x-completion-glob": "tsconfig.*.json"
-    },
     "devServerTarget": {
       "type": "string",
       "description": "Dev server target to run tests against."
@@ -51,7 +45,7 @@
       "type": "boolean",
       "description": "Hide the browser instead of running headed.",
       "default": false,
-      "x-deprecated": "Cypress runs headless by default. Use the --watch flag to control head/headless behavior instead."
+      "x-deprecated": "Cypress runs headless by default. Use the --watch flag to control head/headless behavior instead. It will be removed in Nx v23."
     },
     "exit": {
       "type": "boolean",
@@ -89,12 +83,6 @@
     "spec": {
       "type": "string",
       "description": "A comma delimited glob string that is provided to the Cypress runner to specify which spec files to run. i.e. `**examples/**,**actions.spec**`."
-    },
-    "copyFiles": {
-      "type": "string",
-      "description": "A regex string that is used to choose what additional integration files to copy to the dist folder.",
-      "x-deprecated": "No longer used since cypress supports typescript out of the box. If specified, it will be ignored.",
-      "x-priority": "internal"
     },
     "ciBuildId": {
       "oneOf": [

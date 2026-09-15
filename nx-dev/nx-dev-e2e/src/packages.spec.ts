@@ -16,10 +16,6 @@ const pages: Array<{ title: string; path: string }> = [
     path: '/packages/angular/generators/component',
   },
   {
-    title: '@nx/angular:component-cypress-spec',
-    path: '/packages/angular/generators/component-cypress-spec',
-  },
-  {
     title: '@nx/angular:component-story',
     path: '/packages/angular/generators/component-story',
   },
@@ -46,7 +42,14 @@ const pages: Array<{ title: string; path: string }> = [
     title: '@nx/angular:ng-add',
     path: '/packages/angular/generators/ng-add',
   },
-  { title: '@nx/angular:ngrx', path: '/packages/angular/generators/ngrx' },
+  {
+    title: '@nx/angular:ngrx-root-store',
+    path: '/packages/angular/generators/ngrx-root-store',
+  },
+  {
+    title: '@nx/angular:ngrx-feature-store',
+    path: '/packages/angular/generators/ngrx-feature-store',
+  },
   { title: '@nx/angular:scam', path: '/packages/angular/generators/scam' },
   {
     title: '@nx/angular:scam-directive',
@@ -59,10 +62,6 @@ const pages: Array<{ title: string; path: string }> = [
   {
     title: '@nx/angular:setup-mf',
     path: '/packages/angular/generators/setup-mf',
-  },
-  {
-    title: '@nx/angular:setup-tailwind',
-    path: '/packages/angular/generators/setup-tailwind',
   },
   {
     title: '@nx/angular:stories',
@@ -235,7 +234,7 @@ const pages: Array<{ title: string; path: string }> = [
   { title: '@nx/next:library', path: '/packages/next/generators/library' },
   { title: '@nx/next:build', path: '/packages/next/executors/build' },
   { title: '@nx/next:server', path: '/packages/next/executors/server' },
-  { title: '@nx/next:export', path: '/packages/next/executors/export' },
+
   { title: '@nx/node', path: '/packages/node' },
   { title: '@nx/node:init', path: '/packages/node/generators/init' },
   {
@@ -298,10 +297,6 @@ const pages: Array<{ title: string; path: string }> = [
     title: '@nx/react:stories',
     path: '/packages/react/generators/stories',
   },
-  {
-    title: '@nx/react:component-cypress-spec',
-    path: '/packages/react/generators/component-cypress-spec',
-  },
   { title: '@nx/react:hook', path: '/packages/react/generators/hook' },
   { title: '@nx/react:host', path: '/packages/react/generators/host' },
   { title: '@nx/react:remote', path: '/packages/react/generators/remote' },
@@ -337,10 +332,6 @@ const pages: Array<{ title: string; path: string }> = [
   {
     title: '@nx/react-native:stories',
     path: '/packages/react-native/generators/stories',
-  },
-  {
-    title: '@nx/react-native:upgrade-native',
-    path: '/packages/react-native/generators/upgrade-native',
   },
   {
     title: '@nx/react-native:run-android',
@@ -451,6 +442,7 @@ const pages: Array<{ title: string; path: string }> = [
     path: '/packages/workspace/executors/counter',
   },
 ];
+
 /**
  * Asserting all the packages pages are accounted for and accessible.
  * Generation of the pages is manual since we want to make sure the change is intended.

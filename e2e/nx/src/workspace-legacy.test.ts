@@ -2,24 +2,35 @@ import {
   checkFilesExist,
   cleanupProject,
   newProject,
+  reservePort,
   runCLI,
   runE2ETests,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 let proj: string;
 
 describe('@nx/workspace:convert-to-monorepo', () => {
   beforeEach(() => {
-    proj = newProject({ packages: ['@nx/react', '@nx/js'] });
+    proj = newProject({
+      packages: [
+        '@nx/cypress',
+        '@nx/eslint',
+        '@nx/jest',
+        '@nx/js',
+        '@nx/react',
+        '@nx/webpack',
+      ],
+    });
   });
 
   afterEach(() => cleanupProject());
 
   it('should convert a standalone webpack and jest react project to a monorepo (legacy)', async () => {
     const reactApp = uniq('reactapp');
+    const appPort = await reservePort();
     runCLI(
-      `generate @nx/react:app ${reactApp} --rootProject=true --bundler=webpack --unitTestRunner=jest --e2eTestRunner=cypress --no-interactive`,
+      `generate @nx/react:app --name=${reactApp} --directory="." --bundler=webpack --unitTestRunner=jest --e2eTestRunner=cypress --port=${appPort} --no-interactive --linter=eslint`,
       {
         env: {
           NX_ADD_PLUGINS: 'false',
@@ -42,7 +53,7 @@ describe('@nx/workspace:convert-to-monorepo', () => {
     expect(() => runCLI(`test ${reactApp}`)).not.toThrow();
     expect(() => runCLI(`lint ${reactApp}`)).not.toThrow();
     expect(() => runCLI(`lint e2e`)).not.toThrow();
-    if (runE2ETests()) {
+    if (await runE2ETests()) {
       expect(() => runCLI(`e2e e2e`)).not.toThrow();
     }
   });

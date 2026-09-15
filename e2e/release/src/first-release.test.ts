@@ -1,17 +1,18 @@
 import { NxJsonConfiguration } from '@nx/devkit';
 import {
+  normalizePerformanceReport,
   cleanupProject,
   newProject,
   runCLI,
   runCommandAsync,
   uniq,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 expect.addSnapshotSerializer({
   serialize(str: string) {
     return (
-      str
+      normalizePerformanceReport(str)
         // Remove all output unique to specific projects to ensure deterministic snapshots
         .replaceAll(/my-pkg-\d+/g, '{project-name}')
         .replaceAll(
@@ -24,7 +25,7 @@ expect.addSnapshotSerializer({
         .replaceAll(/\d*B package\.json/g, 'XXXB package.json')
         .replaceAll(/size:\s*\d*\s?B/g, 'size: XXXB')
         .replaceAll(/\d*\.\d*\s?kB/g, 'XXX.XXX kb')
-        .replaceAll(/[a-fA-F0-9]{7}/g, '{COMMIT_SHA}')
+        .replaceAll(/\b[a-fA-F0-9]{7}\b/g, '{COMMIT_SHA}')
         .replaceAll(/Test @[\w\d]+/g, 'Test @{COMMIT_AUTHOR}')
         // Normalize the version title date.
         .replaceAll(/\(\d{4}-\d{2}-\d{2}\)/g, '(YYYY-MM-DD)')
@@ -46,7 +47,6 @@ describe('nx release first run', () => {
 
   beforeAll(async () => {
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     });
 
@@ -76,7 +76,7 @@ describe('nx release first run', () => {
 
     await runCommandAsync(`git add .`);
     await runCommandAsync(`git commit -m "chore: initial commit"`);
-  }, 60000);
+  });
   afterAll(() => cleanupProject());
 
   describe('without --first-release', () => {
@@ -88,7 +88,7 @@ describe('nx release first run', () => {
       expect(
         releaseOutput1.match(
           new RegExp(
-            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTagPattern" property in nx.json to match the structure of your repository's git tags.`,
+            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTag.pattern" property in nx.json to match the structure of your repository's git tags.`,
             'g'
           )
         ).length
@@ -243,9 +243,7 @@ describe('nx release first run', () => {
         nxJson.release = {
           projects: [pkg1, pkg2, pkg3],
           version: {
-            generatorOptions: {
-              fallbackCurrentVersionResolver: 'disk',
-            },
+            fallbackCurrentVersionResolver: 'disk',
           },
         };
 
@@ -259,7 +257,7 @@ describe('nx release first run', () => {
       expect(
         releaseOutput1.match(
           new RegExp(
-            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTagPattern" property in nx.json to match the structure of your repository's git tags.`,
+            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTag.pattern" property in nx.json to match the structure of your repository's git tags.`,
             'g'
           )
         ).length
@@ -269,9 +267,7 @@ describe('nx release first run', () => {
         nxJson.release = {
           projects: [pkg1, pkg2, pkg3],
           version: {
-            generatorOptions: {
-              fallbackCurrentVersionResolver: 'disk',
-            },
+            fallbackCurrentVersionResolver: 'disk',
           },
           changelog: {
             automaticFromRef: true,
@@ -303,9 +299,7 @@ describe('nx release first run', () => {
           projects: [pkg1, pkg2, pkg3],
           projectsRelationship: 'independent',
           version: {
-            generatorOptions: {
-              fallbackCurrentVersionResolver: 'disk',
-            },
+            fallbackCurrentVersionResolver: 'disk',
           },
           changelog: {
             projectChangelogs: {},
@@ -322,7 +316,7 @@ describe('nx release first run', () => {
       expect(
         releaseOutput3.match(
           new RegExp(
-            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTagPattern" property in nx.json to match the structure of your repository's git tags.`,
+            `NX   Unable to determine the previous git tag. If this is the first release of your workspace, use the --first-release option or set the "release.changelog.automaticFromRef" config property in nx.json to generate a changelog from the first commit. Otherwise, be sure to configure the "release.releaseTag.pattern" property in nx.json to match the structure of your repository's git tags.`,
             'g'
           )
         ).length
@@ -333,9 +327,7 @@ describe('nx release first run', () => {
           projects: [pkg1, pkg2, pkg3],
           projectsRelationship: 'independent',
           version: {
-            generatorOptions: {
-              fallbackCurrentVersionResolver: 'disk',
-            },
+            fallbackCurrentVersionResolver: 'disk',
           },
           changelog: {
             automaticFromRef: true,

@@ -4,30 +4,19 @@ import type { NxJsonConfiguration } from '../../config/nx-json';
 import type { Tree } from '../tree';
 
 import { readJson, updateJson } from './json';
-import { readNxJson as readNxJsonFromDisk } from '../../config/nx-json';
-
-/**
- * @deprecated You must pass a {@link Tree}
- */
-export function readNxJson(): NxJsonConfiguration | null;
-export function readNxJson(tree: Tree): NxJsonConfiguration | null;
 
 /**
  * Reads nx.json
  */
-export function readNxJson(tree?: Tree): NxJsonConfiguration | null {
-  if (tree) {
-    if (!tree.exists('nx.json')) {
-      return null;
-    }
-    let nxJson = readJson<NxJsonConfiguration>(tree, 'nx.json');
-    if (nxJson.extends) {
-      nxJson = { ...readNxJsonExtends(tree, nxJson.extends), ...nxJson };
-    }
-    return nxJson;
-  } else {
-    return readNxJsonFromDisk();
+export function readNxJson(tree: Tree): NxJsonConfiguration | null {
+  if (!tree.exists('nx.json')) {
+    return null;
   }
+  let nxJson = readJson<NxJsonConfiguration>(tree, 'nx.json');
+  if (nxJson.extends) {
+    nxJson = { ...readNxJsonExtends(tree, nxJson.extends), ...nxJson };
+  }
+  return nxJson;
 }
 
 /**
@@ -57,15 +46,18 @@ export function updateNxJson(tree: Tree, nxJson: NxJsonConfiguration): void {
 
 function readNxJsonExtends(tree: Tree, extendsPath: string) {
   try {
-    return readJson(
-      tree,
-      relative(
-        tree.root,
-        require.resolve(extendsPath, {
-          paths: [tree.root],
-        })
-      )
-    );
+    let resolvedExtendsPath: string;
+    try {
+      resolvedExtendsPath = require.resolve(extendsPath, {
+        paths: [tree.root],
+      });
+    } catch {
+      // Tree roots without a node_modules folder (e.g. the in-memory trees
+      // used in tests) can't anchor module resolution; fall back to
+      // resolving from the running nx package.
+      resolvedExtendsPath = require.resolve(extendsPath);
+    }
+    return readJson(tree, relative(tree.root, resolvedExtendsPath));
   } catch (e) {
     throw new Error(`Unable to resolve nx.json extends. Error: ${e.message}`);
   }

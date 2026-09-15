@@ -1,11 +1,10 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface Schema {
-  name: string;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
-  linter?: Linter;
+  directory: string;
+  name?: string;
+  linter?: LinterType;
+  formatter?: 'none' | 'prettier' | 'oxfmt';
   skipFormat?: boolean;
   unitTestRunner?: 'vitest' | 'none';
   e2eTestRunner?: 'cypress' | 'playwright' | 'none';
@@ -13,17 +12,28 @@ export interface Schema {
   js?: boolean;
   skipPackageJson?: boolean;
   rootProject?: boolean;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
-  style?: 'css' | 'scss' | 'less' | 'none';
+  style?: 'css' | 'scss' | 'none';
+  nxCloudToken?: string;
+  useTsSolution?: boolean;
+  useProjectJson?: boolean;
+  useAppDir?: boolean;
 }
 
-export interface NormalizedSchema extends Schema {
+export interface NormalizedSchema extends Omit<Schema, 'useTsSolution'> {
+  // `normalizeOptions` always resolves this, so it is no longer optional.
+  linter: LinterType;
   projectName: string;
   appProjectRoot: string;
+  importPath: string;
   e2eProjectName: string;
   e2eProjectRoot: string;
-  e2eWebServerAddress: string;
-  e2eWebServerTarget: string;
-  e2ePort: number;
   parsedTags: string[];
+  isUsingTsSolutionConfig: boolean;
+  useAppDir: boolean;
+  nuxtMajorVersion: 3 | 4;
 }

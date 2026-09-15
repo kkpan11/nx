@@ -1,14 +1,28 @@
 import { spawn } from 'child_process';
-import { ChangedFile, daemonClient } from '../../daemon/client/client';
+import {
+  ChangedFile,
+  daemonClient,
+  WatcherFailedError,
+} from '../../daemon/client/client';
+import { VersionMismatchError } from '../../daemon/client/daemon-socket-messenger';
 import { output } from '../../utils/output';
 
 export interface WatchArguments {
   projects?: string[];
   all?: boolean;
+  includeDependencies?: boolean;
+  /**
+   * @deprecated Renamed to {@link WatchArguments.includeDependencies}; will be
+   * removed in Nx 24. The original name was misleading: this flag includes
+   * the watched project's dependencies, not its dependents. The new property
+   * is functionally identical — only the name changed.
+   */
+  // TODO(v24): remove this property
   includeDependentProjects?: boolean;
   includeGlobalWorkspaceFiles?: boolean;
   verbose?: boolean;
   command?: string;
+  initialRun?: boolean;
 
   projectNameEnvName?: string;
   fileChangesEnvName?: string;
@@ -46,11 +60,11 @@ export class BatchFunctionRunner {
       this.pendingFiles.add(fileChange.path);
     });
 
-    return this.process();
+    return this.process(true);
   }
 
-  private async process() {
-    if (!this.running && this.hasPending) {
+  private async process(runAnyway: boolean) {
+    if (!this.running && (this.hasPending || runAnyway)) {
       this.running = true;
 
       // Clone the pending projects and files before clearing
@@ -63,7 +77,7 @@ export class BatchFunctionRunner {
 
       return this.callback(projects, files).then(() => {
         this.running = false;
-        this.process();
+        this.process(false);
       });
     } else {
       this._verbose &&
@@ -132,6 +146,7 @@ class BatchCommandRunner extends BatchFunctionRunner {
               [this.projectNameEnv]: env[this.projectNameEnv],
               [this.fileChangesEnv]: env[this.fileChangesEnv],
             },
+            windowsHide: true,
           });
           commandExec.on('close', () => {
             resolve();
@@ -155,11 +170,7 @@ export async function watch(args: WatchArguments) {
     'g'
   );
 
-  if (args.verbose) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
-
-  if (daemonClient.enabled()) {
+  if (!daemonClient.enabled()) {
     output.error({
       title:
         'Daemon is not running. The watch command is not supported without the Nx Daemon.',
@@ -193,18 +204,49 @@ export async function watch(args: WatchArguments) {
     args.fileChangesEnvName
   );
 
+  // Run the command initially if requested
+  if (args.initialRun) {
+    args.verbose && output.logSingleLine('running command initially...');
+
+    const initialProjects = args.all
+      ? [] // When using --all, we don't need to pass specific projects
+      : args.projects || [];
+
+    // Execute the initial run
+    await batchQueue.enqueue(initialProjects, []);
+  }
+
   await daemonClient.registerFileWatcher(
     {
       watchProjects: whatToWatch,
-      includeDependentProjects: args.includeDependentProjects,
+      includeDependencies:
+        args.includeDependencies ?? args.includeDependentProjects,
       includeGlobalWorkspaceFiles: args.includeGlobalWorkspaceFiles,
     },
     async (err, data) => {
-      if (err === 'closed') {
+      if (err === 'reconnecting') {
+        // Silent - daemon restarts automatically on lockfile changes
+        return;
+      } else if (err === 'reconnected') {
+        // Silent - reconnection succeeded
+        return;
+      } else if (err === 'closed') {
         output.error({
-          title: 'Watch connection closed',
+          title: 'Failed to reconnect to daemon after multiple attempts',
+          bodyLines: ['Please restart your watch command.'],
+        });
+        process.exit(1);
+      } else if (err instanceof VersionMismatchError) {
+        output.error({
+          title: 'Nx version changed. Please restart your command.',
+        });
+        process.exit(1);
+      } else if (err instanceof WatcherFailedError) {
+        output.error({
+          title: 'The Nx Daemon stopped watching for file changes',
           bodyLines: [
-            'The daemon has closed the connection to this watch process.',
+            err.message,
+            'On Linux this is usually the inotify watch limit. See https://askubuntu.com/questions/1088272/inotify-add-watch-failed-no-space-left-on-device',
             'Please restart your watch command.',
           ],
         });
@@ -217,6 +259,8 @@ export async function watch(args: WatchArguments) {
             err.message,
           ],
         });
+        // `data` is null on the error path; falling through dereferences it.
+        return;
       }
 
       // Only pass the projects to the queue if the command has a replacement for projects
@@ -228,4 +272,9 @@ export async function watch(args: WatchArguments) {
     }
   );
   args.verbose && output.logSingleLine('watch process waiting...');
+
+  // Keep the process alive while watching for file changes
+  // The file watcher callbacks will handle incoming events
+  // The process will exit when Ctrl+C is pressed or if the connection closes
+  await new Promise(() => {});
 }

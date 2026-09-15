@@ -1,14 +1,15 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`react:storybook-configuration should configure everything and install correct dependencies 1`] = `
 "import type { StorybookConfig } from '@storybook/react-vite';
 
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import { mergeConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 const config: StorybookConfig = {
-  stories: ['../src/lib/**/*.stories.@(js|jsx|ts|tsx|mdx)'],
-  addons: ['@storybook/addon-essentials', '@storybook/addon-interactions'],
+  stories: ['../src/lib/**/*.@(mdx|stories.@(js|jsx|ts|tsx))'],
+  addons: [],
   framework: {
     name: '@storybook/react-vite',
     options: {},
@@ -16,7 +17,7 @@ const config: StorybookConfig = {
 
   viteFinal: async (config) =>
     mergeConfig(config, {
-      plugins: [nxViteTsPaths()],
+      plugins: [react(), nxViteTsPaths()],
     }),
 };
 
@@ -29,69 +30,47 @@ export default config;
 `;
 
 exports[`react:storybook-configuration should generate stories for components 1`] = `
-"import type { Meta, StoryObj } from '@storybook/react';
+"import type { Meta, StoryObj } from '@storybook/react-webpack5';
 import { MyComponent } from './my-component';
+import { expect } from 'storybook/test';
 
-import { within } from '@storybook/testing-library';
-import { expect } from '@storybook/jest';
-
-const meta: Meta<typeof MyComponent> = {
+const meta = {
   component: MyComponent,
   title: 'MyComponent',
-};
+} satisfies Meta<typeof MyComponent>;
 export default meta;
+
 type Story = StoryObj<typeof MyComponent>;
 
 export const Primary = {
   args: {},
-};
+} satisfies Story;
 
-export const Heading: Story = {
+export const Heading = {
   args: {},
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    expect(canvas.getByText(/Welcome to MyComponent!/gi)).toBeTruthy();
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/MyComponent/gi)).toBeTruthy();
   },
-};
-"
-`;
-
-exports[`react:storybook-configuration should generate stories for components without interaction tests 1`] = `
-"import type { Meta, StoryObj } from '@storybook/react';
-import { MyComponent } from './my-component';
-
-const meta: Meta<typeof MyComponent> = {
-  component: MyComponent,
-  title: 'MyComponent',
-};
-export default meta;
-type Story = StoryObj<typeof MyComponent>;
-
-export const Primary = {
-  args: {},
-};
+} satisfies Story;
 "
 `;
 
 exports[`react:storybook-configuration should generate stories for components written in plain JS 1`] = `
 "import componentName from './test-ui-libplain';
-
-import { within } from '@storybook/testing-library';
-import { expect } from '@storybook/jest';
+import { expect } from 'storybook/test';
 
 export default {
   component: Test,
-  title: 'Test',
-};
+  title: 'Test',};
 
 export const Primary = {
-  args: {},
+  args: {
+  },
 };
 
 export const Heading: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    expect(canvas.getByText(/Welcome to Test!/gi)).toBeTruthy();
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/Welcome to Test!/gi)).toBeTruthy();
   },
 };
 "

@@ -1,24 +1,36 @@
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
+import { existsSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+
+const execAsync = promisify(exec);
+import { dirSync } from 'tmp';
+import { NxJsonConfiguration } from '../config/nx-json';
 import {
-  InputDefinition,
+  ProjectConfiguration,
   ProjectMetadata,
   TargetConfiguration,
 } from '../config/workspace-json-project-json';
-import { mergeTargetConfigurations } from '../project-graph/utils/project-configuration-utils';
+import type { Tree } from '../generators/tree';
+import { readJson } from '../generators/utils/json';
+import { readTargetDefaultsForTarget } from '../project-graph/utils/project-configuration-utils';
+import { mergeTargetConfigurations } from '../project-graph/utils/project-configuration/target-merging';
+import { getCatalogManager } from './catalog';
 import { readJsonFile } from './fileutils';
+import { hasNxJsPlugin } from './has-nx-js-plugin';
+import { isContainedRelativePath } from './path';
 import { getNxRequirePaths } from './installation-directory';
 import {
-  PackageManagerCommands,
+  createTempNpmDirectory,
+  detectPackageManager,
   getPackageManagerCommand,
+  getPackageManagerVersion,
+  PackageManager,
+  PackageManagerCommands,
 } from './package-manager';
+import { workspaceRoot } from './workspace-root';
 
-export interface NxProjectPackageJsonConfiguration {
-  name?: string;
-  implicitDependencies?: string[];
-  tags?: string[];
-  namedInputs?: { [inputName: string]: (string | InputDefinition)[] };
-  targets?: Record<string, TargetConfiguration>;
+export interface NxProjectPackageJsonConfiguration extends Partial<ProjectConfiguration> {
   includedScripts?: string[];
 }
 
@@ -28,9 +40,17 @@ export type MixedPackageGroup =
   | Record<string, string>;
 export type PackageGroup = MixedPackageGroup | ArrayPackageGroup;
 
+export type PackageJsonDependencySection =
+  | 'dependencies'
+  | 'devDependencies'
+  | 'peerDependencies'
+  | 'optionalDependencies';
+
 export interface NxMigrationsConfiguration {
   migrations?: string;
   packageGroup?: PackageGroup;
+  /** Signals the package supports `nx migrate --include`. */
+  supportsOptionalMigrations?: boolean;
 }
 
 type PackageOverride = { [key: string]: string | PackageOverride };
@@ -45,12 +65,21 @@ export interface PackageJson {
   type?: 'module' | 'commonjs';
   main?: string;
   types?: string;
+  // interchangeable with `types`: https://www.typescriptlang.org/docs/handbook/declaration-files/publishing.html#including-declarations-in-your-npm-package
+  typings?: string;
   module?: string;
   exports?:
     | string
     | Record<
         string,
-        string | { types?: string; require?: string; import?: string }
+        | string
+        | {
+            types?: string;
+            require?: string;
+            import?: string;
+            development?: string;
+            default?: string;
+          }
       >;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -58,7 +87,24 @@ export interface PackageJson {
   peerDependencies?: Record<string, string>;
   peerDependenciesMeta?: Record<string, { optional: boolean }>;
   resolutions?: Record<string, string>;
+  pnpm?: {
+    overrides?: PackageOverride;
+    onlyBuiltDependencies?: string[];
+    neverBuiltDependencies?: string[];
+    allowBuilds?: Record<string, boolean>;
+    supportedArchitectures?: {
+      os?: string[];
+      cpu?: string[];
+      libc?: string[];
+    };
+    ignoredOptionalDependencies?: string[];
+    packageExtensions?: Record<string, unknown>;
+    patchedDependencies?: Record<string, string>;
+  };
   overrides?: PackageOverride;
+  // npm install-script allowlist (npm 11.16+). Keys are `name`, `name@version`,
+  // or git specs; `true` approves, `false` denies.
+  allowScripts?: Record<string, boolean>;
   bin?: Record<string, string> | string;
   workspaces?:
     | string[]
@@ -66,6 +112,7 @@ export interface PackageJson {
         packages: string[];
       };
   publishConfig?: Record<string, string>;
+  files?: string[];
 
   // Nx Project Configuration
   nx?: NxProjectPackageJsonConfiguration;
@@ -80,6 +127,14 @@ export interface PackageJson {
   packageManager?: string;
   description?: string;
   keywords?: string[];
+}
+
+export interface NxPackageJson extends PackageJson {
+  'nx-migrations'?: {
+    migrations?: string;
+    packageGroup?: (string | { package: string; version: string })[];
+    supportsOptionalMigrations?: boolean;
+  };
 }
 
 export function normalizePackageGroup(
@@ -98,6 +153,19 @@ export function normalizePackageGroup(
 export function readNxMigrateConfig(
   json: Partial<PackageJson>
 ): NxMigrationsConfiguration & { packageGroup?: ArrayPackageGroup } {
+  // Registry fetching uses this value to build a temporary extraction path.
+  // Reject unsupported absolute paths and escaping parent traversal before extraction.
+  const assertContained = (migrations: string): string => {
+    if (!isContainedRelativePath(migrations)) {
+      throw new Error(
+        `Invalid migrations path "${migrations}" in package "${json.name ?? 'unknown'}@${
+          json.version ?? 'unknown'
+        }": migration paths must not be absolute or escape their base directory through parent traversal.`
+      );
+    }
+    return migrations;
+  };
+
   const parseNxMigrationsConfig = (
     fromJson?: string | NxMigrationsConfiguration
   ): NxMigrationsConfiguration & { packageGroup?: ArrayPackageGroup } => {
@@ -105,13 +173,18 @@ export function readNxMigrateConfig(
       return {};
     }
     if (typeof fromJson === 'string') {
-      return { migrations: fromJson, packageGroup: [] };
+      return { migrations: assertContained(fromJson), packageGroup: [] };
     }
 
     return {
-      ...(fromJson.migrations ? { migrations: fromJson.migrations } : {}),
+      ...(fromJson.migrations
+        ? { migrations: assertContained(fromJson.migrations) }
+        : {}),
       ...(fromJson.packageGroup
         ? { packageGroup: normalizePackageGroup(fromJson.packageGroup) }
+        : {}),
+      ...(fromJson.supportsOptionalMigrations
+        ? { supportsOptionalMigrations: true }
         : {}),
     };
   };
@@ -141,19 +214,43 @@ export function buildTargetFromScript(
   };
 }
 
-let packageManagerCommand: PackageManagerCommands | undefined;
+export type PackageJsonProjectMetadata = {
+  targetGroups: {
+    'NPM Scripts'?: Array<string>;
+  };
+  description: string;
+  js: {
+    packageName: PackageJson['name'];
+    packageVersion: PackageJson['version'];
+    packageExports: PackageJson['exports'];
+    packageMain: PackageJson['main'];
+    isInPackageManagerWorkspaces: boolean;
+  };
+};
 
 export function getMetadataFromPackageJson(
-  packageJson: PackageJson
+  packageJson: PackageJson,
+  isInPackageManagerWorkspaces: boolean
 ): ProjectMetadata {
-  const { scripts, nx, description } = packageJson ?? {};
+  const { scripts, nx, description, name, exports, main, version } =
+    packageJson;
   const includedScripts = nx?.includedScripts || Object.keys(scripts ?? {});
-  return {
-    targetGroups: {
-      ...(includedScripts.length ? { 'NPM Scripts': includedScripts } : {}),
-    },
+  const metadata: PackageJsonProjectMetadata = {
+    targetGroups: includedScripts.length
+      ? {
+          'NPM Scripts': includedScripts,
+        }
+      : {},
     description,
+    js: {
+      packageName: name,
+      packageVersion: version,
+      packageExports: exports,
+      packageMain: main,
+      isInPackageManagerWorkspaces,
+    },
   };
+  return metadata satisfies ProjectMetadata;
 }
 
 export function getTagsFromPackageJson(packageJson: PackageJson): string[] {
@@ -167,31 +264,64 @@ export function getTagsFromPackageJson(packageJson: PackageJson): string[] {
   return tags;
 }
 
-export function readTargetsFromPackageJson(packageJson: PackageJson) {
+export function readTargetsFromPackageJson(
+  packageJson: PackageJson,
+  nxJson: NxJsonConfiguration,
+  projectRoot: string,
+  workspaceRoot: string,
+  packageManagerCommand: PackageManagerCommands
+) {
   const { scripts, nx, private: isPrivate } = packageJson ?? {};
   const res: Record<string, TargetConfiguration> = {};
   const includedScripts = nx?.includedScripts || Object.keys(scripts ?? {});
-  packageManagerCommand ??= getPackageManagerCommand();
   for (const script of includedScripts) {
     res[script] = buildTargetFromScript(script, scripts, packageManagerCommand);
   }
   for (const targetName in nx?.targets) {
-    res[targetName] = mergeTargetConfigurations(
-      nx?.targets[targetName],
-      res[targetName]
-    );
+    const nxTarget = nx.targets[targetName];
+    // If the nx target specifies how to run (via executor or command shorthand),
+    // it's incompatible with the inferred nx:run-script target from scripts,
+    // so overwrite instead of merge.
+    if (res[targetName] && (nxTarget.executor || nxTarget.command)) {
+      res[targetName] = nxTarget;
+    } else {
+      res[targetName] = mergeTargetConfigurations(nxTarget, res[targetName]);
+    }
   }
 
   /**
    * Add implicit nx-release-publish target for all package.json files that are
    * not marked as `"private": true` to allow for lightweight configuration for
    * package based repos.
+   *
+   * Any targetDefaults for the nx-release-publish target set by the user should
+   * be merged with the implicit target.
    */
-  if (!isPrivate && !res['nx-release-publish']) {
+  if (
+    !isPrivate &&
+    !res['nx-release-publish'] &&
+    hasNxJsPlugin(projectRoot, workspaceRoot)
+  ) {
+    // No project/plugin context here, so only catch-all entries of a
+    // `targetDefaults` value apply (the reader resolves both the object and
+    // array value forms).
+    const nxReleasePublishTargetDefaults =
+      readTargetDefaultsForTarget(
+        'nx-release-publish',
+        nxJson?.targetDefaults,
+        '@nx/js:release-publish'
+      ) ?? {};
     res['nx-release-publish'] = {
-      dependsOn: ['^nx-release-publish'],
       executor: '@nx/js:release-publish',
-      options: {},
+      ...nxReleasePublishTargetDefaults,
+      dependsOn: [
+        // For maximum correctness, projects should only ever be published once their dependencies are successfully published
+        '^nx-release-publish',
+        ...(nxReleasePublishTargetDefaults.dependsOn ?? []),
+      ],
+      options: {
+        ...(nxReleasePublishTargetDefaults.options ?? {}),
+      },
     };
   }
 
@@ -278,4 +408,347 @@ export function readModulePackageJson(
     packageJson,
     path: packageJsonPath,
   };
+}
+
+/**
+ * Prepares all necessary information for installing a package to a temporary directory.
+ * This is used by both sync and async installation functions.
+ */
+function preparePackageInstallation(
+  pkg: string,
+  requiredVersion: string,
+  packageManager: PackageManager
+) {
+  const { dir: tempDir, cleanup } = createTempNpmDirectory?.() ?? {
+    dir: dirSync().name,
+    cleanup: () => {},
+  };
+
+  console.log(`Fetching ${pkg}...`);
+  const isVerbose = process.env.NX_VERBOSE_LOGGING === 'true';
+  generatePackageManagerFiles(tempDir, packageManager);
+
+  // For pnpm, `addDev` is `pnpm add -Dw` when the workspace has a
+  // pnpm-workspace.yaml. `createTempNpmDirectory` copies a sanitized copy of
+  // it into the temp dir, so the `-w` here resolves to the temp dir.
+  const pmCommands = getPackageManagerCommand(packageManager);
+  const preInstallCommand = pmCommands.preInstall;
+
+  // Keep peer dependencies out of the temp install. `ensurePackage` puts the
+  // workspace's `node_modules` on `NODE_PATH`, so a loaded package resolves its
+  // peers from the workspace instead of pulling its own (possibly incompatible)
+  // copies into the temp dir.
+  //
+  // npm needs `--legacy-peer-deps` rather than `--omit=peer`: npm marks a package
+  // as a peer if anything in the tree peer-depends on it, so `--omit=peer` also
+  // prunes packages that are real dependencies. Bun's `--omit=peer` does not.
+  const skipPeerDependenciesFlags: Partial<Record<PackageManager, string>> = {
+    npm: '--legacy-peer-deps',
+    bun: '--omit=peer',
+    pnpm: '--config.auto-install-peers=false',
+  };
+  const installCommand = [
+    pmCommands.addDev,
+    `${pkg}@${requiredVersion}`,
+    skipPeerDependenciesFlags[packageManager],
+    pmCommands.ignoreScriptsFlag,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const execOptions = {
+    cwd: tempDir,
+    stdio: isVerbose ? 'inherit' : 'ignore',
+    windowsHide: true,
+    // Yarn Berry requires an environment variable (not a CLI flag) to disable lifecycle scripts.
+    // Apply this defensively for all package managers when pulling nx@latest to tmp.
+    env: {
+      ...process.env,
+      YARN_ENABLE_SCRIPTS: 'false',
+    },
+  } as const;
+
+  return {
+    tempDir,
+    cleanup,
+    preInstallCommand,
+    installCommand,
+    execOptions,
+  };
+}
+
+export function installPackageToTmp(
+  pkg: string,
+  requiredVersion: string,
+  packageManager: PackageManager
+): {
+  tempDir: string;
+  cleanup: () => void;
+} {
+  const { tempDir, cleanup, preInstallCommand, installCommand, execOptions } =
+    preparePackageInstallation(pkg, requiredVersion, packageManager);
+
+  if (preInstallCommand) {
+    // ensure package.json and repo in tmp folder is set to a proper package manager state
+    execSync(preInstallCommand, execOptions);
+  }
+
+  execSync(installCommand, execOptions);
+
+  return {
+    tempDir,
+    cleanup,
+  };
+}
+
+export async function installPackageToTmpAsync(
+  pkg: string,
+  requiredVersion: string,
+  packageManager: PackageManager
+): Promise<{
+  tempDir: string;
+  cleanup: () => void;
+}> {
+  const { tempDir, cleanup, preInstallCommand, installCommand, execOptions } =
+    preparePackageInstallation(pkg, requiredVersion, packageManager);
+
+  try {
+    if (preInstallCommand) {
+      // ensure package.json and repo in tmp folder is set to a proper package manager state
+      await execAsync(preInstallCommand, execOptions);
+    }
+
+    await execAsync(installCommand, execOptions);
+
+    return {
+      tempDir,
+      cleanup,
+    };
+  } catch (error) {
+    // Clean up on error
+    cleanup();
+    throw error;
+  }
+}
+
+/**
+ * Get the resolved version of a dependency from package.json.
+ *
+ * Retrieves a package version and automatically resolves PNPM catalog references
+ * (e.g., "catalog:default") to their actual version strings. By default, searches
+ * `dependencies` first, then falls back to `devDependencies`.
+ *
+ * **Tree-based usage** (generators and migrations):
+ * Use when you have a `Tree` object, which is typical in Nx generators and migrations.
+ *
+ * **Filesystem-based usage** (CLI commands and scripts):
+ * Use when reading directly from the filesystem without a `Tree` object.
+ *
+ * @example
+ * ```typescript
+ * // Tree-based - from root package.json (checks dependencies then devDependencies)
+ * const reactVersion = getDependencyVersionFromPackageJson(tree, 'react');
+ * // Returns: "^18.0.0" (resolves "catalog:default" if present)
+ *
+ * // Tree-based - check only dependencies section
+ * const version = getDependencyVersionFromPackageJson(
+ *   tree,
+ *   'react',
+ *   'package.json',
+ *   ['dependencies']
+ * );
+ *
+ * // Tree-based - check only devDependencies section
+ * const version = getDependencyVersionFromPackageJson(
+ *   tree,
+ *   'jest',
+ *   'package.json',
+ *   ['devDependencies']
+ * );
+ *
+ * // Tree-based - custom lookup order
+ * const version = getDependencyVersionFromPackageJson(
+ *   tree,
+ *   'pkg',
+ *   'package.json',
+ *   ['devDependencies', 'dependencies', 'peerDependencies']
+ * );
+ *
+ * // Tree-based - with pre-loaded package.json
+ * const packageJson = readJson(tree, 'package.json');
+ * const version = getDependencyVersionFromPackageJson(
+ *   tree,
+ *   'react',
+ *   packageJson,
+ *   ['dependencies']
+ * );
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Filesystem-based - from current directory
+ * const reactVersion = getDependencyVersionFromPackageJson('react');
+ *
+ * // Filesystem-based - with workspace root
+ * const version = getDependencyVersionFromPackageJson('react', '/path/to/workspace');
+ *
+ * // Filesystem-based - with specific package.json and section
+ * const version = getDependencyVersionFromPackageJson(
+ *   'react',
+ *   '/path/to/workspace',
+ *   'apps/my-app/package.json',
+ *   ['dependencies']
+ * );
+ * ```
+ *
+ * @param dependencyLookup Array of dependency sections to check in order. Defaults to ['dependencies', 'devDependencies']
+ * @returns The resolved version string, or `null` if the package is not found in any of the specified sections
+ */
+export function getDependencyVersionFromPackageJson(
+  tree: Tree,
+  packageName: string,
+  packageJsonPath?: string,
+  dependencyLookup?: PackageJsonDependencySection[]
+): string | null;
+export function getDependencyVersionFromPackageJson(
+  tree: Tree,
+  packageName: string,
+  packageJson?: PackageJson,
+  dependencyLookup?: PackageJsonDependencySection[]
+): string | null;
+export function getDependencyVersionFromPackageJson(
+  packageName: string,
+  workspaceRootPath?: string,
+  packageJsonPath?: string,
+  dependencyLookup?: PackageJsonDependencySection[]
+): string | null;
+export function getDependencyVersionFromPackageJson(
+  packageName: string,
+  workspaceRootPath?: string,
+  packageJson?: PackageJson,
+  dependencyLookup?: PackageJsonDependencySection[]
+): string | null;
+export function getDependencyVersionFromPackageJson(
+  treeOrPackageName: Tree | string,
+  packageNameOrRoot?: string,
+  packageJsonPathOrObjectOrRoot?: string | PackageJson,
+  dependencyLookup?: PackageJsonDependencySection[]
+): string | null {
+  if (typeof treeOrPackageName !== 'string') {
+    return getDependencyVersionFromPackageJsonFromTree(
+      treeOrPackageName,
+      packageNameOrRoot!,
+      packageJsonPathOrObjectOrRoot,
+      dependencyLookup
+    );
+  } else {
+    return getDependencyVersionFromPackageJsonFromFileSystem(
+      treeOrPackageName,
+      packageNameOrRoot,
+      packageJsonPathOrObjectOrRoot,
+      dependencyLookup
+    );
+  }
+}
+
+/**
+ * Tree-based implementation for getDependencyVersionFromPackageJson
+ */
+function getDependencyVersionFromPackageJsonFromTree(
+  tree: Tree,
+  packageName: string,
+  packageJsonPathOrObject: string | PackageJson = 'package.json',
+  dependencyLookup: PackageJsonDependencySection[] = [
+    'dependencies',
+    'devDependencies',
+  ]
+): string | null {
+  let packageJson: PackageJson;
+  if (typeof packageJsonPathOrObject === 'object') {
+    packageJson = packageJsonPathOrObject;
+  } else if (tree.exists(packageJsonPathOrObject)) {
+    packageJson = readJson(tree, packageJsonPathOrObject);
+  } else {
+    return null;
+  }
+
+  let version: string | null = null;
+  for (const section of dependencyLookup) {
+    const foundVersion = packageJson[section]?.[packageName];
+    if (foundVersion) {
+      version = foundVersion;
+      break;
+    }
+  }
+
+  // Resolve catalog reference if needed
+  const manager = getCatalogManager(tree.root);
+  if (version && manager?.isCatalogReference(version)) {
+    version = manager.resolveCatalogReference(tree, packageName, version);
+  }
+
+  return version;
+}
+
+/**
+ * Filesystem-based implementation for getDependencyVersionFromPackageJson
+ */
+function getDependencyVersionFromPackageJsonFromFileSystem(
+  packageName: string,
+  root: string = workspaceRoot,
+  packageJsonPathOrObject: string | PackageJson = 'package.json',
+  dependencyLookup: PackageJsonDependencySection[] = [
+    'dependencies',
+    'devDependencies',
+  ]
+): string | null {
+  let packageJson: PackageJson;
+  if (typeof packageJsonPathOrObject === 'object') {
+    packageJson = packageJsonPathOrObject;
+  } else {
+    const packageJsonPath = resolve(root, packageJsonPathOrObject);
+    if (existsSync(packageJsonPath)) {
+      packageJson = readJsonFile(packageJsonPath);
+    } else {
+      return null;
+    }
+  }
+
+  let version: string | null = null;
+  for (const section of dependencyLookup) {
+    const foundVersion = packageJson[section]?.[packageName];
+    if (foundVersion) {
+      version = foundVersion;
+      break;
+    }
+  }
+
+  // Resolve catalog reference if needed
+  const manager = getCatalogManager(root);
+  if (version && manager?.isCatalogReference(version)) {
+    version = manager.resolveCatalogReference(root, packageName, version);
+  }
+
+  return version;
+}
+
+/**
+ * Generates necessary files needed for the package manager to work
+ * and for the node_modules to be accessible.
+ */
+function generatePackageManagerFiles(
+  root: string,
+  packageManager: PackageManager = detectPackageManager()
+) {
+  const [pmMajor] = getPackageManagerVersion(packageManager).split('.');
+  switch (packageManager) {
+    case 'yarn':
+      if (+pmMajor >= 2) {
+        writeFileSync(
+          join(root, '.yarnrc.yml'),
+          'nodeLinker: node-modules\nenableScripts: false'
+        );
+      }
+      break;
+  }
 }

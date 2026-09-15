@@ -1,0 +1,13 @@
+{
+  "name": "module-federation",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/module-federation",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "outputs": ["{projectRoot}/README.md"],
+      "command": "node ./scripts/copy-readme.js module-federation packages/module-federation/readme-template.md packages/module-federation/README.md",
+      "inputs": ["copyReadme"]
+    }
+  }
+}

@@ -1,5 +1,12 @@
 import type { Tree } from '@nx/devkit';
-import { formatFiles, generateFiles, joinPathFragments } from '@nx/devkit';
+import {
+  formatFiles,
+  generateFiles,
+  joinPathFragments,
+  readProjectConfiguration,
+} from '@nx/devkit';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
+import { isZonelessApp } from '../../utils/zoneless';
 import { addToNgModule } from '../utils';
 import { getInstalledAngularVersionInfo } from '../utils/version-utils';
 import {
@@ -7,23 +14,19 @@ import {
   findModuleFromOptions,
   normalizeOptions,
   setGeneratorDefaults,
+  validateOptions,
 } from './lib';
 import type { Schema } from './schema';
 
 export async function componentGenerator(tree: Tree, rawOptions: Schema) {
-  await componentGeneratorInternal(tree, {
-    nameAndDirectoryFormat: 'derived',
-    ...rawOptions,
-  });
-}
-
-export async function componentGeneratorInternal(
-  tree: Tree,
-  rawOptions: Schema
-) {
+  assertSupportedAngularVersion(tree);
+  validateOptions(tree, rawOptions);
   const options = await normalizeOptions(tree, rawOptions);
 
   const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
+  const project = readProjectConfiguration(tree, options.projectName);
+  const zoneless = isZonelessApp(project);
+
   generateFiles(
     tree,
     joinPathFragments(__dirname, 'files'),
@@ -32,6 +35,7 @@ export async function componentGeneratorInternal(
       name: options.name,
       fileName: options.fileName,
       symbolName: options.symbolName,
+      exportDefault: options.exportDefault,
       style: options.style,
       inlineStyle: options.inlineStyle,
       inlineTemplate: options.inlineTemplate,
@@ -42,6 +46,8 @@ export async function componentGeneratorInternal(
       displayBlock: options.displayBlock,
       selector: options.selector,
       angularMajorVersion,
+      ngext: options.ngHtml ? '.ng' : '',
+      zoneless,
       tpl: '',
     }
   );
@@ -74,11 +80,20 @@ export async function componentGeneratorInternal(
   }
 
   if (!options.skipImport && !options.standalone) {
-    const modulePath = findModuleFromOptions(
-      tree,
-      options,
-      options.projectRoot
-    );
+    let modulePath: string;
+    try {
+      modulePath = findModuleFromOptions(tree, options, options.projectRoot);
+    } catch (e) {
+      modulePath = findModuleFromOptions(
+        tree,
+        {
+          ...options,
+          moduleExt: '-module.ts',
+          routingModuleExt: '-routing-module.ts',
+        },
+        options.projectRoot
+      );
+    }
     addToNgModule(
       tree,
       options.directory,

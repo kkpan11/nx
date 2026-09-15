@@ -1,7 +1,6 @@
 import type { Tree } from '@nx/devkit';
-import { joinPathFragments, names } from '@nx/devkit';
 import { insertImport } from '@nx/js';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import type { NormalizedSchema } from '../schema';
 
 let tsModule: typeof import('typescript');
@@ -49,13 +48,8 @@ export function convertPipeToScam(tree: Tree, options: NormalizedSchema) {
     return;
   }
 
-  const scamFilePath = joinPathFragments(
-    options.directory,
-    `${options.name}.module.ts`
-  );
-
   tree.write(
-    scamFilePath,
+    options.modulePath,
     getModuleFileContent(options.symbolName, options.fileName)
   );
 }

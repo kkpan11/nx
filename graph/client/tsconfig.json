@@ -2,19 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "ignoreDeprecations": "6.0"
   },
   "files": [],
   "include": [],
   "references": [
     {
       "path": "./tsconfig.app.json"
-    },
-    {
-      "path": "./tsconfig.spec.json"
-    },
-    {
-      "path": "./tsconfig.storybook.json"
     }
   ]
 }

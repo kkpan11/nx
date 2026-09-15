@@ -1,36 +1,109 @@
 import { workspaceRoot } from '../../utils/workspace-root';
-import { dirname, relative } from 'path';
-import { getFullOsSocketPath } from '../socket-utils';
-import { handleServerProcessTermination } from './shutdown-utils';
+import { relative } from 'path';
+import {
+  getWatcherInstance,
+  handleServerProcessTermination,
+} from './shutdown-utils';
 import { Server } from 'net';
 import { normalizePath } from '../../utils/path';
-import {
-  getAlwaysIgnore,
-  getIgnoredGlobs,
-  getIgnoreObject,
-} from '../../utils/ignore';
-import { platform } from 'os';
 import { getDaemonProcessIdSync, serverProcessJsonPath } from '../cache';
 import type { WatchEvent } from '../../native';
-
-const ALWAYS_IGNORE = [
-  ...getAlwaysIgnore(workspaceRoot),
-  getFullOsSocketPath(),
-];
+import { openSockets } from './server';
+import { handleImport } from '../../utils/handle-import';
 
 export type FileWatcherCallback = (
   err: Error | string | null,
   changeEvents: WatchEvent[] | null
 ) => Promise<void>;
 
-export async function watchWorkspace(server: Server, cb: FileWatcherCallback) {
-  const { Watcher } = await import('../../native');
+// Captured by watchWorkspace so flushPendingWorkspaceChanges can route
+// force-flushed events through the same handling as the async callback.
+// Definite-assignment: dispatchWorkspaceChanges only runs after
+// watchWorkspace has set both, so reading them as non-nullable is safe.
+let activeServer!: Server;
+let workspaceChangesCallback!: FileWatcherCallback;
 
-  let relativeServerProcess = normalizePath(
+function dispatchWorkspaceChanges(
+  events: WatchEvent[]
+): Promise<void> | undefined {
+  if (restartDaemonIfIgnoreFilesChanged(events.map((event) => event.path))) {
+    return;
+  }
+  return workspaceChangesCallback(null, events);
+}
+
+// Mirrors the per-directory ignore files create_filter reads (watch_filterer.rs).
+// The sources it honours that cannot trigger a restart from here — because they
+// are never watched — only take effect on the next daemon start: .git/info/exclude
+// (under the hardcoded-ignored .git), the global core.excludesFile (outside the
+// tree), and parent .gitignore files above the workspace root.
+const IGNORE_FILE_NAMES = ['.gitignore', '.nxignore'];
+
+/**
+ * The native filterer's ignore rules are fixed when the watcher starts, so an
+ * ignore-file edit needs a daemon restart to take effect. Exposed so the rescan
+ * recovery can restart too: an overflow can drop the ignore-file event that
+ * dispatchWorkspaceChanges would have caught, and only the re-walk finds it.
+ */
+export function restartDaemonIfIgnoreFilesChanged(paths: string[]): boolean {
+  for (const path of paths) {
+    const basename = path.slice(path.lastIndexOf('/') + 1);
+    if (IGNORE_FILE_NAMES.includes(basename)) {
+      handleServerProcessTermination({
+        server: activeServer,
+        reason: 'Stopping the daemon the set of ignored files changed (native)',
+        sockets: openSockets,
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function watchWorkspace(server: Server, cb: FileWatcherCallback) {
+  const { Watcher } = await handleImport('../../native/index.js', __dirname);
+
+  activeServer = server;
+  workspaceChangesCallback = cb;
+  const watcher = new Watcher(workspaceRoot);
+  watcher.watch((err, events) => {
+    if (err) {
+      return cb(err, null);
+    }
+    dispatchWorkspaceChanges(events);
+  });
+
+  return watcher;
+}
+
+/**
+ * Synchronously drain anything the workspace watcher has buffered and feed
+ * it through the normal change-handling pipeline. Call this before serving
+ * a cached project graph so we never return data that the watcher has
+ * already seen invalidated but hasn't flushed yet.
+ */
+export async function flushPendingWorkspaceChanges() {
+  const watcher = getWatcherInstance();
+  if (!watcher) return;
+  const events = watcher.forceFlushPending();
+  if (events.length === 0) return;
+  await dispatchWorkspaceChanges(events);
+}
+
+export async function watchOutputFiles(
+  server: Server,
+  cb: FileWatcherCallback
+) {
+  const { Watcher } = await handleImport('../../native/index.js', __dirname);
+
+  const relativeServerProcess = normalizePath(
     relative(workspaceRoot, serverProcessJsonPath)
   );
-
-  let watcher = new Watcher(workspaceRoot, [`!${relativeServerProcess}`]);
+  const watcher = new Watcher(
+    workspaceRoot,
+    [`!${relativeServerProcess}`],
+    false
+  );
   watcher.watch((err, events) => {
     if (err) {
       return cb(err, null);
@@ -41,35 +114,12 @@ export async function watchWorkspace(server: Server, cb: FileWatcherCallback) {
         event.path == relativeServerProcess &&
         getDaemonProcessIdSync() !== process.pid
       ) {
-        handleServerProcessTermination({
+        return handleServerProcessTermination({
           server,
           reason: 'this process is no longer the current daemon (native)',
+          sockets: openSockets,
         });
       }
-
-      if (event.path.endsWith('.gitignore') || event.path === '.nxignore') {
-        // If the ignore files themselves have changed we need to dynamically update our cached ignoreGlobs
-        handleServerProcessTermination({
-          server,
-          reason:
-            'Stopping the daemon the set of ignored files changed (native)',
-        });
-      }
-    }
-
-    cb(null, events);
-  });
-
-  return watcher;
-}
-
-export async function watchOutputFiles(cb: FileWatcherCallback) {
-  const { Watcher } = await import('../../native');
-
-  let watcher = new Watcher(workspaceRoot, null, false);
-  watcher.watch((err, events) => {
-    if (err) {
-      return cb(err, null);
     }
 
     if (events.length !== 0) {

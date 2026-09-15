@@ -1,13 +1,24 @@
 import type { Tree } from '@nx/devkit';
 import { generateFiles, joinPathFragments } from '@nx/devkit';
 import { addRoute } from '../../../utils/nx-devkit/route-utils';
-import type { Schema } from '../schema';
+import type { NormalizedOptions } from '../schema';
 
 export function addRemoteEntry(
   tree: Tree,
-  { appName, routing, prefix, standalone }: Schema,
+  options: NormalizedOptions,
   appRoot: string
 ) {
+  const {
+    appName,
+    routing,
+    prefix,
+    standalone,
+    componentType,
+    componentFileSuffix,
+    nxWelcomeComponentInfo,
+    entryModuleFileName,
+  } = options;
+
   generateFiles(
     tree,
     standalone
@@ -22,6 +33,11 @@ export function addRemoteEntry(
       appName,
       routing,
       prefix,
+      componentType,
+      componentFileSuffix,
+      entryModuleFileName,
+      nxWelcomeFileName: nxWelcomeComponentInfo.extensionlessFileName,
+      nxWelcomeSymbolName: nxWelcomeComponentInfo.symbolName,
     }
   );
 
@@ -35,7 +51,7 @@ export function addRemoteEntry(
     addRoute(
       tree,
       joinPathFragments(appRoot, 'src/app/app.routes.ts'),
-      `{ path: '', loadChildren: () => import('./remote-entry/entry.module').then(m => m.RemoteEntryModule) }`
+      `{ path: '', loadChildren: () => import('./remote-entry/${entryModuleFileName}').then(m => m.RemoteEntryModule) }`
     );
   }
 }

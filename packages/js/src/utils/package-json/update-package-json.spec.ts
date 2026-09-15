@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-fs';
+import '@nx/devkit/internal-testing-utils/mock-fs';
 
 import {
   getUpdatedPackageJsonContent,
@@ -6,11 +6,28 @@ import {
   UpdatePackageJsonOption,
 } from './update-package-json';
 import { vol } from 'memfs';
-import { DependencyType, ExecutorContext, ProjectGraph } from '@nx/devkit';
+import {
+  DependencyType,
+  ExecutorContext,
+  ProjectGraph,
+  readProjectsConfigurationFromProjectGraph,
+} from '@nx/devkit';
 import { DependentBuildableProjectNode } from '../buildable-libs-utils';
+import { generatePrunedDeployOutput } from '@nx/devkit/internal';
 
 jest.mock('nx/src/utils/workspace-root', () => ({
   workspaceRoot: '/root',
+}));
+
+jest.mock('nx/src/plugins/js/lock-file/lock-file', () => ({
+  ...jest.requireActual('nx/src/plugins/js/lock-file/lock-file'),
+  generatePrunedDeployOutput: jest.fn((packageJson) => {
+    // mimic the real contract: a successful prune strips the manifest's baked
+    // pnpm config, and the caller writes the manifest afterwards
+    jest
+      .requireActual('nx/src/plugins/js/lock-file/pruned-output')
+      .stripPrunedLockfilePnpmConfig(packageJson);
+  }),
 }));
 
 describe('getUpdatedPackageJsonContent', () => {
@@ -140,6 +157,7 @@ describe('getUpdatedPackageJsonContent', () => {
           projectRoot: 'proj',
           format: ['esm'],
           generateExportsField: true,
+          developmentConditionName: '@my-org/source',
         }
       );
 
@@ -151,7 +169,12 @@ describe('getUpdatedPackageJsonContent', () => {
         types: './src/index.d.ts',
         version: '0.0.1',
         exports: {
-          '.': './src/index.js',
+          '.': {
+            '@my-org/source': './src/index.ts',
+            default: './src/index.js',
+            import: './src/index.js',
+            types: './src/index.d.ts',
+          },
           './package.json': './package.json',
         },
       });
@@ -170,6 +193,7 @@ describe('getUpdatedPackageJsonContent', () => {
           format: ['cjs'],
           outputFileExtensionForCjs: '.cjs',
           generateExportsField: true,
+          developmentConditionName: '@my-org/source',
         }
       );
 
@@ -180,7 +204,11 @@ describe('getUpdatedPackageJsonContent', () => {
         version: '0.0.1',
         type: 'commonjs',
         exports: {
-          '.': './src/index.cjs',
+          '.': {
+            '@my-org/source': './src/index.ts',
+            default: './src/index.cjs',
+            types: './src/index.d.ts',
+          },
           './package.json': './package.json',
         },
       });
@@ -200,11 +228,13 @@ describe('getUpdatedPackageJsonContent', () => {
               'proj/src/foo.ts',
               'proj/src/bar.ts',
               'proj/migrations.json',
+              'proj/feature/index.ts',
             ],
             outputPath: 'dist/proj',
             projectRoot: 'proj',
             format: ['cjs'],
             generateExportsField: true,
+            developmentConditionName: '@my-org/source',
           }
         )
       ).toEqual({
@@ -214,11 +244,29 @@ describe('getUpdatedPackageJsonContent', () => {
         types: './src/index.d.ts',
         version: '0.0.1',
         exports: {
-          '.': './src/index.js',
-          './foo': './src/foo.js',
-          './bar': './src/bar.js',
+          '.': {
+            '@my-org/source': './src/index.ts',
+            default: './src/index.js',
+            types: './src/index.d.ts',
+          },
+          './foo': {
+            '@my-org/source': './src/foo.ts',
+            default: './src/foo.js',
+          },
+          './bar': {
+            '@my-org/source': './src/bar.ts',
+            default: './src/bar.js',
+          },
           './package.json': './package.json',
           './migrations.json': './migrations.json',
+          './feature': {
+            '@my-org/source': './feature/index.ts',
+            default: './feature/index.js',
+          },
+          './feature/index': {
+            '@my-org/source': './feature/index.ts',
+            default: './feature/index.js',
+          },
         },
       });
 
@@ -231,11 +279,16 @@ describe('getUpdatedPackageJsonContent', () => {
           },
           {
             main: 'proj/src/index.ts',
-            additionalEntryPoints: ['proj/src/foo.ts', 'proj/src/bar.ts'],
+            additionalEntryPoints: [
+              'proj/src/foo.ts',
+              'proj/src/bar.ts',
+              'proj/feature/index.ts',
+            ],
             outputPath: 'dist/proj',
             projectRoot: 'proj',
             format: ['esm'],
             generateExportsField: true,
+            developmentConditionName: '@my-org/source',
           }
         )
       ).toEqual({
@@ -246,10 +299,33 @@ describe('getUpdatedPackageJsonContent', () => {
         types: './src/index.d.ts',
         version: '0.0.1',
         exports: {
-          '.': './src/index.js',
-          './foo': './src/foo.js',
-          './bar': './src/bar.js',
+          '.': {
+            '@my-org/source': './src/index.ts',
+            default: './src/index.js',
+            import: './src/index.js',
+            types: './src/index.d.ts',
+          },
+          './foo': {
+            '@my-org/source': './src/foo.ts',
+            import: './src/foo.js',
+            default: './src/foo.js',
+          },
+          './bar': {
+            '@my-org/source': './src/bar.ts',
+            import: './src/bar.js',
+            default: './src/bar.js',
+          },
           './package.json': './package.json',
+          './feature': {
+            '@my-org/source': './feature/index.ts',
+            import: './feature/index.js',
+            default: './feature/index.js',
+          },
+          './feature/index': {
+            '@my-org/source': './feature/index.ts',
+            import: './feature/index.js',
+            default: './feature/index.js',
+          },
         },
       });
 
@@ -262,12 +338,17 @@ describe('getUpdatedPackageJsonContent', () => {
           },
           {
             main: 'proj/src/index.ts',
-            additionalEntryPoints: ['proj/src/foo.ts', 'proj/src/bar.ts'],
+            additionalEntryPoints: [
+              'proj/src/foo.ts',
+              'proj/src/bar.ts',
+              'proj/feature/index.ts',
+            ],
             outputPath: 'dist/proj',
             projectRoot: 'proj',
             format: ['cjs', 'esm'],
             outputFileExtensionForCjs: '.cjs',
             generateExportsField: true,
+            developmentConditionName: '@my-org/source',
           }
         )
       ).toEqual({
@@ -278,16 +359,30 @@ describe('getUpdatedPackageJsonContent', () => {
         version: '0.0.1',
         exports: {
           '.': {
+            '@my-org/source': './src/index.ts',
             import: './src/index.js',
             default: './src/index.cjs',
+            types: './src/index.d.ts',
           },
           './foo': {
+            '@my-org/source': './src/foo.ts',
             import: './src/foo.js',
             default: './src/foo.cjs',
           },
           './bar': {
+            '@my-org/source': './src/bar.ts',
             import: './src/bar.js',
             default: './src/bar.cjs',
+          },
+          './feature': {
+            '@my-org/source': './feature/index.ts',
+            import: './feature/index.js',
+            default: './feature/index.cjs',
+          },
+          './feature/index': {
+            '@my-org/source': './feature/index.ts',
+            import: './feature/index.js',
+            default: './feature/index.cjs',
           },
           './package.json': './package.json',
         },
@@ -313,6 +408,7 @@ describe('getUpdatedPackageJsonContent', () => {
           format: ['esm', 'cjs'],
           outputFileExtensionForCjs: '.cjs',
           generateExportsField: true,
+          developmentConditionName: '@my-org/source',
         }
       )
     ).toEqual({
@@ -323,11 +419,83 @@ describe('getUpdatedPackageJsonContent', () => {
       version: '0.0.1',
       exports: {
         '.': {
+          '@my-org/source': './src/index.ts',
           import: './src/index.js',
           default: './src/index.cjs',
+          types: './src/index.d.ts',
         },
         './package.json': './package.json',
         './custom': './custom.js',
+      },
+    });
+  });
+
+  it('should no override existing type', () => {
+    // Leave existing type untouched
+    expect(
+      getUpdatedPackageJsonContent(
+        {
+          name: 'test',
+          version: '0.0.1',
+          type: 'module',
+        },
+        {
+          main: 'proj/src/index.ts',
+          outputPath: 'dist/proj',
+          projectRoot: 'proj',
+          format: ['cjs'],
+          outputFileExtensionForCjs: '.cjs',
+          generateExportsField: true,
+          developmentConditionName: '@my-org/source',
+        }
+      )
+    ).toEqual({
+      name: 'test',
+      main: './src/index.cjs',
+      types: './src/index.d.ts',
+      version: '0.0.1',
+      type: 'module',
+      exports: {
+        '.': {
+          '@my-org/source': './src/index.ts',
+          default: './src/index.cjs',
+          types: './src/index.d.ts',
+        },
+        './package.json': './package.json',
+      },
+    });
+  });
+
+  it('should handle outputFileName correctly', () => {
+    expect(
+      getUpdatedPackageJsonContent(
+        {
+          name: 'test',
+          version: '0.0.1',
+        },
+        {
+          main: 'proj/src/index.ts',
+          outputPath: 'dist/proj',
+          projectRoot: 'proj',
+          format: ['cjs'],
+          generateExportsField: true,
+          outputFileName: 'src/index.js',
+          developmentConditionName: '@my-org/source',
+        }
+      )
+    ).toEqual({
+      name: 'test',
+      main: './src/index.js',
+      types: './src/index.d.ts',
+      version: '0.0.1',
+      type: 'commonjs',
+      exports: {
+        '.': {
+          '@my-org/source': './src/index.ts',
+          default: './src/index.js',
+          types: './src/index.d.ts',
+        },
+        './package.json': './package.json',
       },
     });
   });
@@ -419,6 +587,9 @@ describe('updatePackageJson', () => {
     cwd: '',
     targetName: 'build',
     projectGraph,
+    projectsConfigurations:
+      readProjectsConfigurationFromProjectGraph(projectGraph),
+    nxJsonConfiguration: {},
   };
 
   it('should generate new package if missing', () => {
@@ -504,5 +675,187 @@ describe('updatePackageJson', () => {
         "version": "0.0.3",
       }
     `);
+  });
+
+  it('should drop pnpm overrides from the manifest when a lockfile is generated', () => {
+    const fsJson = {
+      'package.json': JSON.stringify(
+        { ...rootPackageJson, pnpm: { overrides: { external1: '1.0.0' } } },
+        null,
+        2
+      ),
+      'libs/lib1/package.json': JSON.stringify(originalPackageJson, null, 2),
+    };
+    vol.fromJSON(fsJson, '/root');
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      updateBuildableProjectDepsInPackageJson: true,
+      generateLockfile: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    const distPackageJson = JSON.parse(
+      vol.readFileSync('dist/libs/lib1/package.json', 'utf-8').toString()
+    );
+    // The accompanying pruned lockfile drops `overrides`, so the manifest must
+    // too, or pnpm <=10 aborts with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+    expect(distPackageJson.pnpm).toBeUndefined();
+  });
+
+  it('should keep pnpm overrides in the manifest when no lockfile is generated', () => {
+    const fsJson = {
+      'package.json': JSON.stringify(
+        { ...rootPackageJson, pnpm: { overrides: { external1: '1.0.0' } } },
+        null,
+        2
+      ),
+      'libs/lib1/package.json': JSON.stringify(originalPackageJson, null, 2),
+    };
+    vol.fromJSON(fsJson, '/root');
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      updateBuildableProjectDepsInPackageJson: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    const distPackageJson = JSON.parse(
+      vol.readFileSync('dist/libs/lib1/package.json', 'utf-8').toString()
+    );
+    expect(distPackageJson.pnpm).toEqual({ overrides: { external1: '1.0.0' } });
+  });
+
+  it('should drop pnpm config from a verbatim manifest when a lockfile is generated', () => {
+    const fsJson = {
+      'package.json': JSON.stringify(rootPackageJson, null, 2),
+      'libs/lib1/package.json': JSON.stringify(
+        { ...originalPackageJson, pnpm: { overrides: { lib2: '0.0.1' } } },
+        null,
+        2
+      ),
+    };
+    vol.fromJSON(fsJson, '/root');
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      // No updateBuildableProjectDepsInPackageJson: exercises the verbatim-manifest
+      // branch, which strips pnpm config directly rather than via createPackageJson.
+      generateLockfile: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    const distPackageJson = JSON.parse(
+      vol.readFileSync('dist/libs/lib1/package.json', 'utf-8').toString()
+    );
+    // The accompanying pruned lockfile drops `overrides`, so the manifest must too.
+    expect(distPackageJson.pnpm).toBeUndefined();
+  });
+
+  const mockGeneratePrunedDeployOutput =
+    generatePrunedDeployOutput as jest.MockedFunction<
+      typeof generatePrunedDeployOutput
+    >;
+
+  it('generates the deploy output beside the manifest on pnpm', () => {
+    mockGeneratePrunedDeployOutput.mockClear();
+    // Reset so a lockfile written by another test does not skew detection.
+    vol.reset();
+    const fsJson = {
+      'package.json': JSON.stringify(rootPackageJson, null, 2),
+      // A pnpm-lock.yaml makes detectPackageManager report pnpm deterministically.
+      'pnpm-lock.yaml': `lockfileVersion: '9.0'\n`,
+      'libs/lib1/package.json': JSON.stringify(originalPackageJson, null, 2),
+    };
+    vol.fromJSON(fsJson, '/root');
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      updateBuildableProjectDepsInPackageJson: true,
+      generateLockfile: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    expect(mockGeneratePrunedDeployOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ name: '@org/lib1' }),
+      context.projectGraph,
+      'libs/lib1',
+      {
+        outputDirectory: 'dist/libs/lib1',
+        packageManager: 'pnpm',
+        workspaceRoot: '/root',
+      }
+    );
+  });
+
+  it('leaves the bun decision to the deploy output', () => {
+    mockGeneratePrunedDeployOutput.mockClear();
+    // Reset so a pnpm-lock.yaml written by another test does not skew detection.
+    vol.reset();
+    const fsJson = {
+      'package.json': JSON.stringify(rootPackageJson, null, 2),
+      'bun.lockb': '',
+      'libs/lib1/package.json': JSON.stringify(originalPackageJson, null, 2),
+    };
+    vol.fromJSON(fsJson, '/root');
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      updateBuildableProjectDepsInPackageJson: true,
+      generateLockfile: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    expect(mockGeneratePrunedDeployOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ packageManager: 'bun' })
+    );
+  });
+
+  it('writes the manifest with the relocations the deploy output applied on pnpm', () => {
+    mockGeneratePrunedDeployOutput.mockClear();
+    vol.reset();
+    const fsJson = {
+      'package.json': JSON.stringify(rootPackageJson, null, 2),
+      'pnpm-lock.yaml': `lockfileVersion: '9.0'\n`,
+      'libs/lib1/package.json': JSON.stringify(
+        {
+          ...originalPackageJson,
+          dependencies: {
+            ...originalPackageJson.dependencies,
+            vendored: 'link:../../vendor/thing',
+          },
+        },
+        null,
+        2
+      ),
+    };
+    vol.fromJSON(fsJson, '/root');
+    // The deploy output relocates local-path specifiers in the manifest; the
+    // manifest must be written after that mutation lands.
+    mockGeneratePrunedDeployOutput.mockImplementationOnce((manifest) => {
+      manifest.dependencies.vendored = 'link:local_path_modules/vendor/thing';
+    });
+    const options: UpdatePackageJsonOption = {
+      outputPath: 'dist/libs/lib1',
+      projectRoot: 'libs/lib1',
+      main: 'libs/lib1/main.ts',
+      generateLockfile: true,
+    };
+    updatePackageJson(options, context, undefined, [], fileMap);
+
+    const distPackageJson = JSON.parse(
+      vol.readFileSync('dist/libs/lib1/package.json', 'utf-8').toString()
+    );
+    expect(distPackageJson.dependencies.vendored).toBe(
+      'link:local_path_modules/vendor/thing'
+    );
   });
 });

@@ -1,22 +1,25 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface Schema {
-  name: string;
+  directory: string;
+  name?: string;
   prefix?: string;
   style?: string;
   bundler?: 'webpack' | 'none' | 'vite';
   compiler?: 'babel' | 'swc';
   skipFormat?: boolean;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   tags?: string;
   unitTestRunner?: 'jest' | 'vitest' | 'none';
   inSourceTests?: boolean;
   e2eTestRunner?: 'cypress' | 'playwright' | 'none';
-  linter?: Linter;
-  standaloneConfig?: boolean;
+  linter?: LinterType;
+  formatter?: 'none' | 'prettier' | 'oxfmt';
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   strict?: boolean;
   addPlugin?: boolean;
+  useProjectJson?: boolean;
 }

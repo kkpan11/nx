@@ -28,18 +28,22 @@ export interface FileReplacement {
 }
 
 export interface NextBuildBuilderOptions {
-  outputPath: string;
-  fileReplacements: FileReplacement[];
   assets?: any[];
-  nextConfig?: string;
   buildLibsFromSource?: boolean;
-  includeDevDependenciesInPackageJson?: boolean;
-  generateLockfile?: boolean;
-  watch?: boolean;
   debug?: boolean;
-  profile?: boolean;
   experimentalAppOnly?: boolean;
   experimentalBuildMode?: 'compile' | 'generate';
+  fileReplacements: FileReplacement[];
+  generateLockfile?: boolean;
+  includeDevDependenciesInPackageJson?: boolean;
+  nextConfig?: string;
+  outputPath: string;
+  profile?: boolean;
+  skipOverrides?: boolean;
+  skipPackageManager?: boolean;
+  turbo?: boolean;
+  watch?: boolean;
+  webpack?: boolean;
 }
 
 export interface NextServeBuilderOptions {
@@ -53,6 +57,7 @@ export interface NextServeBuilderOptions {
   buildLibsFromSource?: boolean;
   keepAliveTimeout?: number;
   turbo?: boolean;
+  webpack?: boolean;
   experimentalHttps?: boolean;
   experimentalHttpsKey?: string;
   experimentalHttpsCert?: string;

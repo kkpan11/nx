@@ -1,53 +1,52 @@
 import {
-  CreateNodes,
-  CreateNodesContext,
+  calculateHashesForCreateNodes,
+  loadConfigFile,
+  getNamedInputs,
+  hashObject,
+  workspaceDataDirectory,
+  PluginCache,
+  globWithWorkspaceContext,
+} from '@nx/devkit/internal';
+import {
+  AggregateCreateNodesError,
+  type CreateNodesContext,
   createNodesFromFiles,
-  CreateNodesV2,
+  CreateNodesResultArray,
+  type CreateNodes,
   detectPackageManager,
   getPackageManagerCommand,
   joinPathFragments,
-  logger,
   normalizePath,
-  NxJsonConfiguration,
-  ProjectConfiguration,
-  readJsonFile,
-  TargetConfiguration,
-  writeJsonFile,
+  type NxJsonConfiguration,
+  type ProjectConfiguration,
+  type TargetConfiguration,
 } from '@nx/devkit';
-import { dirname, join, relative } from 'path';
-
 import { getLockFileName } from '@nx/js';
-
-import { getNamedInputs } from '@nx/devkit/src/utils/get-named-inputs';
-import { existsSync, readdirSync } from 'fs';
-
-import { calculateHashForCreateNodes } from '@nx/devkit/src/utils/calculate-hash-for-create-nodes';
-import { workspaceDataDirectory } from 'nx/src/utils/cache-directory';
+import { readdirSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
 import { NX_PLUGIN_OPTIONS } from '../utils/constants';
-import { loadConfigFile } from '@nx/devkit/src/utils/config-utils';
-import { hashObject } from 'nx/src/devkit-internals';
-import { globWithWorkspaceContext } from 'nx/src/utils/workspace-context';
 
 export interface CypressPluginOptions {
   ciTargetName?: string;
   targetName?: string;
   openTargetName?: string;
   componentTestingTargetName?: string;
-}
-
-function readTargetsCache(cachePath: string): Record<string, CypressTargets> {
-  return existsSync(cachePath) ? readJsonFile(cachePath) : {};
-}
-
-function writeTargetsToCache(cachePath: string, results: CypressTargets) {
-  writeJsonFile(cachePath, results);
+  ciComponentTestingTargetName?: string;
 }
 
 const cypressConfigGlob = '**/cypress.config.{js,ts,mjs,cjs}';
+const defaultPatterns = {
+  e2e: {
+    specPattern: 'cypress/e2e/**/*.cy.{js,jsx,ts,tsx}',
+    excludeSpecPattern: '*.hot-update.js',
+  },
+  component: {
+    specPattern: '**/*.cy.{js,jsx,ts,tsx}',
+    excludeSpecPattern: ['/snapshots/*', '/image_snapshots/*'],
+  },
+};
 
-const pmc = getPackageManagerCommand();
-
-export const createNodesV2: CreateNodesV2<CypressPluginOptions> = [
+export const createNodes: CreateNodes<CypressPluginOptions> = [
   cypressConfigGlob,
   async (configFiles, options, context) => {
     const optionsHash = hashObject(options);
@@ -55,67 +54,88 @@ export const createNodesV2: CreateNodesV2<CypressPluginOptions> = [
       workspaceDataDirectory,
       `cypress-${optionsHash}.hash`
     );
-    const targetsCache = readTargetsCache(cachePath);
+    const pluginCache = new PluginCache<CypressTargets>(cachePath);
+    const packageManager = detectPackageManager(context.workspaceRoot);
+    const pmc = getPackageManagerCommand(packageManager);
+    const lockFileName = getLockFileName(packageManager);
+    const normalizedOptions = normalizeOptions(options);
+
     try {
-      return await createNodesFromFiles(
-        (configFile, options, context) =>
-          createNodesInternal(configFile, options, context, targetsCache),
+      const { entries, preErrors } = await filterCypressConfigs(
         configFiles,
-        options,
         context
       );
+
+      const projectHashes = await calculateHashesForCreateNodes(
+        entries.map((e) => e.projectRoot),
+        normalizedOptions,
+        context,
+        entries.map(() => [lockFileName])
+      );
+
+      let results: CreateNodesResultArray = [];
+      let nodeErrors: Array<[string | null, Error]> = [];
+      try {
+        results = await createNodesFromFiles(
+          (configFile, _, ctx, idx) =>
+            createNodesInternal(
+              configFile,
+              normalizedOptions,
+              ctx,
+              pluginCache,
+              pmc,
+              projectHashes[idx]
+            ),
+          entries.map((e) => e.configFile),
+          options,
+          context
+        );
+      } catch (e) {
+        if (e instanceof AggregateCreateNodesError) {
+          results = e.partialResults ?? [];
+          nodeErrors = e.errors;
+        } else {
+          throw e;
+        }
+      }
+
+      const allErrors = [...preErrors, ...nodeErrors];
+      if (allErrors.length > 0) {
+        throw new AggregateCreateNodesError(allErrors, results);
+      }
+      return results;
     } finally {
-      writeTargetsToCache(cachePath, targetsCache);
+      pluginCache.writeToDisk();
     }
   },
 ];
 
-/**
- * @deprecated This is replaced with {@link createNodesV2}. Update your plugin to export its own `createNodesV2` function that wraps this one instead.
- * This function will change to the v2 function in Nx 20.
- */
-export const createNodes: CreateNodes<CypressPluginOptions> = [
-  cypressConfigGlob,
-  (configFile, options, context) => {
-    logger.warn(
-      '`createNodes` is deprecated. Update your plugin to utilize createNodesV2 instead. In Nx 20, this will change to the createNodesV2 API.'
-    );
-    return createNodesInternal(configFile, options, context, {});
-  },
-];
+export const createNodesV2 = createNodes;
 
 async function createNodesInternal(
   configFilePath: string,
   options: CypressPluginOptions,
   context: CreateNodesContext,
-  targetsCache: CypressTargets
+  pluginCache: PluginCache<CypressTargets>,
+  pmc: ReturnType<typeof getPackageManagerCommand>,
+  projectHash: string
 ) {
-  options = normalizeOptions(options);
   const projectRoot = dirname(configFilePath);
+  const hash = projectHash + configFilePath;
 
-  // Do not create a project if package.json and project.json isn't there.
-  const siblingFiles = readdirSync(join(context.workspaceRoot, projectRoot));
-  if (
-    !siblingFiles.includes('package.json') &&
-    !siblingFiles.includes('project.json')
-  ) {
-    return {};
+  if (!pluginCache.has(hash)) {
+    pluginCache.set(
+      hash,
+      await buildCypressTargets(
+        configFilePath,
+        projectRoot,
+        options,
+        context,
+        pmc
+      )
+    );
   }
-
-  const hash = await calculateHashForCreateNodes(
-    projectRoot,
-    options,
-    context,
-    [getLockFileName(detectPackageManager(context.workspaceRoot))]
-  );
-
-  targetsCache[hash] ??= await buildCypressTargets(
-    configFilePath,
-    projectRoot,
-    options,
-    context
-  );
-  const { targets, metadata } = targetsCache[hash];
+  const { targets, metadata } = pluginCache.get(hash);
 
   const project: Omit<ProjectConfiguration, 'root'> = {
     projectType: 'application',
@@ -130,17 +150,132 @@ async function createNodesInternal(
   };
 }
 
+function getTargetOutputs(outputs: string[], subfolder?: string): string[] {
+  return outputs.map((output) =>
+    subfolder ? join(output, subfolder) : output
+  );
+}
+
+// Normalize a Cypress config folder (e.g. videosFolder, screenshotsFolder) to a
+// project-root-relative path, then append the per-spec subfolder. Cypress
+// resolves relative folders against the project root (cwd), so this keeps the
+// path Cypress writes to in lockstep with what Nx declares as the target's
+// outputs — regardless of whether the user wrote a relative path or computed
+// an absolute one (e.g. via `path.resolve` / `__dirname`).
+function serializeConfigPath(
+  configPath: string,
+  projectRoot: string,
+  workspaceRoot: string,
+  outputSubfolder: string
+): string {
+  if (!configPath) {
+    return configPath;
+  }
+
+  const fullProjectRoot = resolve(workspaceRoot, projectRoot);
+  const fullConfigPath = resolve(fullProjectRoot, configPath);
+  const relativeConfigPath = normalizePath(
+    relative(fullProjectRoot, fullConfigPath)
+  );
+
+  return normalizePath(join(relativeConfigPath, outputSubfolder));
+}
+
+function getTargetConfig(
+  cypressConfig: any,
+  projectRoot: string,
+  workspaceRoot: string,
+  outputSubfolder: string,
+  ciBaseUrl?: string
+): string {
+  const config = {};
+  if (ciBaseUrl) {
+    config['baseUrl'] = ciBaseUrl;
+  }
+
+  const { screenshotsFolder, videosFolder, e2e, component } = cypressConfig;
+
+  if (videosFolder) {
+    config['videosFolder'] = serializeConfigPath(
+      videosFolder,
+      projectRoot,
+      workspaceRoot,
+      outputSubfolder
+    );
+  }
+
+  if (screenshotsFolder) {
+    config['screenshotsFolder'] = serializeConfigPath(
+      screenshotsFolder,
+      projectRoot,
+      workspaceRoot,
+      outputSubfolder
+    );
+  }
+
+  if (e2e) {
+    config['e2e'] = {};
+    if (e2e.videosFolder) {
+      config['e2e']['videosFolder'] = serializeConfigPath(
+        e2e.videosFolder,
+        projectRoot,
+        workspaceRoot,
+        outputSubfolder
+      );
+    }
+    if (e2e.screenshotsFolder) {
+      config['e2e']['screenshotsFolder'] = serializeConfigPath(
+        e2e.screenshotsFolder,
+        projectRoot,
+        workspaceRoot,
+        outputSubfolder
+      );
+    }
+  }
+
+  if (component) {
+    config['component'] = {};
+    if (component.videosFolder) {
+      config['component']['videosFolder'] = serializeConfigPath(
+        component.videosFolder,
+        projectRoot,
+        workspaceRoot,
+        outputSubfolder
+      );
+    }
+    if (component.screenshotsFolder) {
+      config['component']['screenshotsFolder'] = serializeConfigPath(
+        component.screenshotsFolder,
+        projectRoot,
+        workspaceRoot,
+        outputSubfolder
+      );
+    }
+  }
+
+  // Stringify twice to escape the quotes.
+  return JSON.stringify(JSON.stringify(config));
+}
+
 function getOutputs(
   projectRoot: string,
   cypressConfig: any,
-  testingType: 'e2e' | 'component'
+  testingType: 'e2e' | 'component',
+  workspaceRoot: string
 ): string[] {
-  function getOutput(path: string): string {
-    if (path.startsWith('..')) {
-      return joinPathFragments('{workspaceRoot}', projectRoot, path);
-    } else {
-      return joinPathFragments('{projectRoot}', path);
+  const fullProjectRoot = resolve(workspaceRoot, projectRoot);
+  function getOutput(outputPath: string): string {
+    const fullPath = resolve(fullProjectRoot, outputPath);
+    const relativeToProjectRoot = normalizePath(
+      relative(fullProjectRoot, fullPath)
+    );
+    if (relativeToProjectRoot.startsWith('..')) {
+      return joinPathFragments(
+        '{workspaceRoot}',
+        relative(workspaceRoot, fullPath)
+      );
     }
+    return joinPathFragments('{projectRoot}', relativeToProjectRoot);
   }
 
   const { screenshotsFolder, videosFolder, e2e, component } = cypressConfig;
@@ -184,7 +319,8 @@ async function buildCypressTargets(
   configFilePath: string,
   projectRoot: string,
   options: CypressPluginOptions,
-  context: CreateNodesContext
+  context: CreateNodesContext,
+  pmc: ReturnType<typeof getPackageManagerCommand>
 ): Promise<CypressTargets> {
   const cypressConfig = await loadConfigFile(
     join(context.workspaceRoot, configFilePath)
@@ -198,20 +334,30 @@ async function buildCypressTargets(
 
   const webServerCommands: Record<string, string> =
     pluginPresetOptions?.webServerCommands;
+  const shouldReuseExistingServer =
+    pluginPresetOptions?.reuseExistingServer ?? true;
 
   const namedInputs = getNamedInputs(projectRoot, context);
 
   const targets: Record<string, TargetConfiguration> = {};
   let metadata: ProjectConfiguration['metadata'];
+  const tsNodeCompilerOptions = JSON.stringify({ customConditions: null });
 
   if ('e2e' in cypressConfig) {
     targets[options.targetName] = {
       command: `cypress run`,
-      options: { cwd: projectRoot },
+      options: {
+        cwd: projectRoot,
+        env: { TS_NODE_COMPILER_OPTIONS: tsNodeCompilerOptions },
+      },
       cache: true,
       inputs: getInputs(namedInputs),
-      outputs: getOutputs(projectRoot, cypressConfig, 'e2e'),
-      parallelism: false,
+      outputs: getOutputs(
+        projectRoot,
+        cypressConfig,
+        'e2e',
+        context.workspaceRoot
+      ),
       metadata: {
         technologies: ['cypress'],
         description: 'Runs Cypress Tests',
@@ -225,7 +371,23 @@ async function buildCypressTargets(
     };
 
     if (webServerCommands?.default) {
+      const webServerCommandTask = shouldReuseExistingServer
+        ? parseTaskFromCommand(webServerCommands.default)
+        : null;
+      if (webServerCommandTask) {
+        targets[options.targetName].dependsOn = [
+          {
+            projects: [webServerCommandTask.project],
+            target: webServerCommandTask.target,
+          },
+        ];
+      } else {
+        targets[options.targetName].parallelism = false;
+      }
+
       delete webServerCommands.default;
+    } else {
+      targets[options.targetName].parallelism = false;
     }
 
     if (Object.keys(webServerCommands ?? {}).length > 0) {
@@ -241,43 +403,74 @@ async function buildCypressTargets(
 
     const ciWebServerCommand: string = pluginPresetOptions?.ciWebServerCommand;
     if (ciWebServerCommand) {
-      const specPatterns = Array.isArray(cypressConfig.e2e.specPattern)
-        ? cypressConfig.e2e.specPattern.map((p) => join(projectRoot, p))
-        : [join(projectRoot, cypressConfig.e2e.specPattern)];
+      const { specFiles, specPatterns, excludeSpecPatterns } =
+        await getSpecFilesAndPatternsForTestType(
+          cypressConfig,
+          'e2e',
+          context.workspaceRoot,
+          projectRoot
+        );
 
-      const excludeSpecPatterns: string[] = !cypressConfig.e2e
-        .excludeSpecPattern
-        ? cypressConfig.e2e.excludeSpecPattern
-        : Array.isArray(cypressConfig.e2e.excludeSpecPattern)
-        ? cypressConfig.e2e.excludeSpecPattern.map((p) => join(projectRoot, p))
-        : [join(projectRoot, cypressConfig.e2e.excludeSpecPattern)];
-      const specFiles = await globWithWorkspaceContext(
-        context.workspaceRoot,
-        specPatterns,
-        excludeSpecPatterns
-      );
+      const ciBaseUrl = pluginPresetOptions?.ciBaseUrl;
 
       const dependsOn: TargetConfiguration['dependsOn'] = [];
-      const outputs = getOutputs(projectRoot, cypressConfig, 'e2e');
+      const outputs = getOutputs(
+        projectRoot,
+        cypressConfig,
+        'e2e',
+        context.workspaceRoot
+      );
       const inputs = getInputs(namedInputs);
 
       const groupName = 'E2E (CI)';
       metadata = { targetGroups: { [groupName]: [] } };
       const ciTargetGroup = metadata.targetGroups[groupName];
+      const ciWebServerCommandTask = shouldReuseExistingServer
+        ? parseTaskFromCommand(ciWebServerCommand)
+        : null;
+
       for (const file of specFiles) {
         const relativeSpecFilePath = normalizePath(relative(projectRoot, file));
+
+        if (relativeSpecFilePath.includes('../')) {
+          throw new Error(
+            '@nx/cypress/plugin attempted to run tests outside of the project root. This is not supported and should not happen. Please open an issue at https://github.com/nrwl/nx/issues/new/choose with the following information:\n\n' +
+              `\n\n${JSON.stringify(
+                {
+                  projectRoot,
+                  relativeSpecFilePath,
+                  specFiles,
+                  context,
+                  excludeSpecPatterns,
+                  specPatterns,
+                },
+                null,
+                2
+              )}`
+          );
+        }
+
         const targetName = options.ciTargetName + '--' + relativeSpecFilePath;
+        const outputSubfolder = relativeSpecFilePath
+          .replace(/[\/\\]/g, '-')
+          .replace(/\./g, '-');
 
         ciTargetGroup.push(targetName);
         targets[targetName] = {
-          outputs,
+          outputs: getTargetOutputs(outputs, outputSubfolder),
           inputs,
           cache: true,
-          command: `cypress run --env webServerCommand="${ciWebServerCommand}" --spec ${relativeSpecFilePath}`,
+          command: `cypress run --env webServerCommand="${ciWebServerCommand}" --spec ${relativeSpecFilePath} --config=${getTargetConfig(
+            cypressConfig,
+            projectRoot,
+            context.workspaceRoot,
+            outputSubfolder,
+            ciBaseUrl
+          )}`,
           options: {
             cwd: projectRoot,
+            env: { TS_NODE_COMPILER_OPTIONS: tsNodeCompilerOptions },
           },
-          parallelism: false,
           metadata: {
             technologies: ['cypress'],
             description: `Runs Cypress Tests in ${relativeSpecFilePath} in CI`,
@@ -291,9 +484,20 @@ async function buildCypressTargets(
         };
         dependsOn.push({
           target: targetName,
-          projects: 'self',
           params: 'forward',
+          options: 'forward',
         });
+
+        if (ciWebServerCommandTask) {
+          targets[targetName].dependsOn = [
+            {
+              target: ciWebServerCommandTask.target,
+              projects: [ciWebServerCommandTask.project],
+            },
+          ];
+        } else {
+          targets[targetName].parallelism = false;
+        }
       }
 
       targets[options.ciTargetName] = {
@@ -302,7 +506,6 @@ async function buildCypressTargets(
         inputs,
         outputs,
         dependsOn,
-        parallelism: false,
         metadata: {
           technologies: ['cypress'],
           description: 'Runs Cypress Tests in CI',
@@ -315,18 +518,34 @@ async function buildCypressTargets(
           },
         },
       };
+
+      if (!ciWebServerCommandTask) {
+        targets[options.ciTargetName].parallelism = false;
+      }
+
       ciTargetGroup.push(options.ciTargetName);
     }
   }
 
   if ('component' in cypressConfig) {
+    const inputs = getInputs(namedInputs);
+    const outputs = getOutputs(
+      projectRoot,
+      cypressConfig,
+      'component',
+      context.workspaceRoot
+    );
+
     // This will not override the e2e target if it is the same
     targets[options.componentTestingTargetName] ??= {
       command: `cypress run --component`,
-      options: { cwd: projectRoot },
+      options: {
+        cwd: projectRoot,
+        env: { TS_NODE_COMPILER_OPTIONS: tsNodeCompilerOptions },
+      },
       cache: true,
-      inputs: getInputs(namedInputs),
-      outputs: getOutputs(projectRoot, cypressConfig, 'component'),
+      inputs,
+      outputs,
       metadata: {
         technologies: ['cypress'],
         description: 'Runs Cypress Component Tests',
@@ -338,11 +557,116 @@ async function buildCypressTargets(
         },
       },
     };
+
+    if (options.ciComponentTestingTargetName) {
+      const { specFiles, specPatterns, excludeSpecPatterns } =
+        await getSpecFilesAndPatternsForTestType(
+          cypressConfig,
+          'component',
+          context.workspaceRoot,
+          projectRoot
+        );
+
+      const dependsOn: TargetConfiguration['dependsOn'] = [];
+      const groupName = 'Component Testing (CI)';
+      metadata ??= {};
+      metadata.targetGroups ??= {};
+      metadata.targetGroups[groupName] ??= [];
+      const ctCiTargetGroup = metadata.targetGroups[groupName];
+
+      for (const file of specFiles) {
+        const relativeSpecFilePath = normalizePath(relative(projectRoot, file));
+
+        if (relativeSpecFilePath.includes('../')) {
+          throw new Error(
+            '@nx/cypress/plugin attempted to run tests outside of the project root. This is not supported and should not happen. Please open an issue at https://github.com/nrwl/nx/issues/new/choose with the following information:\n\n' +
+              `\n\n${JSON.stringify(
+                {
+                  projectRoot,
+                  relativeSpecFilePath,
+                  specFiles,
+                  context,
+                  excludeSpecPatterns,
+                  specPatterns,
+                },
+                null,
+                2
+              )}`
+          );
+        }
+
+        const targetName =
+          options.ciComponentTestingTargetName + '--' + relativeSpecFilePath;
+        const outputSubfolder = relativeSpecFilePath
+          .replace(/[\/\\]/g, '-')
+          .replace(/\./g, '-');
+
+        ctCiTargetGroup.push(targetName);
+        targets[targetName] = {
+          outputs: getTargetOutputs(outputs, outputSubfolder),
+          inputs,
+          cache: true,
+          command: `cypress run --component --spec ${relativeSpecFilePath} --config=${getTargetConfig(
+            cypressConfig,
+            projectRoot,
+            context.workspaceRoot,
+            outputSubfolder
+          )}`,
+          options: {
+            cwd: projectRoot,
+            env: { TS_NODE_COMPILER_OPTIONS: tsNodeCompilerOptions },
+          },
+          // Cypress handles starting the server, there's no separate server
+          // target we can use as continuous, so we need to disable parallelism
+          // to avoid port conflicts
+          parallelism: false,
+          metadata: {
+            technologies: ['cypress'],
+            description: `Runs Cypress Component Tests for ${relativeSpecFilePath} in CI`,
+            help: {
+              command: `${pmc.exec} cypress run --help`,
+              example: {
+                args: ['--dev', '--headed'],
+              },
+            },
+          },
+        };
+        dependsOn.push({
+          target: targetName,
+          params: 'forward',
+          options: 'forward',
+        });
+      }
+
+      targets[options.ciComponentTestingTargetName] = {
+        executor: 'nx:noop',
+        cache: true,
+        inputs,
+        outputs,
+        dependsOn,
+        metadata: {
+          technologies: ['cypress'],
+          description: 'Runs Cypress Component Tests in CI',
+          nonAtomizedTarget: options.componentTestingTargetName,
+          help: {
+            command: `${pmc.exec} cypress run --help`,
+            example: {
+              args: ['--dev', '--headed'],
+            },
+          },
+        },
+      };
+
+      ctCiTargetGroup.push(options.ciComponentTestingTargetName);
+    }
   }
 
   targets[options.openTargetName] = {
     command: `cypress open`,
-    options: { cwd: projectRoot },
+    options: {
+      cwd: projectRoot,
+      env: { TS_NODE_COMPILER_OPTIONS: tsNodeCompilerOptions },
+    },
     metadata: {
       technologies: ['cypress'],
       description: 'Opens Cypress',
@@ -364,6 +688,8 @@ function normalizeOptions(options: CypressPluginOptions): CypressPluginOptions {
   options.openTargetName ??= 'open-cypress';
   options.componentTestingTargetName ??= 'component-test';
   options.ciTargetName ??= 'e2e-ci';
+  // must be explicitly provided to opt-in to atomized component testing
+  options.ciComponentTestingTargetName;
   return options;
 }
 
@@ -379,4 +705,98 @@ function getInputs(
       externalDependencies: ['cypress'],
     },
   ];
+}
+
+function parseTaskFromCommand(command: string): {
+  project: string;
+  target: string;
+} | null {
+  const nxRunRegex =
+    /^(?:(?:npx|yarn|bun|pnpm|pnpm exec|pnpx) )?nx run (\S+:\S+)$/;
+  const infixRegex = /^(?:(?:npx|yarn|bun|pnpm|pnpm exec|pnpx) )?nx (\S+ \S+)$/;
+
+  const nxRunMatch = command.match(nxRunRegex);
+  if (nxRunMatch) {
+    const [project, target] = nxRunMatch[1].split(':');
+    return { project, target };
+  }
+
+  const infixMatch = command.match(infixRegex);
+  if (infixMatch) {
+    const [target, project] = infixMatch[1].split(' ');
+    return { project, target };
+  }
+
+  return null;
+}
+
+async function getSpecFilesAndPatternsForTestType(
+  cypressConfig: any,
+  testType: 'e2e' | 'component',
+  workspaceRoot: string,
+  projectRoot: string
+): Promise<{
+  specFiles: string[];
+  specPatterns: string[];
+  excludeSpecPatterns: string[];
+}> {
+  const specPattern =
+    cypressConfig[testType].specPattern ??
+    defaultPatterns[testType].specPattern;
+  const specPatterns = Array.isArray(specPattern)
+    ? specPattern.map((p) => join(projectRoot, p))
+    : [join(projectRoot, specPattern)];
+
+  const excludeSpecPattern =
+    cypressConfig[testType].excludeSpecPattern ??
+    defaultPatterns[testType].excludeSpecPattern;
+  const excludeSpecPatterns: string[] = Array.isArray(excludeSpecPattern)
+    ? excludeSpecPattern.map((p) => join(projectRoot, p))
+    : [join(projectRoot, excludeSpecPattern)];
+  const specFiles = await globWithWorkspaceContext(
+    workspaceRoot,
+    specPatterns,
+    excludeSpecPatterns
+  );
+
+  return { specFiles, specPatterns, excludeSpecPatterns };
+}
+
+interface CypressEntry {
+  configFile: string;
+  projectRoot: string;
+}
+
+async function filterCypressConfigs(
+  configFiles: readonly string[],
+  context: CreateNodesContext
+): Promise<{
+  entries: CypressEntry[];
+  preErrors: Array<[string, Error]>;
+}> {
+  const preErrors: Array<[string, Error]> = [];
+  const candidates = await Promise.all(
+    configFiles.map(async (configFile): Promise<CypressEntry | null> => {
+      try {
+        const projectRoot = dirname(configFile);
+        const siblingFiles = readdirSync(
+          join(context.workspaceRoot, projectRoot)
+        );
+        if (
+          !siblingFiles.includes('package.json') &&
+          !siblingFiles.includes('project.json')
+        ) {
+          return null;
+        }
+        return { configFile, projectRoot };
+      } catch (e) {
+        preErrors.push([configFile, e as Error]);
+        return null;
+      }
+    })
+  );
+  return {
+    entries: candidates.filter((c): c is CypressEntry => c !== null),
+    preErrors,
+  };
 }

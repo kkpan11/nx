@@ -1,0 +1,212 @@
+package dev.nx.gradle.utils
+
+import dev.nx.gradle.data.DependsOnEntry
+import dev.nx.gradle.data.DependsOnParams
+import dev.nx.gradle.data.NxTargets
+import dev.nx.gradle.data.TargetGroups
+import dev.nx.gradle.utils.parsing.containsEssentialTestAnnotations
+import dev.nx.gradle.utils.parsing.getAllVisibleClassesWithNestedAnnotation
+import java.io.File
+import org.gradle.api.Task
+import org.gradle.api.file.FileCollection
+
+const val testCiTargetGroup = "verification"
+
+fun addTestCiTargets(
+    testFiles: FileCollection,
+    projectBuildPath: String,
+    testTask: Task,
+    targets: NxTargets,
+    targetGroups: TargetGroups,
+    projectRoot: String,
+    workspaceRoot: String,
+    ciTestTargetName: String,
+    gitIgnoreClassifier: GitIgnoreClassifier,
+    targetNameOverrides: Map<String, String> = emptyMap(),
+    targetNamePrefix: String = ""
+) =
+    NxTracing.withSpan(
+        "addTestCiTargets",
+        mapOf("ciTestTargetName" to ciTestTargetName, "testTask" to testTask.path)) {
+          addTestCiTargetsImpl(
+              testFiles,
+              projectBuildPath,
+              testTask,
+              targets,
+              targetGroups,
+              projectRoot,
+              workspaceRoot,
+              ciTestTargetName,
+              gitIgnoreClassifier,
+              targetNameOverrides,
+              targetNamePrefix)
+        }
+
+private fun addTestCiTargetsImpl(
+    testFiles: FileCollection,
+    projectBuildPath: String,
+    testTask: Task,
+    targets: NxTargets,
+    targetGroups: TargetGroups,
+    projectRoot: String,
+    workspaceRoot: String,
+    ciTestTargetName: String,
+    gitIgnoreClassifier: GitIgnoreClassifier,
+    targetNameOverrides: Map<String, String> = emptyMap(),
+    targetNamePrefix: String = ""
+) {
+  ensureTargetGroupExists(targetGroups, testCiTargetGroup)
+
+  val ciDependsOn = mutableListOf<DependsOnEntry>()
+
+  processTestFiles(
+      testFiles,
+      projectBuildPath,
+      testTask,
+      targets,
+      targetGroups,
+      projectRoot,
+      workspaceRoot,
+      ciTestTargetName,
+      ciDependsOn,
+      gitIgnoreClassifier,
+      targetNameOverrides,
+      targetNamePrefix)
+
+  ensureParentCiTarget(
+      targets,
+      targetGroups,
+      ciTestTargetName,
+      projectBuildPath,
+      testTask,
+      projectRoot,
+      workspaceRoot,
+      ciDependsOn,
+      gitIgnoreClassifier)
+}
+
+private fun processTestFiles(
+    testFiles: FileCollection,
+    projectBuildPath: String,
+    testTask: Task,
+    targets: NxTargets,
+    targetGroups: TargetGroups,
+    projectRoot: String,
+    workspaceRoot: String,
+    ciTestTargetName: String,
+    ciDependsOn: MutableList<DependsOnEntry>,
+    gitIgnoreClassifier: GitIgnoreClassifier,
+    targetNameOverrides: Map<String, String>,
+    targetNamePrefix: String
+) {
+  val dependsOnTasks = getDependsOnTask(testTask)
+  val testTaskInputs =
+      getInputsForTask(
+          dependsOnTasks, testTask, projectRoot, workspaceRoot, null, gitIgnoreClassifier)
+  val testTaskOutputs = getOutputsForTask(testTask, projectRoot, workspaceRoot)
+  val testTaskDependsOn =
+      getDependsOnForTask(dependsOnTasks, testTask, null, targetNameOverrides, targetNamePrefix)
+
+  testFiles
+      .filter { isTestFile(it, workspaceRoot) }
+      .forEach { testFile ->
+        val classNames = getAllVisibleClassesWithNestedAnnotation(testFile, testTask)
+
+        classNames?.forEach { (className, testClassPackagePath) ->
+          val targetName = "$ciTestTargetName--$className"
+          targets[targetName] =
+              buildTestCiTarget(
+                  projectBuildPath,
+                  testClassPackagePath,
+                  testTask,
+                  testTaskInputs,
+                  testTaskOutputs,
+                  testTaskDependsOn)
+          targetGroups[testCiTargetGroup]?.add(targetName)
+
+          ciDependsOn.add(DependsOnEntry(target = targetName, params = DependsOnParams.FORWARD))
+        }
+      }
+}
+
+private fun isTestFile(file: File, workspaceRoot: String): Boolean {
+  val content = file.takeIf { it.exists() }?.readText()
+  return if (content != null && containsEssentialTestAnnotations(content)) {
+    true
+  } else {
+    // Additional check for test files that might not have obvious annotations
+    // Could be extended with more sophisticated logic
+    false
+  }
+}
+
+fun ensureTargetGroupExists(targetGroups: TargetGroups, group: String) {
+  targetGroups.getOrPut(group) { mutableListOf() }
+}
+
+private fun buildTestCiTarget(
+    projectBuildPath: String,
+    testClassPackagePath: String,
+    testTask: Task,
+    testTaskInputs: List<Any>?,
+    testTaskOutputs: List<String>?,
+    testTaskDependsOn: List<DependsOnEntry>?
+): MutableMap<String, Any?> {
+  val target =
+      mutableMapOf<String, Any?>(
+          "executor" to "@nx/gradle:gradle",
+          "options" to
+              mapOf(
+                  "taskName" to "${projectBuildPath}:${testTask.name}",
+                  "testClassName" to testClassPackagePath),
+          "metadata" to
+              getMetadata(
+                  "Runs Gradle test $testClassPackagePath in CI.", projectBuildPath, "test"),
+          "cache" to true,
+          "inputs" to testTaskInputs)
+
+  testTaskOutputs
+      ?.takeIf { it.isNotEmpty() }
+      ?.let {
+        testTask.logger.info("${testTask.path}: found ${it.size} outputs entries")
+        target["outputs"] = it
+      }
+
+  testTaskDependsOn?.takeIf { it.isNotEmpty() }?.let { target["dependsOn"] = it }
+
+  return target
+}
+
+private fun ensureParentCiTarget(
+    targets: NxTargets,
+    targetGroups: TargetGroups,
+    ciTestTargetName: String,
+    projectBuildPath: String,
+    testTask: Task,
+    projectRoot: String,
+    workspaceRoot: String,
+    ciDependsOn: List<DependsOnEntry>,
+    gitIgnoreClassifier: GitIgnoreClassifier
+) {
+  if (ciDependsOn.isNotEmpty()) {
+    val taskInputs =
+        getInputsForTask(null, testTask, projectRoot, workspaceRoot, null, gitIgnoreClassifier)
+
+    targets[ciTestTargetName] =
+        mutableMapOf<String, Any?>(
+            "executor" to "nx:noop",
+            "metadata" to getMetadata("Runs all Gradle tests in CI", projectBuildPath, "test"),
+            "cache" to true,
+            "inputs" to taskInputs,
+            "dependsOn" to ciDependsOn)
+
+    targetGroups[testCiTargetGroup]?.add(ciTestTargetName)
+
+    getOutputsForTask(testTask, projectRoot, workspaceRoot)
+        ?.takeIf { it.isNotEmpty() }
+        ?.let {
+          testTask.logger.info("${testTask.path}: found ${it.size} outputs entries")
+          (targets[ciTestTargetName] as MutableMap<String, Any?>)["outputs"] = it
+        }
+  }
+}

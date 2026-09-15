@@ -1,11 +1,15 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    "ignoreDeprecations": "6.0"
   },
   "include": [],
   "files": [],
   "references": [
+    {
+      "path": "../utils"
+    },
     {
       "path": "./tsconfig.spec.json"
     }

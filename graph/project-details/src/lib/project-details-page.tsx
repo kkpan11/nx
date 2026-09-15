@@ -1,34 +1,42 @@
-/* eslint-disable @nx/enforce-module-boundaries */
 // nx-ignore-next-line
 import { ProjectGraphProjectNode } from '@nx/devkit';
 // nx-ignore-next-line
 import { GraphError } from 'nx/src/command-line/graph/graph';
-/* eslint-enable @nx/enforce-module-boundaries */
 
 import {
   ScrollRestoration,
   useParams,
   useRouteLoaderData,
+  useSearchParams,
 } from 'react-router-dom';
 import { ProjectDetailsWrapper } from './project-details-wrapper';
 import {
-  ExpandedTargetsProvider,
   fetchProjectGraph,
   getProjectGraphDataService,
   useEnvironmentConfig,
   usePoll,
-} from '@nx/graph/shared';
+} from '@nx/graph-shared';
+import { ExpandedTargetsProvider } from '@nx/graph-internal-ui-project-details';
 import { ProjectDetailsHeader } from './project-details-header';
 
 export function ProjectDetailsPage() {
-  const { project, sourceMap, hash, errors, connectedToCloud } =
-    useRouteLoaderData('selectedProjectDetails') as {
-      hash: string;
-      project: ProjectGraphProjectNode;
-      sourceMap: Record<string, string[]>;
-      errors?: GraphError[];
-      connectedToCloud?: boolean;
-    };
+  const {
+    project,
+    sourceMap,
+    hash,
+    errors,
+    connectedToCloud,
+    disabledTaskSyncGenerators,
+  } = useRouteLoaderData('selectedProjectDetails') as {
+    hash: string;
+    project: ProjectGraphProjectNode;
+    sourceMap: Record<string, string[]>;
+    errors?: GraphError[];
+    connectedToCloud?: boolean;
+    disabledTaskSyncGenerators?: string[];
+  };
+  const [searchParams] = useSearchParams();
+  const projectId = searchParams.get('projectId');
 
   const { environment, watch, appConfig } = useEnvironmentConfig();
 
@@ -52,7 +60,7 @@ export function ProjectDetailsPage() {
 
   return (
     <ExpandedTargetsProvider>
-      <div className="flex w-full flex-col justify-center text-slate-700 dark:text-slate-400">
+      <div className="flex h-fit w-full flex-col text-slate-700 dark:text-slate-400">
         <ScrollRestoration />
         {environment !== 'nx-console' ? (
           <ProjectDetailsHeader />
@@ -62,9 +70,11 @@ export function ProjectDetailsPage() {
         <div className="mx-auto mb-8 w-full max-w-6xl flex-grow px-8">
           <ProjectDetailsWrapper
             project={project}
+            projectId={projectId}
             sourceMap={sourceMap}
             errors={errors}
             connectedToCloud={connectedToCloud}
+            disabledTaskSyncGenerators={disabledTaskSyncGenerators}
           ></ProjectDetailsWrapper>
         </div>
       </div>

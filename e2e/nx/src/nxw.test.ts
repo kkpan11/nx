@@ -10,8 +10,7 @@ import {
   uniq,
   readJson,
   readFile,
-} from '@nx/e2e/utils';
-import { bold } from 'chalk';
+} from '@nx/e2e-utils';
 
 describe('nx wrapper / .nx installation', () => {
   let runNxWrapper: ReturnType<typeof newWrappedNxWorkspace>;
@@ -67,6 +66,7 @@ describe('nx wrapper / .nx installation', () => {
     const output = runNxWrapper('report');
     expect(output).toMatch(new RegExp(`nx.*:.*${getPublishedVersion()}`));
     expect(output).toMatch(new RegExp(`@nx/js.*:.*${getPublishedVersion()}`));
+    // nx express exists in the workspace, but it is not installed
     expect(output).not.toContain('@nx/express');
   });
 
@@ -84,8 +84,12 @@ describe('nx wrapper / .nx installation', () => {
       installedPluginEnd
     );
 
-    expect(installedPluginLines.some((x) => x.includes(`${bold('nx')}`)));
-    expect(installedPluginLines.some((x) => x.includes(`${bold('@nx/js')}`)));
+    expect(installedPluginLines).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^nx(?:\s|$)/),
+        expect.stringMatching(/^@nx\/js(?:\s|$)/),
+      ])
+    );
 
     output = runNxWrapper('list @nx/js');
     expect(output).toContain('Capabilities in @nx/js');
@@ -145,7 +149,7 @@ describe('nx wrapper / .nx installation', () => {
      * Patches migration fetcher to load in migrations that we are using to test.
      */
     updateFile(
-      '.nx/installation/node_modules/nx/src/command-line/migrate/migrate.js',
+      '.nx/installation/node_modules/nx/dist/src/command-line/migrate/migrate.js',
       (content) => {
         const start = content.indexOf('// testing-fetch-start');
         const end = content.indexOf('// testing-fetch-end');

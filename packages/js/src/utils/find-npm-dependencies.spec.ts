@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-fs';
+import '@nx/devkit/internal-testing-utils/mock-fs';
 import { vol } from 'memfs';
 import { findNpmDependencies } from './find-npm-dependencies';
 
@@ -169,6 +169,126 @@ describe('findNpmDependencies', () => {
     });
   });
 
+  it.each`
+    fileName                | command
+    ${'tsconfig.base.json'} | ${'tsc --build tsconfig.lib.json --pretty --verbose'}
+    ${'tsconfig.json'}      | ${'tsc --build tsconfig.lib.json --pretty --verbose'}
+    ${'tsconfig.base.json'} | ${'tsgo --build tsconfig.lib.json'}
+    ${'tsconfig.json'}      | ${'tsgo --build tsconfig.lib.json'}
+  `(
+    'should pick up helper npm dependencies when using "$command" and run-commands',
+    ({ fileName, command }) => {
+      vol.fromJSON(
+        {
+          [`./${fileName}`]: JSON.stringify({
+            compilerOptions: { importHelpers: true },
+          }),
+          './nx.json': JSON.stringify(nxJson),
+          './libs/my-lib/tsconfig.json': JSON.stringify({
+            compilerOptions: {
+              importHelpers: true,
+            },
+          }),
+        },
+        '/root'
+      );
+      const lib = {
+        name: 'my-lib',
+        type: 'lib' as const,
+        data: {
+          root: 'libs/my-lib',
+          targets: {
+            build: {
+              executor: 'nx:run-commands',
+              options: {
+                command,
+              },
+            },
+          },
+        },
+      };
+      const projectGraph = {
+        nodes: {
+          'my-lib': lib,
+        },
+        externalNodes: {
+          'npm:tslib': {
+            name: 'npm:tslib' as const,
+            type: 'npm' as const,
+            data: {
+              packageName: 'tslib',
+              version: '2.6.0',
+            },
+          },
+        },
+        dependencies: {},
+      };
+      const projectFileMap = {
+        'my-lib': [],
+      };
+
+      expect(
+        findNpmDependencies('/root', lib, projectGraph, projectFileMap, 'build')
+      ).toEqual({
+        tslib: '2.6.0',
+      });
+    }
+  );
+
+  it.each`
+    rootImportHelpers | projectImportHelpers | expected
+    ${false}          | ${true}              | ${{ tslib: '2.6.0' }}
+    ${true}           | ${false}             | ${{}}
+  `(
+    'should resolve importHelpers from project tsconfig (root=$rootImportHelpers, project=$projectImportHelpers) for run-commands',
+    ({ rootImportHelpers, projectImportHelpers, expected }) => {
+      vol.fromJSON(
+        {
+          './tsconfig.base.json': JSON.stringify({
+            compilerOptions: { importHelpers: rootImportHelpers },
+          }),
+          './nx.json': JSON.stringify(nxJson),
+          './libs/my-lib/tsconfig.lib.json': JSON.stringify({
+            compilerOptions: { importHelpers: projectImportHelpers },
+          }),
+        },
+        '/root'
+      );
+      const lib = {
+        name: 'my-lib',
+        type: 'lib' as const,
+        data: {
+          root: 'libs/my-lib',
+          targets: {
+            build: {
+              executor: 'nx:run-commands',
+              options: {
+                command: 'tsc --build tsconfig.lib.json',
+                cwd: 'libs/my-lib',
+              },
+            },
+          },
+        },
+      };
+      const projectGraph = {
+        nodes: { 'my-lib': lib },
+        externalNodes: {
+          'npm:tslib': {
+            name: 'npm:tslib' as const,
+            type: 'npm' as const,
+            data: { packageName: 'tslib', version: '2.6.0' },
+          },
+        },
+        dependencies: {},
+      };
+      const projectFileMap = { 'my-lib': [] };
+
+      expect(
+        findNpmDependencies('/root', lib, projectGraph, projectFileMap, 'build')
+      ).toEqual(expected);
+    }
+  );
+
   it('should handle missing ts/swc helper packages from externalNodes', () => {
     vol.fromJSON(
       {
@@ -308,6 +428,104 @@ describe('findNpmDependencies', () => {
     );
 
     expect(results).toEqual({});
+  });
+
+  it('should pick up helper npm dependencies from runtimeHelpers', () => {
+    const libWithUnknownExecutor = {
+      name: 'my-lib',
+      type: 'lib' as const,
+      data: {
+        root: 'libs/my-lib',
+        targets: {
+          build: { executor: '@my-org/some-package:build' },
+        },
+      },
+    };
+    const projectGraph = {
+      nodes: {
+        'my-lib': libWithUnknownExecutor,
+      },
+      externalNodes: {
+        'npm:tslib': {
+          name: 'npm:tslib' as const,
+          type: 'npm' as const,
+          data: { packageName: 'tslib', version: '2.6.0' },
+        },
+        'npm:@swc/helpers': {
+          name: 'npm:@swc/helpers' as const,
+          type: 'npm' as const,
+          data: { packageName: '@swc/helpers', version: '0.5.0' },
+        },
+      },
+      dependencies: {},
+    };
+    const projectFileMap = { 'my-lib': [] };
+
+    const results = findNpmDependencies(
+      '/root',
+      libWithUnknownExecutor,
+      projectGraph,
+      projectFileMap,
+      'build',
+      { runtimeHelpers: ['tslib'] }
+    );
+
+    expect(results).toStrictEqual({ tslib: '2.6.0' });
+  });
+
+  it('should not duplicate helper npm dependencies when additionally set in runtimeHelpers', () => {
+    vol.fromJSON(
+      {
+        './nx.json': JSON.stringify(nxJson),
+        './libs/my-lib/tsconfig.json': JSON.stringify({
+          compilerOptions: { importHelpers: true },
+        }),
+      },
+      '/root'
+    );
+    const libWithUnknownExecutor = {
+      name: 'my-lib',
+      type: 'lib' as const,
+      data: {
+        root: 'libs/my-lib',
+        targets: {
+          build: {
+            executor: '@nx/js:tsc',
+            options: { tsConfig: 'libs/my-lib/tsconfig.json' },
+          },
+        },
+      },
+    };
+    const projectGraph = {
+      nodes: {
+        'my-lib': libWithUnknownExecutor,
+      },
+      externalNodes: {
+        'npm:tslib': {
+          name: 'npm:tslib' as const,
+          type: 'npm' as const,
+          data: { packageName: 'tslib', version: '2.6.0' },
+        },
+        'npm:@swc/helpers': {
+          name: 'npm:@swc/helpers' as const,
+          type: 'npm' as const,
+          data: { packageName: '@swc/helpers', version: '0.5.0' },
+        },
+      },
+      dependencies: {},
+    };
+    const projectFileMap = { 'my-lib': [] };
+
+    const results = findNpmDependencies(
+      '/root',
+      libWithUnknownExecutor,
+      projectGraph,
+      projectFileMap,
+      'build',
+      { runtimeHelpers: ['tslib'] }
+    );
+
+    expect(results).toStrictEqual({ tslib: '2.6.0' });
   });
 
   it('should support recursive collection of dependencies', () => {

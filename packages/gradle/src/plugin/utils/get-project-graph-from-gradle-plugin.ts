@@ -1,0 +1,282 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import {
+  AggregateCreateNodesError,
+  hashArray,
+  logger,
+  ProjectConfiguration,
+  ProjectGraphExternalNode,
+  readJsonFile,
+  StaticDependency,
+  writeJsonFile,
+} from '@nx/devkit';
+
+import { gradleConfigAndTestGlob } from '../../utils/split-config-files';
+import { nxVersion } from '../../utils/versions';
+import { getNxProjectGraphLines } from './get-project-graph-lines';
+import { GradlePluginOptions, normalizeOptions } from './gradle-plugin-options';
+import {
+  hashWithWorkspaceContext,
+  workspaceDataDirectory,
+  hashObject,
+} from '@nx/devkit/internal';
+
+// the output json file from the gradle plugin
+export interface ProjectGraphReport {
+  nodes: {
+    [appRoot: string]: Partial<ProjectConfiguration>;
+  };
+  dependencies: Array<StaticDependency>;
+  externalNodes?: Record<string, ProjectGraphExternalNode>;
+  buildFiles?: string[];
+  /**
+   * Project root -> the build file that configures it, derived here (not plugin-reported). Flat
+   * `buildFiles` loses the pairing; no entry means the report named no build file.
+   */
+  buildFileByProjectRoot?: Record<string, string>;
+}
+
+export interface ProjectGraphReportCache extends ProjectGraphReport {
+  hash: string;
+  /** The @nx/gradle version that wrote the cache. */
+  pluginVersion?: string;
+}
+
+function readProjectGraphReportCache(
+  cachePath: string,
+  hash: string
+): ProjectGraphReport | undefined {
+  const projectGraphReportCache: Partial<ProjectGraphReportCache> = existsSync(
+    cachePath
+  )
+    ? readJsonFile(cachePath)
+    : undefined;
+  if (
+    !projectGraphReportCache ||
+    projectGraphReportCache.hash !== hash ||
+    // Reports written by other @nx/gradle versions may use a different format
+    // (e.g. absolute machine paths before 0.1.24) — regenerate instead of
+    // trusting them, including when restored from another machine's cache.
+    projectGraphReportCache.pluginVersion !== nxVersion
+  ) {
+    return;
+  }
+  return projectGraphReportCache as ProjectGraphReport;
+}
+
+export function writeProjectGraphReportToCache(
+  cachePath: string,
+  results: ProjectGraphReport,
+  hash: string
+) {
+  let projectGraphReportJson: ProjectGraphReportCache = {
+    hash,
+    pluginVersion: nxVersion,
+    ...results,
+  };
+
+  try {
+    writeJsonFile(cachePath, projectGraphReportJson);
+  } catch (e) {
+    logger.warn(
+      `Failed to write Gradle project graph report cache to ${cachePath}: ${
+        e instanceof Error ? e.message : 'unknown error'
+      }`
+    );
+  }
+}
+
+let projectGraphReportCache: ProjectGraphReport;
+let projectGraphReportCachePath: string = join(
+  workspaceDataDirectory,
+  'gradle-nodes.hash'
+);
+export function getCurrentProjectGraphReport(): ProjectGraphReport {
+  if (!projectGraphReportCache) {
+    throw new AggregateCreateNodesError(
+      [
+        [
+          null,
+          new Error(
+            `Expected cached gradle report. Please open an issue at https://github.com/nrwl/nx/issues/new/choose`
+          ),
+        ],
+      ],
+      []
+    );
+  }
+  return projectGraphReportCache;
+}
+
+export function getCurrentBuildFiles(): string[] {
+  const report = getCurrentProjectGraphReport();
+  return report.buildFiles || [];
+}
+
+/**
+ * This function populates the gradle report cache.
+ * For each gradlew file, it runs the `nxProjectGraph` task and processes the output.
+ * It will throw an error if both tasks fail.
+ * It will accumulate the output of all gradlew files.
+ * @param workspaceRoot
+ * @param gradlewFiles absolute paths to all gradlew files in the workspace
+ * @param options user specified gradle plugin options
+ * @returns Promise<void>
+ */
+export async function populateProjectGraph(
+  workspaceRoot: string,
+  gradlewFiles: string[],
+  options: GradlePluginOptions
+): Promise<void> {
+  const normalizedOptions = normalizeOptions(options);
+  const gradleConfigHash = hashArray([
+    await hashWithWorkspaceContext(workspaceRoot, [gradleConfigAndTestGlob]),
+    hashObject(normalizedOptions),
+    process.env.CI,
+  ]);
+  const cached = readProjectGraphReportCache(
+    projectGraphReportCachePath,
+    gradleConfigHash
+  );
+  if (cached) {
+    projectGraphReportCache = cached;
+    return;
+  }
+
+  const gradleProjectGraphReportStart = performance.mark(
+    'gradleProjectGraphReport:start'
+  );
+
+  let projectGraphLines: string[];
+  try {
+    projectGraphLines = await gradlewFiles.reduce(
+      async (
+        projectGraphLines: Promise<string[]>,
+        gradlewFile: string
+      ): Promise<string[]> => {
+        const getNxProjectGraphLinesStart = performance.mark(
+          `${gradlewFile}GetNxProjectGraphLines:start`
+        );
+        const allLines = await projectGraphLines;
+        const currentLines = await getNxProjectGraphLines(
+          gradlewFile,
+          gradleConfigHash,
+          normalizedOptions
+        );
+        const getNxProjectGraphLinesEnd = performance.mark(
+          `${gradlewFile}GetNxProjectGraphLines:end`
+        );
+        performance.measure(
+          `${gradlewFile}GetNxProjectGraphLines`,
+          getNxProjectGraphLinesStart.name,
+          getNxProjectGraphLinesEnd.name
+        );
+        return [...allLines, ...currentLines];
+      },
+      Promise.resolve([])
+    );
+  } catch (e) {
+    if (
+      e instanceof Error &&
+      e.message === 'Gradle project graph generation was cancelled'
+    ) {
+      // Cancelled by a newer populateProjectGraph call — silently return
+      return;
+    }
+    throw e;
+  }
+
+  const gradleProjectGraphReportEnd = performance.mark(
+    'gradleProjectGraphReport:end'
+  );
+  performance.measure(
+    'gradleProjectGraphReport',
+    gradleProjectGraphReportStart.name,
+    gradleProjectGraphReportEnd.name
+  );
+  projectGraphReportCache = processNxProjectGraph(projectGraphLines);
+  // An empty report can be legitimate (e.g. no project produced nodes), but
+  // don't cache it so a transiently-degraded run cannot pin the workspace to
+  // a graph without gradle projects.
+  if (Object.keys(projectGraphReportCache.nodes).length === 0) {
+    return;
+  }
+  writeProjectGraphReportToCache(
+    projectGraphReportCachePath,
+    projectGraphReportCache,
+    gradleConfigHash
+  );
+}
+
+export function processNxProjectGraph(
+  projectGraphLines: string[]
+): ProjectGraphReport {
+  let index = 0;
+  let projectGraphReportForAllProjects: ProjectGraphReport = {
+    nodes: {},
+    dependencies: [],
+    externalNodes: {},
+  };
+  const allBuildFiles = new Set<string>();
+  const buildFileByProjectRoot: Record<string, string> = {};
+
+  while (index < projectGraphLines.length) {
+    const line = projectGraphLines[index].trim();
+    if (line.startsWith('> Task ') && line.endsWith(':nxProjectGraph')) {
+      index++; // Skip the task line before searching for the JSON file path
+      // The task prints its report file path; stop searching at the next task
+      // header (e.g. the path was never printed) or the end of the output.
+      while (
+        index < projectGraphLines.length &&
+        !projectGraphLines[index].trim().endsWith('.json') &&
+        !projectGraphLines[index].trim().startsWith('> Task ')
+      ) {
+        index++;
+      }
+      const file = projectGraphLines[index]?.trim();
+      if (!file?.endsWith('.json')) {
+        continue;
+      }
+      const projectGraphReportJson: ProjectGraphReport =
+        readJsonFile<ProjectGraphReport>(file);
+      projectGraphReportForAllProjects.nodes = {
+        ...projectGraphReportForAllProjects.nodes,
+        ...projectGraphReportJson.nodes,
+      };
+      if (projectGraphReportJson.dependencies) {
+        projectGraphReportForAllProjects.dependencies.push(
+          ...projectGraphReportJson.dependencies
+        );
+      }
+      if (Object.keys(projectGraphReportJson.externalNodes ?? {}).length > 0) {
+        projectGraphReportForAllProjects.externalNodes = {
+          ...projectGraphReportForAllProjects.externalNodes,
+          ...projectGraphReportJson.externalNodes,
+        };
+      }
+      if (projectGraphReportJson.buildFiles) {
+        projectGraphReportJson.buildFiles.forEach((buildFile) =>
+          allBuildFiles.add(buildFile)
+        );
+        // One report describes one project, so its single build file is that project's.
+        const [buildFile] = projectGraphReportJson.buildFiles;
+        if (buildFile) {
+          for (const projectRoot of Object.keys(
+            projectGraphReportJson.nodes ?? {}
+          )) {
+            buildFileByProjectRoot[projectRoot] = buildFile;
+          }
+        }
+      }
+    }
+    index++;
+  }
+
+  // Convert Set to array for the final result
+  projectGraphReportForAllProjects.buildFiles = Array.from(allBuildFiles);
+  projectGraphReportForAllProjects.buildFileByProjectRoot =
+    buildFileByProjectRoot;
+
+  return projectGraphReportForAllProjects;
+}

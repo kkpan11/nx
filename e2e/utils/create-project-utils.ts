@@ -1,4 +1,5 @@
 import { copySync, ensureDirSync, moveSync, removeSync } from 'fs-extra';
+import * as isCI from 'is-ci';
 import {
   createFile,
   directoryExists,
@@ -12,27 +13,27 @@ import {
   getLatestLernaVersion,
   getPublishedVersion,
   getSelectedPackageManager,
+  getStrippedEnvironmentVariables,
   isVerbose,
   isVerboseE2ERun,
 } from './get-env-info';
-import * as isCI from 'is-ci';
 
-import { angularCliVersion as defaultAngularCliVersion } from '@nx/workspace/src/utils/versions';
+import { output, readJsonFile } from '@nx/devkit';
+import { angularDevkitVersion as defaultAngularCliVersion } from '@nx/angular/internal';
+import { typescriptVersion as defaultTypescriptVersion } from '@nx/js/src/utils/versions';
 import { dump } from '@zkochan/js-yaml';
-import { execSync, ExecSyncOptions } from 'child_process';
-
-import { performance, PerformanceMeasure } from 'perf_hooks';
-import { logError, logInfo } from './log-utils';
+import { execSync, ExecSyncOptions } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { performance, PerformanceMeasure } from 'node:perf_hooks';
+import { resetWorkspaceContext } from 'nx/src/utils/workspace-context';
 import {
   getPackageManagerCommand,
   runCLI,
   RunCmdOpts,
   runCommand,
 } from './command-utils';
-import { output, readJsonFile } from '@nx/devkit';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { resetWorkspaceContext } from 'nx/src/utils/workspace-context';
+import { logError, logInfo } from './log-utils';
 
 let projName: string;
 
@@ -40,6 +41,7 @@ let projName: string;
 const nxPackages = [
   `@nx/angular`,
   `@nx/cypress`,
+  `@nx/docker`,
   `@nx/eslint-plugin`,
   `@nx/express`,
   `@nx/esbuild`,
@@ -47,25 +49,42 @@ const nxPackages = [
   `@nx/jest`,
   `@nx/js`,
   `@nx/eslint`,
+  '@nx/maven',
   `@nx/nest`,
   `@nx/next`,
   `@nx/node`,
   `@nx/nuxt`,
+  `@nx/oxlint`,
   `@nx/plugin`,
   `@nx/playwright`,
   `@nx/rollup`,
   `@nx/react`,
   `@nx/remix`,
+  `@nx/rsbuild`,
+  `@nx/rspack`,
   `@nx/storybook`,
   `@nx/vue`,
   `@nx/vite`,
+  `@nx/vitest`,
   `@nx/web`,
   `@nx/webpack`,
   `@nx/react-native`,
   `@nx/expo`,
+  '@nx/dotnet',
+  `@nx/module-federation`,
+  `@nx/workspace`,
 ] as const;
 
 type NxPackage = (typeof nxPackages)[number];
+
+export function openInEditor(projectDirectory: string = tmpProjPath()) {
+  if (process.env.NX_E2E_EDITOR) {
+    const editor = process.env.NX_E2E_EDITOR;
+    execSync(`${editor} ${projectDirectory}`, {
+      stdio: 'inherit',
+    });
+  }
+}
 
 /**
  * Sets up a new project in the temporary project path
@@ -74,13 +93,16 @@ type NxPackage = (typeof nxPackages)[number];
 export function newProject({
   name = uniq('proj'),
   packageManager = getSelectedPackageManager(),
-  unsetProjectNameAndRootFormat = true,
   packages,
+  preset = 'apps',
+  typescriptVersion = defaultTypescriptVersion,
 }: {
   name?: string;
   packageManager?: 'npm' | 'yarn' | 'pnpm' | 'bun';
-  unsetProjectNameAndRootFormat?: boolean;
   readonly packages?: Array<NxPackage>;
+  preset?: string;
+  /** Override for suites pinned to an older TypeScript, e.g. Remix needs 5.x. */
+  typescriptVersion?: string;
 } = {}): string {
   const newProjectStart = performance.mark('new-project:start');
   try {
@@ -89,12 +111,15 @@ export function newProject({
     let createNxWorkspaceMeasure: PerformanceMeasure;
     let packageInstallMeasure: PerformanceMeasure;
 
-    if (!directoryExists(tmpBackupProjPath())) {
+    // Namespace by package manager to avoid conflicts in test suites which include multiple package managers
+    const backupPath = tmpBackupProjPath(packageManager);
+
+    if (!directoryExists(backupPath)) {
       const createNxWorkspaceStart = performance.mark(
         'create-nx-workspace:start'
       );
       runCreateWorkspace(projScope, {
-        preset: 'apps',
+        preset,
         packageManager,
       });
       const createNxWorkspaceEnd = performance.mark('create-nx-workspace:end');
@@ -104,47 +129,64 @@ export function newProject({
         createNxWorkspaceEnd.name
       );
 
-      if (unsetProjectNameAndRootFormat) {
-        console.warn(
-          'ATTENTION: The workspace generated for this e2e test does not use the new as-provided project name/root format. Please update this test'
-        );
-        createFile('apps/.gitkeep');
-        createFile('libs/.gitkeep');
-      }
-
-      // Temporary hack to prevent installing with `--frozen-lockfile`
+      // npm strips protected config keys like _authToken from the env it
+      // passes to child processes (npx nx ...), so npm publish needs the
+      // token in a config file; the workspace .npmrc keeps it scoped to the
+      // test project instead of mutating user-level config.
+      const registryPort = process.env.NX_LOCAL_REGISTRY_PORT ?? '4873';
+      const npmrcLines = [
+        `//localhost:${registryPort}/:_authToken=secretVerdaccioToken`,
+      ];
+      // Workaround: pnpm defaults to frozen-lockfile in CI, but e2e tests
+      // dynamically add packages after workspace creation
       if (isCI && packageManager === 'pnpm') {
-        updateFile(
-          '.npmrc',
-          'prefer-frozen-lockfile=false\nstrict-peer-dependencies=false\nauto-install-peers=true'
-        );
+        npmrcLines.unshift('prefer-frozen-lockfile=false');
       }
+      updateFile('.npmrc', npmrcLines.join('\n'));
 
+      let packagesToInstall: Array<NxPackage> = [];
       if (!packages) {
         console.warn(
           'ATTENTION: All packages are installed into the new workspace. To make this test faster, please pass the subset of packages that this test needs by passing a packages array in the options'
         );
+        packagesToInstall = [...nxPackages];
+      } else if (packages.length > 0) {
+        packagesToInstall = packages;
       }
-      const packageInstallStart = performance.mark('packageInstall:start');
-      packageInstall((packages ?? nxPackages).join(` `), projScope);
-      const packageInstallEnd = performance.mark('packageInstall:end');
-      packageInstallMeasure = performance.measure(
-        'packageInstall',
-        packageInstallStart.name,
-        packageInstallEnd.name
-      );
+
+      if (packagesToInstall.length) {
+        const packageInstallStart = performance.mark('packageInstall:start');
+        packageInstall(packagesToInstall.join(` `), projScope);
+        // npm auto-installs @phenomnomnominal/tsquery's unbounded
+        // `typescript: >3.0.0` peer, landing TS 7 (which dropped the CJS
+        // `SyntaxKind` tsquery reads at load time) in the single hoisted slot.
+        // Installing typescript directly reclaims that slot. pnpm/yarn resolve
+        // peers per dependent, so they are unaffected.
+        // TODO: remove once tsquery bounds its peer or nx stops depending on it.
+        if (packageManager === 'npm') {
+          packageInstall('typescript', projScope, typescriptVersion);
+        }
+        const packageInstallEnd = performance.mark('packageInstall:end');
+        packageInstallMeasure = performance.measure(
+          'packageInstall',
+          packageInstallStart.name,
+          packageInstallEnd.name
+        );
+      } else {
+        console.info('No packages to install');
+      }
       // stop the daemon
-      execSync(`${getPackageManagerCommand().runNx} reset`, {
+      execSync(`${getPackageManagerCommand({ packageManager }).runNx} reset`, {
         cwd: `${e2eCwd}/proj`,
         stdio: isVerbose() ? 'inherit' : 'pipe',
       });
 
-      moveSync(`${e2eCwd}/proj`, `${tmpBackupProjPath()}`);
+      moveSync(`${e2eCwd}/proj`, backupPath);
     }
     projName = name;
 
     const projectDirectory = tmpProjPath();
-    copySync(`${tmpBackupProjPath()}`, `${projectDirectory}`);
+    copySync(backupPath, projectDirectory);
 
     const dependencies = readJsonFile(
       `${projectDirectory}/package.json`
@@ -156,12 +198,18 @@ export function newProject({
     } else if (packageManager === 'pnpm') {
       // pnpm creates sym links to the pnpm store,
       // we need to run the install again after copying the temp folder
-      execSync(getPackageManagerCommand().install, {
-        cwd: projectDirectory,
-        stdio: 'pipe',
-        env: { CI: 'true', ...process.env },
-        encoding: 'utf-8',
-      });
+      try {
+        execSync(getPackageManagerCommand().install, {
+          cwd: projectDirectory,
+          stdio: 'pipe',
+          env: { CI: 'true', ...process.env },
+          encoding: 'utf-8',
+        });
+      } catch (e) {
+        console.log('newProject() - reinstall pnpm dependencies failed');
+        console.error('Full error:', e);
+        throw e;
+      }
     }
 
     const newProjectEnd = performance.mark('new-project:end');
@@ -171,12 +219,11 @@ export function newProject({
       newProjectEnd.name
     );
 
-    if (isVerbose()) {
-      logInfo(
-        `NX`,
-        `E2E created a project: ${projectDirectory} in ${
-          perfMeasure.duration / 1000
-        } seconds
+    logInfo(
+      `NX`,
+      `E2E created a project: ${projectDirectory} in ${
+        perfMeasure.duration / 1000
+      } seconds
 ${
   createNxWorkspaceMeasure
     ? `create-nx-workspace: ${
@@ -184,21 +231,13 @@ ${
       } seconds\n`
     : ''
 }${
-          packageInstallMeasure
-            ? `packageInstall: ${
-                packageInstallMeasure.duration / 1000
-              } seconds\n`
-            : ''
-        }`
-      );
-    }
+        packageInstallMeasure
+          ? `packageInstall: ${packageInstallMeasure.duration / 1000} seconds\n`
+          : ''
+      }`
+    );
 
-    if (process.env.NX_E2E_EDITOR) {
-      const editor = process.env.NX_E2E_EDITOR;
-      execSync(`${editor} ${projectDirectory}`, {
-        stdio: 'inherit',
-      });
-    }
+    openInEditor(projectDirectory);
     return projScope;
   } catch (e) {
     logError(`Failed to set up project for e2e tests.`, e.message);
@@ -206,18 +245,11 @@ ${
   }
 }
 
-// pnpm v7 sadly doesn't automatically install peer dependencies
-export function addPnpmRc() {
-  updateFile(
-    '.npmrc',
-    'strict-peer-dependencies=false\nauto-install-peers=true'
-  );
-}
-
 export function runCreateWorkspace(
   name: string,
   {
     preset,
+    template,
     appName,
     style,
     base,
@@ -227,16 +259,24 @@ export function runCreateWorkspace(
     cwd = e2eCwd,
     bundler,
     routing,
+    useReactRouter,
     standaloneApi,
     docker,
     nextAppDir,
     nextSrcDir,
+    linter = 'eslint',
+    // Deliberately NOT `create-nx-workspace`'s default, which is prettier while
+    // oxfmt is pre-1.0: this exercises the oxfmt path across every suite rather
+    // than only the dedicated one. Suites that need prettier pass it explicitly.
+    formatter = 'oxfmt',
+    unitTestRunner,
     e2eTestRunner,
     ssr,
     framework,
     prefix,
   }: {
-    preset: string;
+    preset?: string;
+    template?: string;
     appName?: string;
     style?: string;
     base?: string;
@@ -247,20 +287,49 @@ export function runCreateWorkspace(
     bundler?: 'webpack' | 'vite';
     standaloneApi?: boolean;
     routing?: boolean;
+    useReactRouter?: boolean;
     docker?: boolean;
     nextAppDir?: boolean;
     nextSrcDir?: boolean;
+    linter?: 'none' | 'eslint';
+    unitTestRunner?:
+      | 'jest'
+      | 'vitest'
+      | 'vitest-angular'
+      | 'vitest-analog'
+      | 'none';
     e2eTestRunner?: 'cypress' | 'playwright' | 'jest' | 'detox' | 'none';
+    formatter?: 'prettier' | 'oxfmt' | 'none';
     ssr?: boolean;
     framework?: string;
     prefix?: string;
   }
 ) {
+  if (preset && template) {
+    throw new Error(
+      'Cannot specify both preset and template. Use one or the other.'
+    );
+  }
+  if (!preset && !template) {
+    throw new Error('Must specify either preset or template.');
+  }
+
   projName = name;
 
   const pm = getPackageManagerCommand({ packageManager });
 
-  let command = `${pm.createWorkspace} ${name} --preset=${preset} --nxCloud=skip --no-interactive`;
+  // Needed for bun workarounds, see below
+  const registry = execSync('npm config get registry').toString().trim();
+
+  let command = `${pm.createWorkspace} ${name} --no-interactive`;
+
+  if (preset) {
+    command += ` --preset=${preset}`;
+  }
+  if (template) {
+    command += ` --template=${template}`;
+  }
+
   if (appName) {
     command += ` --appName=${appName}`;
   }
@@ -292,12 +361,28 @@ export function runCreateWorkspace(
     command += ` --routing=${routing}`;
   }
 
+  if (useReactRouter !== undefined) {
+    command += ` --useReactRouter=${useReactRouter}`;
+  }
+
   if (base) {
     command += ` --defaultBase="${base}"`;
   }
 
   if (packageManager && !useDetectedPm) {
     command += ` --package-manager=${packageManager}`;
+  }
+
+  if (linter) {
+    command += ` --linter=${linter}`;
+  }
+
+  if (formatter) {
+    command += ` --formatter=${formatter}`;
+  }
+
+  if (unitTestRunner) {
+    command += ` --unitTestRunner=${unitTestRunner}`;
   }
 
   if (e2eTestRunner) {
@@ -331,7 +416,7 @@ export function runCreateWorkspace(
       env: {
         CI: 'true',
         NX_VERBOSE_LOGGING: isCI ? 'true' : 'false',
-        ...process.env,
+        ...getStrippedEnvironmentVariables(),
       },
       encoding: 'utf-8',
     });
@@ -369,7 +454,7 @@ export function runCreatePlugin(
 
   let command = `${
     pm.runUninstalledPackage
-  } create-nx-plugin@${getPublishedVersion()} ${name} --nxCloud=skip`;
+  } create-nx-plugin@${getPublishedVersion()} ${name} --nxCloud=skip --no-interactive`;
 
   if (packageManager && !useDetectedPm) {
     command += ` --package-manager=${packageManager}`;
@@ -422,7 +507,7 @@ export function packageInstall(
   try {
     const install = execSync(command, {
       cwd,
-      stdio: isVerbose() ? 'inherit' : 'ignore',
+      stdio: isVerbose() ? 'inherit' : 'pipe',
       env: process.env,
       encoding: 'utf-8',
     });
@@ -460,6 +545,10 @@ export function runNgNew(
     // we need to reuse the same name that's cached in order to avoid issues
     // with tests relying on a different name
     projName = Object.keys(angularJson.projects)[0];
+    // The cached Angular CLI workspace includes symlinked node_modules/.bin entries.
+    // If cleanup left the destination behind, fs-extra will fail while overwriting
+    // those links, so always start from a clean restore target.
+    removeSync(tmpProjPath());
     copySync(tmpBackupNgCliProjPath(), tmpProjPath());
 
     if (isVerboseE2ERun()) {
@@ -480,6 +569,30 @@ export function runNgNew(
     env: process.env,
     encoding: 'utf-8',
   });
+
+  // ensure angular packages are installed with ~ instead of ^ to prevent
+  // potential failures when new minor versions are released
+  function updateAngularDependencies(dependencies: any): void {
+    Object.keys(dependencies).forEach((key) => {
+      if (key.startsWith('@angular/') || key.startsWith('@angular-devkit/')) {
+        dependencies[key] = dependencies[key].replace(/^\^/, '~');
+      }
+    });
+  }
+
+  updateJson('package.json', (json) => {
+    updateAngularDependencies(json.dependencies ?? {});
+    updateAngularDependencies(json.devDependencies ?? {});
+    return json;
+  });
+
+  execSync(pmc.install, {
+    cwd: join(e2eCwd, projName),
+    stdio: isVerbose() ? 'inherit' : 'pipe',
+    env: process.env,
+    encoding: 'utf-8',
+  });
+
   copySync(tmpProjPath(), tmpBackupNgCliProjPath());
 
   if (isVerboseE2ERun()) {
@@ -527,17 +640,18 @@ export function newLernaWorkspace({
       const overrides = {
         ...json.overrides,
         nx: nxVersion,
-        '@nrwl/devkit': nxVersion,
         '@nx/devkit': nxVersion,
       };
       if (packageManager === 'pnpm') {
-        json.pnpm = {
-          ...json.pnpm,
-          overrides: {
-            ...json.pnpm?.overrides,
-            ...overrides,
-          },
-        };
+        // pnpm 11 no longer reads the "pnpm" field in package.json; overrides
+        // live in pnpm-workspace.yaml.
+        updateFile(
+          'pnpm-workspace.yaml',
+          dump({
+            packages: ['packages/*'],
+            overrides,
+          })
+        );
       } else if (packageManager === 'yarn') {
         json.resolutions = {
           ...json.resolutions,
@@ -563,8 +677,8 @@ export function newLernaWorkspace({
         packageManager === 'pnpm'
           ? ' --workspace-root'
           : packageManager === 'yarn'
-          ? ' -W'
-          : ''
+            ? ' -W'
+            : ''
       }`,
       {
         cwd: tmpProjPath(),
@@ -650,8 +764,17 @@ export function createNonNxProjectDirectory(
   );
 }
 
-export function uniq(prefix: string) {
-  return `${prefix}${Math.floor(Math.random() * 10000000)}`;
+export function createEmptyProjectDirectory(name = uniq('proj')) {
+  projName = name;
+  ensureDirSync(tmpProjPath());
+}
+
+export function uniq(prefix: string): string {
+  // We need to ensure that the length of the random section of the name is of consistent length to avoid flakiness in tests
+  const randomSevenDigitNumber = Math.floor(Math.random() * 10000000)
+    .toString()
+    .padStart(7, '0');
+  return `${prefix}${randomSevenDigitNumber}`;
 }
 
 // Useful in order to cleanup space during CI to prevent `No space left on device` exceptions
@@ -659,6 +782,10 @@ export function cleanupProject({
   skipReset,
   ...opts
 }: RunCmdOpts & { skipReset?: boolean } = {}) {
+  if (process.env.NX_E2E_SKIP_PROJECT_CLEANUP) {
+    resetWorkspaceContext();
+    return;
+  }
   if (isCI) {
     // Stopping the daemon is not required for tests to pass, but it cleans up background processes
     try {

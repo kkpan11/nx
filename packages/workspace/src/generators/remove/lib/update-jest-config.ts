@@ -12,9 +12,11 @@ import type {
   PropertyAssignment,
   StringLiteral,
 } from 'typescript';
-import { join } from 'path';
 import { ensureTypescript } from '../../../utilities/typescript';
-import { findRootJestConfig } from '../../utils/jest-config';
+import {
+  findRootJestConfig,
+  findProjectJestConfig,
+} from '../../utils/jest-config';
 
 let tsModule: typeof import('typescript');
 
@@ -26,10 +28,7 @@ function isUsingUtilityFunction(host: Tree) {
 
   const rootConfig = host.read(rootConfigPath, 'utf-8');
 
-  return (
-    rootConfig.includes('getJestProjects()') ||
-    rootConfig.includes('getJestProjectsAsync()')
-  );
+  return rootConfig.includes('getJestProjectsAsync()');
 }
 
 /**
@@ -67,11 +66,12 @@ export function updateJestConfig(
   const projectToRemove = schema.projectName;
 
   const rootConfigPath = findRootJestConfig(tree);
+  const projectJestConfig = findProjectJestConfig(tree, projectConfig.root);
 
   if (
     !rootConfigPath ||
     !tree.exists(rootConfigPath) ||
-    !tree.exists(join(projectConfig.root, 'jest.config.ts')) ||
+    !projectJestConfig ||
     isUsingUtilityFunction(tree) ||
     !isMonorepoConfig(tree)
   ) {

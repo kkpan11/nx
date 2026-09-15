@@ -1,9 +1,14 @@
-import { joinPathFragments, type ExecutorContext } from '@nx/devkit';
+import { joinPathFragments, output, type ExecutorContext } from '@nx/devkit';
+import {
+  assertSupportedInstalledPackageVersion,
+  interpolate,
+} from '@nx/devkit/internal';
 import type { ESLint } from 'eslint';
 import { mkdirSync, writeFileSync } from 'fs';
-import { interpolate } from 'nx/src/tasks-runner/utils';
 import { dirname, posix, relative, resolve } from 'path';
 import { findFlatConfigFile, findOldConfigFile } from '../../utils/config-file';
+import { warnEslintExecutorDeprecation } from '../../utils/deprecation';
+import { minSupportedEslintVersion } from '../../utils/versions';
 import type { Schema } from './schema';
 import { resolveAndInstantiateESLint } from './utility/eslint-utils';
 
@@ -11,7 +16,9 @@ export default async function run(
   options: Schema,
   context: ExecutorContext
 ): Promise<{ success: boolean }> {
-  // this is only used for the hasher
+  warnEslintExecutorDeprecation();
+
+  // hasTypeAwareRules is deprecated and no longer used, delete it so it's not passed to ESLint
   delete options.hasTypeAwareRules;
 
   const systemRoot = context.root;
@@ -62,15 +69,7 @@ export default async function run(
     hasFlatConfig
   );
 
-  const version = ESLint.version?.split('.');
-  if (
-    !version ||
-    version.length < 2 ||
-    Number(version[0]) < 7 ||
-    (Number(version[0]) === 7 && Number(version[1]) < 6)
-  ) {
-    throw new Error('ESLint must be version 7.6 or higher.');
-  }
+  assertSupportedInstalledPackageVersion('eslint', minSupportedEslintVersion);
 
   if (printConfig) {
     try {
@@ -141,8 +140,21 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
         success: false,
       };
     }
-    // If some unexpected error, rethrow
-    throw err;
+
+    // log unexpected errors
+    const lines = (err.message ? err.message : err.toString()).split('\n');
+    const bodyLines: string[] = lines.slice(1);
+    if (err.stack) {
+      bodyLines.push(...err.stack.split('\n'));
+    }
+    output.error({
+      title: lines[0],
+      bodyLines,
+    });
+
+    return {
+      success: false,
+    };
   }
 
   if (lintResults.length === 0 && errorOnUnmatchedPattern) {
@@ -198,6 +210,12 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
 
   if (printInfo) {
     outputPrintInfo(totals);
+  }
+
+  if (options.maxWarnings >= 0 && totals.warnings > options.maxWarnings) {
+    console.info(
+      `ESLint found too many warnings (maximum: ${options.maxWarnings}).`
+    );
   }
 
   return {

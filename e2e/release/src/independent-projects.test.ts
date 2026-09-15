@@ -1,7 +1,9 @@
-import { joinPathFragments } from '@nx/devkit';
+import { joinPathFragments, NxJsonConfiguration } from '@nx/devkit';
 import {
+  normalizePerformanceReport,
   cleanupProject,
   exists,
+  getPackageManagerCommand,
   getSelectedPackageManager,
   newProject,
   readFile,
@@ -10,13 +12,16 @@ import {
   tmpProjPath,
   uniq,
   updateJson,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { execSync } from 'child_process';
 
 expect.addSnapshotSerializer({
   serialize(str: string) {
+    const e2eRegistryUrl = execSync('npm config get registry')
+      .toString()
+      .trim();
     return (
-      str
+      normalizePerformanceReport(str)
         // Remove all output unique to specific projects to ensure deterministic snapshots
         .replaceAll(`/private/${tmpProjPath()}`, '')
         .replaceAll(tmpProjPath(), '')
@@ -46,6 +51,7 @@ expect.addSnapshotSerializer({
         )
         .replaceAll('pnpm install --lockfile-only', '{lock-file-command}')
         .replaceAll(getSelectedPackageManager(), '{package-manager}')
+        .replaceAll(e2eRegistryUrl, '{registryUrl}')
         // We trim each line to reduce the chances of snapshot flakiness
         .split('\n')
         .map((r) => r.trim())
@@ -65,7 +71,6 @@ describe('nx release - independent projects', () => {
 
   beforeAll(() => {
     newProject({
-      unsetProjectNameAndRootFormat: false,
       packages: ['@nx/js'],
     });
 
@@ -127,16 +132,15 @@ describe('nx release - independent projects', () => {
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 0.0.0 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-package.1".
-        {project-name} ✍️  New version 999.9.9-package.1 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 0.0.0 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-package.1", from the given specifier, to get new version 999.9.9-package.1
+        {project-name} ✍️  New version 999.9.9-package.1 written to manifest: {project-name}/package.json
 
 
         "name": "@proj/{project-name}",
         -   "version": "0.0.0",
         +   "version": "999.9.9-package.1",
-        "scripts": {
+        "exports": {
 
 
         NX   Staging changed files with git
@@ -156,19 +160,15 @@ describe('nx release - independent projects', () => {
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 0.0.0 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-package.2".
-        {project-name} ✍️  New version 999.9.9-package.2 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 0.0.0 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-package.2", from the given specifier, to get new version 999.9.9-package.2
+        {project-name} ✍️  New version 999.9.9-package.2 written to manifest: {project-name}/package.json
 
 
         "name": "@proj/{project-name}",
         -   "version": "0.0.0",
         +   "version": "999.9.9-package.2",
-        "scripts": {
-
-        }
-        +
+        "exports": {
 
 
         NX   Staging changed files with git
@@ -188,19 +188,33 @@ describe('nx release - independent projects', () => {
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 0.0.0 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-package.3".
-        {project-name} ⚠️  Warning, the following packages depend on "{project-name}" but have been filtered out via --projects, and therefore will not be updated:
-        - {project-name}
-        => You can adjust this behavior by setting \`version.generatorOptions.updateDependents\` to "auto"
-        {project-name} ✍️  New version 999.9.9-package.3 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 999.9.9-package.2 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied semver relative bump "patch", because a dependency was bumped, to get new version 999.9.9
+        {project-name} ✍️  New version 999.9.9 written to manifest: {project-name}/package.json
+        {project-name} ✍️  Updated 1 dependency in manifest: {project-name}/package.json
+
+        NX   Running release version for project: {project-name}
+
+        {project-name} 📄 Resolved the current version as 0.0.0 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-package.3", from the given specifier, to get new version 999.9.9-package.3
+        {project-name} ✍️  New version 999.9.9-package.3 written to manifest: {project-name}/package.json
 
 
         "name": "@proj/{project-name}",
         -   "version": "0.0.0",
         +   "version": "999.9.9-package.3",
-        "scripts": {
+        "exports": {
+
+
+        "name": "@proj/{project-name}",
+        -   "version": "999.9.9-package.2",
+        +   "version": "999.9.9",
+        "exports": {
+
+        "dependencies": {
+        -     "@proj/{project-name}": "0.0.0"
+        +     "@proj/{project-name}": "999.9.9-package.3"
+        }
 
 
         NX   Staging changed files with git
@@ -221,7 +235,11 @@ describe('nx release - independent projects', () => {
       const versionWithGitActionsCLIOutput = runCLI(
         `release version 999.9.9-version-git-operations-test.2 -p ${pkg1} --git-commit --git-tag --verbose` // add verbose so we get richer output
       );
-      expect(versionWithGitActionsCLIOutput).toMatchInlineSnapshot(`
+      const filteredOutput = versionWithGitActionsCLIOutput.replace(
+        /\[(isolated-plugin|plugin-worker)\].*\n/g,
+        ''
+      );
+      expect(filteredOutput).toMatchInlineSnapshot(`
 
         NX   Your filter "{project-name}" matched the following projects:
 
@@ -230,16 +248,15 @@ describe('nx release - independent projects', () => {
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 999.9.9-version-git-operations-test.1 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-version-git-operations-test.2".
-        {project-name} ✍️  New version 999.9.9-version-git-operations-test.2 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 999.9.9-version-git-operations-test.1 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-version-git-operations-test.2", from the given specifier, to get new version 999.9.9-version-git-operations-test.2
+        {project-name} ✍️  New version 999.9.9-version-git-operations-test.2 written to manifest: {project-name}/package.json
 
 
         "name": "@proj/{project-name}",
         -   "version": "999.9.9-version-git-operations-test.1",
         +   "version": "999.9.9-version-git-operations-test.2",
-        "scripts": {
+        "exports": {
 
 
         Skipped lock file update because {package-manager} workspaces are not enabled.
@@ -303,51 +320,56 @@ describe('nx release - independent projects', () => {
       });
 
       const versionWithGitActionsConfigOutput = runCLI(
-        `release version 999.9.9-version-git-operations-test.3 --verbose` // add verbose so we get richer output
+        `release version 999.9.9-version-git-operations-test.3 --verbose --gitTag` // add verbose so we get richer output
       );
-      expect(versionWithGitActionsConfigOutput).toMatchInlineSnapshot(`
+      const filteredConfigOutput = versionWithGitActionsConfigOutput.replace(
+        /\[(isolated-plugin|plugin-worker)\].*\n/g,
+        ''
+      );
+      expect(filteredConfigOutput).toMatchInlineSnapshot(`
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 999.9.9-version-git-operations-test.2 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-version-git-operations-test.3".
-        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 999.9.9-package.3 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-version-git-operations-test.3", from the given specifier, to get new version 999.9.9-version-git-operations-test.3
+        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to manifest: {project-name}/package.json
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 999.9.9-package.2 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-version-git-operations-test.3".
-        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to {project-name}/package.json
+        {project-name} 📄 Resolved the current version as 999.9.9-version-git-operations-test.2 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-version-git-operations-test.3", from the given specifier, to get new version 999.9.9-version-git-operations-test.3
+        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to manifest: {project-name}/package.json
 
         NX   Running release version for project: {project-name}
 
-        {project-name} 🔍 Reading data for package "@proj/{project-name}" from {project-name}/package.json
-        {project-name} 📄 Resolved the current version as 999.9.9-package.3 from {project-name}/package.json
-        {project-name} 📄 Using the provided version specifier "999.9.9-version-git-operations-test.3".
-        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to {project-name}/package.json
-
-
-        "name": "@proj/{project-name}",
-        -   "version": "999.9.9-version-git-operations-test.2",
-        +   "version": "999.9.9-version-git-operations-test.3",
-        "scripts": {
-
-
-        "name": "@proj/{project-name}",
-        -   "version": "999.9.9-package.2",
-        +   "version": "999.9.9-version-git-operations-test.3",
-        "scripts": {
+        {project-name} 📄 Resolved the current version as 999.9.9 from manifest: {project-name}/package.json
+        {project-name} ❓ Applied explicit semver value "999.9.9-version-git-operations-test.3", from the given specifier, to get new version 999.9.9-version-git-operations-test.3
+        {project-name} ✍️  New version 999.9.9-version-git-operations-test.3 written to manifest: {project-name}/package.json
+        {project-name} ✍️  Updated 1 dependency in manifest: {project-name}/package.json
 
 
         "name": "@proj/{project-name}",
         -   "version": "999.9.9-package.3",
         +   "version": "999.9.9-version-git-operations-test.3",
-        "scripts": {
+        "exports": {
 
 
-        Skipped lock file update because {package-manager} workspaces are not enabled.
+        "name": "@proj/{project-name}",
+        -   "version": "999.9.9-version-git-operations-test.2",
+        +   "version": "999.9.9-version-git-operations-test.3",
+        "exports": {
+
+
+        "name": "@proj/{project-name}",
+        -   "version": "999.9.9",
+        +   "version": "999.9.9-version-git-operations-test.3",
+        "exports": {
+
+        "dependencies": {
+        -     "@proj/{project-name}": "999.9.9-package.3"
+        +     "@proj/{project-name}": "999.9.9-version-git-operations-test.3"
+        }
+
 
         Skipped lock file update because {package-manager} workspaces are not enabled.
 
@@ -366,7 +388,7 @@ describe('nx release - independent projects', () => {
         Tagging the current commit in git with the following command:
         git tag --annotate {project-name}@999.9.9-version-git-operations-test.3 --message {project-name}@999.9.9-version-git-operations-test.3
         Tagging the current commit in git with the following command:
-        git tag --annotate v999.9.9-version-git-operations-test.3 --message v999.9.9-version-git-operations-test.3
+        git tag --annotate fixed-v999.9.9-version-git-operations-test.3 --message fixed-v999.9.9-version-git-operations-test.3
 
       `);
 
@@ -385,9 +407,9 @@ describe('nx release - independent projects', () => {
       `);
       // Tags
       expect(runCommand('git tag --points-at HEAD')).toMatchInlineSnapshot(`
+        fixed-v999.9.9-version-git-operations-test.3
         {project-name}@999.9.9-version-git-operations-test.3
         {project-name}@999.9.9-version-git-operations-test.3
-        v999.9.9-version-git-operations-test.3
 
       `);
     });
@@ -500,7 +522,11 @@ describe('nx release - independent projects', () => {
       const versionWithGitActionsCLIOutput = runCLI(
         `release changelog 999.9.9-changelog-git-operations-test.1 -p ${pkg1} --verbose`
       );
-      expect(versionWithGitActionsCLIOutput).toMatchInlineSnapshot(`
+      const filteredChangelogOutput = versionWithGitActionsCLIOutput.replace(
+        /\[(isolated-plugin|plugin-worker)\].*\n/g,
+        ''
+      );
+      expect(filteredChangelogOutput).toMatchInlineSnapshot(`
 
         NX   Your filter "{project-name}" matched the following projects:
 
@@ -561,7 +587,7 @@ describe('nx release - independent projects', () => {
       expect(runCommand(`git rev-parse HEAD`).trim()).toEqual(updatedHeadSHA);
 
       // Disable git commit and tag operations for the changelog command via config
-      updateJson('nx.json', (json) => {
+      updateJson<NxJsonConfiguration>('nx.json', (json) => {
         return {
           ...json,
           release: {
@@ -582,6 +608,7 @@ describe('nx release - independent projects', () => {
               fixed: {
                 projects: [pkg3],
                 projectsRelationship: 'fixed',
+                releaseTag: { pattern: `${pkg3}@{version}` },
               },
             },
           },
@@ -654,13 +681,17 @@ describe('nx release - independent projects', () => {
         integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         total files:   4
 
-        Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
 
 
         NX   Successfully ran target nx-release-publish for project {project-name}
 
 
+        Run duration: {DURATION}
+        Cache: 0/1 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
 
       `);
 
@@ -703,13 +734,17 @@ describe('nx release - independent projects', () => {
         integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         total files:   4
 
-        Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
 
 
         NX   Successfully ran target nx-release-publish for project {project-name}
 
 
+        Run duration: {DURATION}
+        Cache: 0/1 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
 
         NX   Running target nx-release-publish for project {project-name}:
 
@@ -740,18 +775,38 @@ describe('nx release - independent projects', () => {
         integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         total files:   4
 
-        Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
 
 
         NX   Successfully ran target nx-release-publish for project {project-name}
 
 
+        Run duration: {DURATION}
+        Cache: 0/1 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
 
       `);
     });
 
-    it('should only run the publish task for the filtered projects', async () => {
+    it('should only run the publish task for the filtered projects within the group when updateDependents=auto', async () => {
+      updateJson('nx.json', () => {
+        return {
+          release: {
+            projectsRelationship: 'independent',
+            version: { updateDependents: 'auto' },
+            groups: {
+              group1: {
+                projects: [pkg1, pkg2],
+              },
+              group2: {
+                projects: [pkg3],
+              },
+            },
+          },
+        };
+      });
       // Should only contain the 2 projects from group1
       expect(runCLI(`release publish -g group1 -d`)).toMatchInlineSnapshot(`
 
@@ -785,7 +840,7 @@ describe('nx release - independent projects', () => {
         integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         total files:   4
 
-        Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
         > nx run {project-name}:nx-release-publish
 
@@ -807,13 +862,17 @@ describe('nx release - independent projects', () => {
         integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         total files:   4
 
-        Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
 
 
         NX   Successfully ran target nx-release-publish for 2 projects
 
 
+        Run duration: {DURATION}
+        Cache: 0/2 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
 
       `);
 
@@ -849,13 +908,214 @@ describe('nx release - independent projects', () => {
           integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
           total files:   4
 
-          Would publish to ${e2eRegistryUrl} with tag "latest", but [dry-run] was set
+          Would publish to {registryUrl} with tag "latest", but [dry-run] was set
 
 
 
           NX   Successfully ran target nx-release-publish for project {project-name}
 
 
+          Run duration: {DURATION}
+          Cache: 0/1 hit (0%)
+          Critical path: {DURATION} (1 task)
+          Recoverable time: {DURATION}
+
+      `);
+    });
+
+    it('should only run the publish task for the filtered projects and projects across groups when updateDependents=always', async () => {
+      updateJson('nx.json', () => {
+        return {
+          release: {
+            projectsRelationship: 'independent',
+            version: { updateDependents: 'always' },
+            groups: {
+              group1: {
+                projects: [pkg1, pkg2],
+              },
+              group2: {
+                projects: [pkg3],
+              },
+            },
+          },
+        };
+      });
+      // Should only contain the 2 projects from group1
+      expect(runCLI(`release publish -g group1 -d`)).toMatchInlineSnapshot(`
+
+        NX   Running target nx-release-publish for 2 projects:
+
+        - {project-name}
+        - {project-name}
+
+        With additional flags:
+        --dryRun=true
+
+
+
+        > nx run {project-name}:nx-release-publish
+
+
+        📦  @proj/{project-name}@X.X.X-dry-run
+        === Tarball Contents ===
+
+        XXXB CHANGELOG.md
+        XXB  index.js
+        XXXB package.json
+        XXB  project.json
+        === Tarball Details ===
+        name:          @proj/{project-name}
+        version:       X.X.X-dry-run
+        filename:      proj-{project-name}-X.X.X-dry-run.tgz
+        package size: XXXB
+        unpacked size: XXXB
+        shasum:        {SHASUM}
+        integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        total files:   4
+
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
+
+        > nx run {project-name}:nx-release-publish
+
+
+        📦  @proj/{project-name}@X.X.X-dry-run
+        === Tarball Contents ===
+
+        XXXB CHANGELOG.md
+        XXB  index.js
+        XXXB package.json
+        XXB  project.json
+        === Tarball Details ===
+        name:          @proj/{project-name}
+        version:       X.X.X-dry-run
+        filename:      proj-{project-name}-X.X.X-dry-run.tgz
+        package size: XXXB
+        unpacked size: XXXB
+        shasum:        {SHASUM}
+        integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        total files:   4
+
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
+
+
+
+        NX   Successfully ran target nx-release-publish for 2 projects
+
+
+        Run duration: {DURATION}
+        Cache: 0/2 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
+
+      `);
+
+      // Should only contain the 1 project from group2
+      expect(runCLI(`release publish -g group2 -d`)).toMatchInlineSnapshot(`
+
+        NX   Running target nx-release-publish for project {project-name}:
+
+        - {project-name}
+
+        With additional flags:
+        --dryRun=true
+
+
+
+        > nx run {project-name}:nx-release-publish
+
+
+        📦  @proj/{project-name}@X.X.X-dry-run
+        === Tarball Contents ===
+
+        XXXB CHANGELOG.md
+        XXB  index.js
+        XXXB package.json
+        XXB  project.json
+        === Tarball Details ===
+        name:          @proj/{project-name}
+        version:       X.X.X-dry-run
+        filename:      proj-{project-name}-X.X.X-dry-run.tgz
+        package size: XXXB
+        unpacked size: XXXB
+        shasum:        {SHASUM}
+        integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        total files:   4
+
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
+
+
+
+        NX   Successfully ran target nx-release-publish for project {project-name}
+
+
+        Run duration: {DURATION}
+        Cache: 0/1 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
+
+        NX   Running target nx-release-publish for 2 projects:
+
+        - {project-name}
+        - {project-name}
+
+        With additional flags:
+        --dryRun=true
+
+
+
+        > nx run {project-name}:nx-release-publish
+
+
+        📦  @proj/{project-name}@X.X.X-dry-run
+        === Tarball Contents ===
+
+        XXXB CHANGELOG.md
+        XXB  index.js
+        XXXB package.json
+        XXB  project.json
+        === Tarball Details ===
+        name:          @proj/{project-name}
+        version:       X.X.X-dry-run
+        filename:      proj-{project-name}-X.X.X-dry-run.tgz
+        package size: XXXB
+        unpacked size: XXXB
+        shasum:        {SHASUM}
+        integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        total files:   4
+
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
+
+        > nx run {project-name}:nx-release-publish
+
+
+        📦  @proj/{project-name}@X.X.X-dry-run
+        === Tarball Contents ===
+
+        XXXB CHANGELOG.md
+        XXB  index.js
+        XXXB package.json
+        XXB  project.json
+        === Tarball Details ===
+        name:          @proj/{project-name}
+        version:       X.X.X-dry-run
+        filename:      proj-{project-name}-X.X.X-dry-run.tgz
+        package size: XXXB
+        unpacked size: XXXB
+        shasum:        {SHASUM}
+        integrity: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        total files:   4
+
+        Would publish to {registryUrl} with tag "latest", but [dry-run] was set
+
+
+
+        NX   Successfully ran target nx-release-publish for 2 projects
+
+
+        Run duration: {DURATION}
+        Cache: 0/2 hit (0%)
+        Critical path: {DURATION} (1 task)
+        Recoverable time: {DURATION}
 
       `);
     });
@@ -867,11 +1127,9 @@ describe('nx release - independent projects', () => {
         return {
           release: {
             projectsRelationship: 'independent',
-            releaseTagPattern: '{projectName}@v{version}',
+            releaseTag: { pattern: '{projectName}@v{version}' },
             version: {
-              generatorOptions: {
-                currentVersionResolver: 'git-tag',
-              },
+              currentVersionResolver: 'git-tag',
             },
             changelog: {
               projectChangelogs: true,
@@ -897,7 +1155,7 @@ describe('nx release - independent projects', () => {
       expect(
         releaseOutput.match(new RegExp(`New version 1\.4\.1 written`, 'g'))
           .length
-      ).toEqual(1);
+      ).toEqual(2);
 
       expect(
         releaseOutput.match(new RegExp(`New version 1\.6\.1 written`, 'g'))
@@ -923,13 +1181,10 @@ describe('nx release - independent projects', () => {
         return {
           release: {
             projectsRelationship: 'independent',
-            releaseTagPattern: '{projectName}@v{version}',
+            releaseTag: { pattern: '{projectName}@v{version}' },
             version: {
-              generatorOptions: {
-                // added specifierSource to ensure conventional commits are used
-                specifierSource: 'conventional-commits',
-                currentVersionResolver: 'git-tag',
-              },
+              specifierSource: 'conventional-commits',
+              currentVersionResolver: 'git-tag',
             },
             changelog: {
               projectChangelogs: true,
@@ -977,14 +1232,17 @@ describe('nx release - independent projects', () => {
       expect(
         releaseOutput.match(
           new RegExp(
-            `Resolved the specifier as "minor" using git history and the conventional commits standard.`,
+            `Resolved the specifier as "minor" using git history and the conventional commits standard`,
             'g'
           )
         ).length
       ).toEqual(1);
       expect(
         releaseOutput.match(
-          new RegExp(`New version 1\\.4\\.0 written to my-pkg-1\\d*`, 'g')
+          new RegExp(
+            `New version 1\\.4\\.0 written to manifest: my-pkg-1\\d*`,
+            'g'
+          )
         ).length
       ).toEqual(1);
       expect(
@@ -996,14 +1254,26 @@ describe('nx release - independent projects', () => {
       expect(
         releaseOutput.match(
           new RegExp(
-            `Resolved the specifier as "patch" using git history and the conventional commits standard.`,
+            `New version 1\\.5\\.1 written to manifest: my-pkg-2\\d*`,
             'g'
           )
         ).length
-      ).toEqual(1);
+      ).toEqual(2);
+
       expect(
         releaseOutput.match(
-          new RegExp(`New version 1\\.8\\.1 written to my-pkg-3\\d*`, 'g')
+          new RegExp(
+            `Resolved the specifier as "patch" using git history and the conventional commits standard`,
+            'g'
+          )
+        ).length
+      ).toEqual(2);
+      expect(
+        releaseOutput.match(
+          new RegExp(
+            `New version 1\\.8\\.1 written to manifest: my-pkg-3\\d*`,
+            'g'
+          )
         ).length
       ).toEqual(1);
       expect(
@@ -1013,7 +1283,7 @@ describe('nx release - independent projects', () => {
 
       expect(
         releaseOutput.match(new RegExp(`Generating an entry in `, 'g')).length
-      ).toEqual(2);
+      ).toEqual(3);
 
       expect(
         releaseOutput.match(
@@ -1023,6 +1293,66 @@ describe('nx release - independent projects', () => {
           )
         ).length
       ).toEqual(1);
+    });
+
+    it('should include dependent projects in the commit message when using --projects filter with updateDependents', async () => {
+      // pkg2 depends on pkg3 (set up in beforeAll)
+      updateJson('nx.json', () => {
+        return {
+          release: {
+            projectsRelationship: 'independent',
+            version: {
+              updateDependents: 'always',
+              git: {
+                commit: true,
+                tag: true,
+              },
+            },
+          },
+        };
+      });
+
+      runCommand(`git add .`);
+      runCommand(`git commit -m "chore: initial commit"`);
+
+      const headSHA = runCommand(`git rev-parse HEAD`).trim();
+
+      // Run release version filtering to only pkg3, but pkg2 depends on pkg3
+      // so pkg2 should also get a side-effect bump and appear in the commit message
+      const releaseOutput = runCLI(
+        `release version 999.9.9-dependent-commit-test.1 -p ${pkg3} --verbose`
+      );
+
+      // A new commit should have been created
+      expect(runCommand(`git rev-parse HEAD`).trim()).not.toEqual(headSHA);
+
+      // pkg3 should be versioned (explicitly filtered)
+      expect(
+        releaseOutput.match(
+          new RegExp(
+            `New version 999\\.9\\.9-dependent-commit-test\\.1 written`,
+            'g'
+          )
+        ).length
+      ).toBeGreaterThanOrEqual(1);
+
+      // pkg2 should also be versioned (dependent of pkg3)
+      expect(releaseOutput).toContain(
+        `Applied semver relative bump "patch", because a dependency was bumped`
+      );
+
+      // The commit message should include BOTH pkg3 (explicitly filtered)
+      // and pkg2 (dependent that received a side-effect bump)
+      const commitMessage = runCommand(
+        `git --no-pager log -1 --pretty=format:%B`
+      ).trim();
+      expect(commitMessage).toContain(`- project: ${pkg3}`);
+      expect(commitMessage).toContain(`- project: ${pkg2}`);
+
+      // Tags should also include both projects
+      const tagsAtHead = runCommand('git tag --points-at HEAD');
+      expect(tagsAtHead).toContain(`${pkg3}@`);
+      expect(tagsAtHead).toContain(`${pkg2}@`);
     });
   });
 });

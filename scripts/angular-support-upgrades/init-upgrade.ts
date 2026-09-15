@@ -10,12 +10,13 @@
  *
  */
 import { execSync } from 'child_process';
+import { prerelease } from 'semver';
 import { buildMigrations } from './build-migrations';
 import { fetchVersionsFromRegistry } from './fetch-versions-from-registry';
-import { updatePackageJsonForAngular } from './update-package-jsons';
+import { updatePackageDependencies } from './update-package-jsons';
 import { updateVersionUtils } from './update-version-utils';
 
-const yargs = require('yargs/yargs');
+const yargs = require('yargs');
 const { hideBin } = require('yargs/helpers');
 const argv = yargs(hideBin(process.argv)).argv;
 
@@ -33,20 +34,33 @@ async function run() {
   const packageVersionMap = await fetchVersionsFromRegistry(
     argv.angularVersion
   );
-  await updatePackageJsonForAngular(packageVersionMap);
+
+  const isPrerelease =
+    prerelease(packageVersionMap.get('@angular/cli')!) !== null;
+  await updatePackageDependencies(packageVersionMap, isPrerelease);
   await buildMigrations(
     packageVersionMap,
     argv.targetNxVersion,
-    argv.targetNxMigrationVersion
+    argv.targetNxMigrationVersion,
+    isPrerelease
   );
-  updateVersionUtils(packageVersionMap);
+  updateVersionUtils(packageVersionMap, isPrerelease);
 
   console.log('⏳ - Installing packages...');
-  execSync('pnpm install', { stdio: 'inherit', encoding: 'utf8' });
+  execSync('pnpm install', {
+    stdio: 'inherit',
+    encoding: 'utf8',
+
+    windowsHide: false,
+  });
   console.log('✅ - Finished installing packages!');
 
   console.log('⏳ - Formatting files...');
-  execSync('pnpm nx format', { stdio: 'inherit', encoding: 'utf8' });
+  execSync('pnpm nx format', {
+    stdio: 'inherit',
+    encoding: 'utf8',
+    windowsHide: false,
+  });
   console.log('✅ - Finished creating migrations!');
 }
 

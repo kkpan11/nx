@@ -1,4 +1,5 @@
-interface BaseSchema {
+interface Schema {
+  buildTarget: string;
   port?: number;
   host?: string;
   proxyConfig?: string;
@@ -11,6 +12,7 @@ interface BaseSchema {
   liveReload?: boolean;
   publicHost?: string;
   allowedHosts?: string[];
+  define?: Record<string, string>;
   servePath?: string;
   disableHostCheck?: boolean;
   hmr?: boolean;
@@ -21,19 +23,10 @@ interface BaseSchema {
   prebundle?: boolean | { exclude: string[] };
   buildLibsFromSource?: boolean;
   esbuildMiddleware?: string[];
+  watchDependencies?: boolean;
 }
 
-export type SchemaWithBrowserTarget = BaseSchema & {
-  browserTarget: string;
-};
-
-export type SchemaWithBuildTarget = BaseSchema & {
-  buildTarget: string;
-};
-
-export type Schema = SchemaWithBrowserTarget | SchemaWithBuildTarget;
-
-export type NormalizedSchema = SchemaWithBuildTarget & {
+export type NormalizedSchema = Schema & {
   liveReload: boolean;
   open: boolean;
   ssl: boolean;

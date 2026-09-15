@@ -1,0 +1,128 @@
+import { type Tree, ensurePackage, joinPathFragments } from '@nx/devkit';
+import { nxVersion } from '../../../../utils/versions';
+import { reactRouterSupportsVite8 } from '../../../../utils/version-utils';
+import { NormalizedSchema, Schema } from '../../schema';
+
+export async function setupViteConfiguration(
+  tree: Tree,
+  options: NormalizedSchema<Schema>,
+  tasks: any[]
+) {
+  const { createOrEditViteConfig, viteConfigurationGenerator } = ensurePackage<
+    typeof import('@nx/vite')
+  >('@nx/vite', nxVersion);
+  // We recommend users use `import.meta.env.MODE` and other variables in their code to differentiate between production and development.
+  // See: https://vite.dev/guide/env-and-mode.html
+  if (
+    tree.exists(joinPathFragments(options.appProjectRoot, 'src/environments'))
+  ) {
+    tree.delete(joinPathFragments(options.appProjectRoot, 'src/environments'));
+  }
+
+  const reactRouterFrameworkConfig = {
+    imports: [`import { reactRouter } from '@react-router/dev/vite'`],
+    plugins: ['!process.env.VITEST && reactRouter()'],
+  };
+
+  const baseReactConfig = {
+    imports: [
+      options.compiler === 'swc'
+        ? `import react from '@vitejs/plugin-react-swc'`
+        : `import react from '@vitejs/plugin-react'`,
+    ],
+    plugins: ['react()'],
+  };
+
+  // @react-router/dev < 7.14.0 caps its Vite peer dep at ^7, so fall back to
+  // Vite 7 when an older version is already installed in the workspace.
+  const forceViteV7 = options.useReactRouter && !reactRouterSupportsVite8(tree);
+
+  const viteTask = await viteConfigurationGenerator(tree, {
+    uiFramework: 'react',
+    project: options.projectName,
+    newProject: true,
+    includeVitest: options.unitTestRunner === 'vitest',
+    inSourceTests: options.inSourceTests,
+    compiler: options.compiler,
+    skipFormat: true,
+    addPlugin: options.addPlugin,
+    projectType: 'application',
+    port: options.port,
+    ...(forceViteV7 ? { useViteV7: true } : {}),
+  });
+  tasks.push(viteTask);
+  createOrEditViteConfig(
+    tree,
+    {
+      project: options.projectName,
+      includeLib: false,
+      includeVitest: options.unitTestRunner === 'vitest',
+      inSourceTests: options.inSourceTests,
+      rolldownOptionsExternal: [
+        "'react'",
+        "'react-dom'",
+        "'react/jsx-runtime'",
+      ],
+      port: options.port,
+      previewPort: options.port,
+      useEsmExtension: true,
+      ...(options.useReactRouter
+        ? reactRouterFrameworkConfig
+        : baseReactConfig),
+    },
+    false
+  );
+}
+
+export async function setupVitestConfiguration(
+  tree: Tree,
+  options: NormalizedSchema<Schema>,
+  tasks: any[]
+) {
+  const { createOrEditViteConfig } = ensurePackage<typeof import('@nx/vite')>(
+    '@nx/vite',
+    nxVersion
+  );
+  ensurePackage('@nx/vitest', nxVersion);
+  const {
+    configurationGenerator,
+  }: typeof import('@nx/vitest/generators') = require('@nx/vitest/generators');
+
+  const vitestTask = await configurationGenerator(tree, {
+    uiFramework: 'react',
+    coverageProvider: 'v8',
+    project: options.projectName,
+    inSourceTests: options.inSourceTests,
+    skipFormat: true,
+    addPlugin: options.addPlugin,
+  });
+  tasks.push(vitestTask);
+  createOrEditViteConfig(
+    tree,
+    {
+      project: options.projectName,
+      includeLib: false,
+      includeVitest: true,
+      inSourceTests: options.inSourceTests,
+      rolldownOptionsExternal: [
+        "'react'",
+        "'react-dom'",
+        "'react/jsx-runtime'",
+      ],
+      imports: [
+        options.compiler === 'swc'
+          ? `import react from '@vitejs/plugin-react-swc'`
+          : `import react from '@vitejs/plugin-react'`,
+      ],
+      plugins: ['react()'],
+      useEsmExtension: true,
+    },
+    true
+  );
+  if (options.bundler === 'rsbuild') {
+    tree.rename(
+      joinPathFragments(options.appProjectRoot, 'vite.config.mts'),
+      joinPathFragments(options.appProjectRoot, 'vitest.config.mts')
+    );
+  }
+}

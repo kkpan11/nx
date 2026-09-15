@@ -1,10 +1,15 @@
 import type { Tree } from '@nx/devkit';
-import { addProjectConfiguration, joinPathFragments } from '@nx/devkit';
+import { addBuildTargetDefaults } from '@nx/devkit/internal';
+import {
+  addProjectConfiguration,
+  joinPathFragments,
+  readJson,
+} from '@nx/devkit';
+import { addReleaseConfigForNonTsSolution } from '@nx/js/internal';
 import type { AngularProjectConfiguration } from '../../../utils/types';
 import type { NormalizedSchema } from './normalized-schema';
-import { addBuildTargetDefaults } from '@nx/devkit/src/generators/add-build-target-defaults';
 
-export function addProject(
+export async function addProject(
   tree: Tree,
   libraryOptions: NormalizedSchema['libraryOptions']
 ) {
@@ -30,17 +35,25 @@ export function addProject(
       outputs: ['{workspaceRoot}/dist/{projectRoot}'],
       options: {
         project: `${libraryOptions.projectRoot}/ng-package.json`,
+        tsConfig: `${libraryOptions.projectRoot}/tsconfig.lib.json`,
       },
       configurations: {
         production: {
           tsConfig: `${libraryOptions.projectRoot}/tsconfig.lib.prod.json`,
         },
-        development: {
-          tsConfig: `${libraryOptions.projectRoot}/tsconfig.lib.json`,
-        },
+        development: {},
       },
       defaultConfiguration: 'production',
     };
+
+    if (libraryOptions.publishable) {
+      const nxJson = readJson(tree, 'nx.json');
+      await addReleaseConfigForNonTsSolution(
+        tree,
+        libraryOptions.name,
+        project
+      );
+    }
   }
 
   addProjectConfiguration(tree, libraryOptions.name, project);

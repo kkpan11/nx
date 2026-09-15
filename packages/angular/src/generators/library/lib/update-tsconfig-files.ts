@@ -1,0 +1,151 @@
+import { joinPathFragments, type Tree, updateJson } from '@nx/devkit';
+import {
+  addTsConfigPath,
+  extractTsConfigBase,
+  getRelativePathToRootTsConfig,
+  getRootTsConfigFileName,
+} from '@nx/js';
+import { getNeededCompilerOptionOverrides } from '@nx/js/internal';
+import { getDefinedCompilerOption } from '../../utils/tsconfig-utils';
+import { updateProjectRootTsConfig } from '../../utils/update-project-root-tsconfig';
+import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
+import type { NormalizedSchema } from './normalized-schema';
+
+export function updateTsConfigFiles(
+  tree: Tree,
+  options: NormalizedSchema['libraryOptions']
+) {
+  extractTsConfigBase(tree);
+  updateProjectConfig(tree, options);
+  updateProjectIvyConfig(tree, options);
+
+  // Only add tsconfig path mapping if skipTsConfig is not true
+  if (!options.skipTsConfig) {
+    addTsConfigPath(tree, options.importPath, [
+      joinPathFragments(options.projectRoot, './src', 'index.ts'),
+    ]);
+  }
+
+  const compilerOptions: Record<string, any> = {
+    skipLibCheck: true,
+    experimentalDecorators: true,
+    importHelpers: true,
+    isolatedModules: true,
+    target: 'es2022',
+    moduleResolution: 'bundler',
+    ...(options.strict
+      ? {
+          strict: true,
+          noImplicitOverride: true,
+          noPropertyAccessFromIndexSignature: true,
+          noImplicitReturns: true,
+          noFallthroughCasesInSwitch: true,
+        }
+      : {}),
+  };
+
+  const rootTsConfigPath = getRootTsConfigFileName(tree);
+
+  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
+  // Angular warns about emitDecoratorMetadata when isolatedModules is enabled,
+  // so disable it if it's set in the root tsconfig.
+  if (
+    getDefinedCompilerOption(
+      tree,
+      rootTsConfigPath,
+      'emitDecoratorMetadata'
+    ) === true
+  ) {
+    compilerOptions.emitDecoratorMetadata = false;
+  }
+  if (angularMajorVersion >= 21) {
+    compilerOptions.moduleResolution = 'bundler';
+  }
+  compilerOptions.module = 'preserve';
+
+  const tsconfigPath = joinPathFragments(options.projectRoot, 'tsconfig.json');
+  updateJson(tree, tsconfigPath, (json) => {
+    json.compilerOptions = {
+      ...json.compilerOptions,
+      ...compilerOptions,
+    };
+    json.compilerOptions = getNeededCompilerOptionOverrides(
+      tree,
+      json.compilerOptions,
+      rootTsConfigPath
+    );
+
+    if (options.strict) {
+      json.angularCompilerOptions = {
+        ...json.angularCompilerOptions,
+        strictInjectionParameters: true,
+        strictInputAccessModifiers: true,
+        typeCheckHostBindings: angularMajorVersion === 20 ? true : undefined,
+        strictTemplates: true,
+      };
+    }
+
+    return json;
+  });
+
+  if (options.unitTestRunner === 'jest') {
+    const tsconfigSpecPath = joinPathFragments(
+      options.projectRoot,
+      'tsconfig.spec.json'
+    );
+    updateJson(tree, tsconfigSpecPath, (json) => {
+      json.compilerOptions = {
+        ...json.compilerOptions,
+        module: 'commonjs',
+        moduleResolution: 'node10',
+      };
+      json.compilerOptions = getNeededCompilerOptionOverrides(
+        tree,
+        json.compilerOptions,
+        tsconfigPath
+      );
+      return json;
+    });
+  }
+}
+
+function updateProjectConfig(
+  host: Tree,
+  options: NormalizedSchema['libraryOptions']
+) {
+  updateJson(host, `${options.projectRoot}/tsconfig.lib.json`, (json) => {
+    json.include = ['src/**/*.ts'];
+    json.exclude = [
+      ...new Set([
+        ...(json.exclude || []),
+        'src/**/*.spec.ts',
+        'src/**/*.test.ts',
+      ]),
+    ];
+    return json;
+  });
+
+  // tsconfig.json
+  updateProjectRootTsConfig(
+    host,
+    options.projectRoot,
+    getRelativePathToRootTsConfig(host, options.projectRoot)
+  );
+}
+
+function updateProjectIvyConfig(
+  host: Tree,
+  options: NormalizedSchema['libraryOptions']
+) {
+  if (options.buildable || options.publishable) {
+    return updateJson(
+      host,
+      `${options.projectRoot}/tsconfig.lib.prod.json`,
+      (json) => {
+        json.angularCompilerOptions['compilationMode'] =
+          options.compilationMode === 'full' ? undefined : 'partial';
+        return json;
+      }
+    );
+  }
+}

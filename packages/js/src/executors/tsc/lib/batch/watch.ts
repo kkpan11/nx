@@ -1,7 +1,7 @@
 import { logger } from '@nx/devkit';
-import { daemonClient } from 'nx/src/daemon/client/client';
 import { join } from 'path';
 import type { TaskInfo } from './types';
+import { daemonClient } from '@nx/devkit/internal';
 
 export async function watchTaskProjectsPackageJsonFileChanges(
   taskInfos: TaskInfo[],
@@ -17,8 +17,14 @@ export async function watchTaskProjectsPackageJsonFileChanges(
   const unregisterFileWatcher = await daemonClient.registerFileWatcher(
     { watchProjects: projects },
     (err, data) => {
-      if (err === 'closed') {
-        logger.error(`Watch error: Daemon closed the connection`);
+      if (err === 'reconnecting') {
+        // Silent - daemon restarts automatically on lockfile changes
+        return;
+      } else if (err === 'reconnected') {
+        // Silent - reconnection succeeded
+        return;
+      } else if (err === 'closed') {
+        logger.error(`Failed to reconnect to daemon after multiple attempts`);
         process.exit(1);
       } else if (err) {
         logger.error(`Watch error: ${err?.message ?? 'Unknown'}`);
@@ -46,12 +52,18 @@ export async function watchTaskProjectsFileChangesForAssets(
   const unregisterFileWatcher = await daemonClient.registerFileWatcher(
     {
       watchProjects: taskInfos.map((t) => t.context.projectName),
-      includeDependentProjects: true,
+      includeDependencies: true,
       includeGlobalWorkspaceFiles: true,
     },
     (err, data) => {
-      if (err === 'closed') {
-        logger.error(`Watch error: Daemon closed the connection`);
+      if (err === 'reconnecting') {
+        // Silent - daemon restarts automatically on lockfile changes
+        return;
+      } else if (err === 'reconnected') {
+        // Silent - reconnection succeeded
+        return;
+      } else if (err === 'closed') {
+        logger.error(`Failed to reconnect to daemon after multiple attempts`);
         process.exit(1);
       } else if (err) {
         logger.error(`Watch error: ${err?.message ?? 'Unknown'}`);

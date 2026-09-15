@@ -1,7 +1,9 @@
 import type { Tree } from '@nx/devkit';
+import { joinPathFragments, names } from '@nx/devkit';
+import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/internal';
+import { getModuleTypeSeparator } from '../../utils/artifact-types';
+import { validateClassName } from '../../utils/validations';
 import type { NormalizedSchema, Schema } from '../schema';
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
-import { names } from '@nx/devkit';
 
 export async function normalizeOptions(
   tree: Tree,
@@ -14,19 +16,23 @@ export async function normalizeOptions(
     filePath,
     project: projectName,
   } = await determineArtifactNameAndDirectoryOptions(tree, {
-    artifactType: 'directive',
-    callingGenerator: '@nx/angular:scam-directive',
     name: options.name,
-    directory: options.directory ?? options.path,
-    flat: options.flat,
-    nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-    project: options.project,
-    suffix: 'directive',
+    path: options.path,
+    suffix: options.type,
+    allowedFileExtensions: ['ts'],
+    fileExtension: 'ts',
   });
 
   const { className } = names(name);
-  const { className: suffixClassName } = names('directive');
+  const suffixClassName = options.type ? names(options.type).className : '';
   const symbolName = `${className}${suffixClassName}`;
+  validateClassName(symbolName);
+
+  const moduleTypeSeparator = getModuleTypeSeparator(tree);
+  const modulePath = joinPathFragments(
+    directory,
+    `${name}${moduleTypeSeparator}module.ts`
+  );
 
   return {
     ...options,
@@ -38,5 +44,6 @@ export async function normalizeOptions(
     name,
     symbolName,
     projectName,
+    modulePath,
   };
 }

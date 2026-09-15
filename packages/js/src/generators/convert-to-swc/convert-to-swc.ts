@@ -8,6 +8,7 @@ import {
   updateProjectConfiguration,
 } from '@nx/devkit';
 import { join } from 'path';
+import { assertSupportedTypescriptVersion } from '../../utils/assert-supported-typescript-version';
 import { addSwcConfig } from '../../utils/swc/add-swc-config';
 import { addSwcDependencies } from '../../utils/swc/add-swc-dependencies';
 import { swcHelpersVersion } from '../../utils/versions';
@@ -17,16 +18,19 @@ export async function convertToSwcGenerator(
   tree: Tree,
   schema: ConvertToSwcGeneratorSchema
 ) {
+  assertSupportedTypescriptVersion(tree);
+
   const options = normalizeOptions(schema);
   const projectConfiguration = readProjectConfiguration(tree, options.project);
 
-  updateProjectBuildTargets(
+  const updated = updateProjectBuildTargets(
     tree,
     projectConfiguration,
     options.project,
     options.targets
   );
-  return checkSwcDependencies(tree, projectConfiguration);
+
+  return updated ? checkSwcDependencies(tree, projectConfiguration) : () => {};
 }
 
 function normalizeOptions(
@@ -47,18 +51,20 @@ function updateProjectBuildTargets(
   projectName: string,
   projectTargets: string[]
 ) {
+  let updated = false;
   for (const target of projectTargets) {
-    const targetConfiguration = projectConfiguration.targets[target];
-    if (
-      !targetConfiguration ||
-      (targetConfiguration.executor !== '@nx/js:tsc' &&
-        targetConfiguration.executor !== '@nrwl/js:tsc')
-    )
+    const targetConfiguration = projectConfiguration.targets?.[target];
+    if (!targetConfiguration || targetConfiguration.executor !== '@nx/js:tsc')
       continue;
     targetConfiguration.executor = '@nx/js:swc';
+    updated = true;
   }
 
-  updateProjectConfiguration(tree, projectName, projectConfiguration);
+  if (updated) {
+    updateProjectConfiguration(tree, projectName, projectConfiguration);
+  }
+
+  return updated;
 }
 
 function checkSwcDependencies(
@@ -96,7 +102,8 @@ function checkSwcDependencies(
       tree,
       { '@swc/helpers': swcHelpersVersion },
       {},
-      projectPackageJsonPath
+      projectPackageJsonPath,
+      true
     );
   }
 

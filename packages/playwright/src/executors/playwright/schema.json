@@ -3,6 +3,7 @@
   "version": 2,
   "title": "Playwright executor",
   "description": "Run Playwright tests.",
+  "x-deprecated": "The `@nx/playwright:playwright` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/playwright:convert-to-inferred` to migrate to the `@nx/playwright/plugin` inferred targets. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "type": "object",
   "properties": {
     "browser": {
@@ -20,6 +21,10 @@
     "debug": {
       "type": "boolean",
       "description": "Run tests with Playwright Inspector. Shortcut for 'PWDEBUG=1' environment variable and '--timeout=0',--max-failures=1 --headed --workers=1' options"
+    },
+    "lastFailed": {
+      "type": "boolean",
+      "description": "Run only the tests that failed in the last run"
     },
     "forbidOnly": {
       "type": "boolean",
@@ -105,18 +110,7 @@
     },
     "reporter": {
       "type": "string",
-      "enum": [
-        "list",
-        "line",
-        "dot",
-        "json",
-        "junit",
-        "null",
-        "github",
-        "html",
-        "blob"
-      ],
-      "description": "Reporter to use, comma-separated, can be 'list', 'line', 'dot', 'json', 'junit', 'null', 'github', 'html', 'blob'. To configure reporter options, use the playwright configuration."
+      "description": "Common Reporter values to use, comma-separated, 'list', 'line', 'dot', 'json', 'junit', 'null', 'github', 'html', 'blob'. To configure reporter options, use the playwright configuration."
     },
     "retries": {
       "type": "number",
@@ -162,6 +156,10 @@
       "type": "boolean",
       "description": "Skip running playwright install before running playwright tests. This is to ensure that playwright browsers are installed before running tests.",
       "default": false
+    },
+    "cacheDir": {
+      "type": "string",
+      "description": "Directory for Playwright internal cache (browser binaries, etc.). Sets the PWTEST_CACHE_DIR environment variable."
     }
   },
   "required": []

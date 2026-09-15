@@ -1,7 +1,11 @@
 import { workspaceRoot } from '@nx/devkit';
+import { getInstalledPackageVersion } from '@nx/devkit/internal';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import type { PlaywrightTestConfig } from '@playwright/test';
 import { lstatSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import { defineConfig } from '@playwright/test';
+import { lt } from 'semver';
+import { minPlaywrightVersionForBlobReports } from './versions';
 
 export interface NxPlaywrightOptions {
   /**
@@ -9,6 +13,18 @@ export interface NxPlaywrightOptions {
    * @default './src'
    **/
   testDir?: string;
+
+  /**
+   * Open the html report after the test run.
+   * @default 'on-failure'
+   */
+  openHtmlReport?: 'always' | 'never' | 'on-failure';
+  /**
+   * Whether to generate blob reports. Useful when running atomized tasks in CI
+   * and you want to merge the reports.
+   * @default `!!process.env['CI']`
+   */
+  generateBlobReports?: boolean;
 }
 
 /**
@@ -25,8 +41,11 @@ export interface NxPlaywrightOptions {
  *
  * you can easily extend this within your playwright config via spreading the preset
  * @example
+ * // Nx generates `playwright.config.mts` (ESM). Pass `import.meta.dirname`.
+ * // For hand-written CJS configs (`.cts` or `.ts` outside a `type: "module"`
+ * // workspace), pass `__filename` instead.
  * export default defineConfig({
- *   ...nxE2EPreset(__filename, options)
+ *   ...nxE2EPreset(import.meta.dirname, options)
  *   // add your own config here
  * })
  *
@@ -43,22 +62,49 @@ export function nxE2EPreset(
   const projectPath = relative(workspaceRoot, normalizedPath);
   const offset = relative(normalizedPath, workspaceRoot);
 
-  const testResultOuputDir = join(
-    offset,
-    'dist',
-    '.playwright',
-    projectPath,
-    'test-output'
-  );
-  const reporterOutputDir = join(
-    offset,
-    'dist',
-    '.playwright',
-    projectPath,
-    'playwright-report'
-  );
+  const isTsSolutionSetup = isUsingTsSolutionSetup();
 
-  return defineConfig({
+  const testResultOuputDir = isTsSolutionSetup
+    ? 'test-output/playwright/output'
+    : join(offset, 'dist', '.playwright', projectPath, 'test-output');
+
+  const reporters = [];
+  reporters.push([
+    'html',
+    {
+      outputFolder: isTsSolutionSetup
+        ? 'test-output/playwright/report'
+        : join(offset, 'dist', '.playwright', projectPath, 'playwright-report'),
+      open: options?.openHtmlReport ?? 'on-failure',
+    },
+  ]);
+  if (options?.generateBlobReports === true) {
+    const installed = getInstalledPackageVersion('@playwright/test');
+    if (installed && lt(installed, minPlaywrightVersionForBlobReports)) {
+      throw new Error(
+        `The "blob" reporter requires "@playwright/test" version ${minPlaywrightVersionForBlobReports} or greater. You are currently using version ${installed}. Either upgrade "@playwright/test" or set "generateBlobReports" to false.`
+      );
+    }
+  }
+  const shouldGenerateBlobReports =
+    options?.generateBlobReports ?? !!process.env['CI'];
+  if (shouldGenerateBlobReports) {
+    reporters.push([
+      'blob',
+      {
+        outputDir: isTsSolutionSetup
+          ? 'test-output/playwright/blob-report'
+          : join(offset, 'dist', '.playwright', projectPath, 'blob-report'),
+      },
+    ]);
+  }
+
+  // Plain object on purpose: consumers spread this into their own
+  // `defineConfig(...)` call. Calling `defineConfig` here would require
+  // `@playwright/test` at runtime, which crashes when the preset package and
+  // the consuming workspace resolve different copies of it (playwright
+  // refuses to be loaded twice in one process).
+  return {
     testDir: options?.testDir ?? './src',
     outputDir: testResultOuputDir,
     /* Run tests in files in parallel */
@@ -70,13 +116,6 @@ export function nxE2EPreset(
     /* Opt out of parallel tests on CI. */
     workers: process.env.CI ? 1 : undefined,
     /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-    reporter: [
-      [
-        'html',
-        {
-          outputFolder: reporterOutputDir,
-        },
-      ],
-    ],
-  });
+    reporter: [...reporters],
+  } satisfies PlaywrightTestConfig;
 }

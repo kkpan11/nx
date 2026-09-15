@@ -13,7 +13,7 @@ export let registeredFileWatcherSockets: {
   config: {
     watchProjects: string[] | 'all';
     includeGlobalWorkspaceFiles: boolean;
-    includeDependentProjects: boolean;
+    includeDependencies: boolean;
   };
 }[] = [];
 
@@ -25,6 +25,33 @@ export function removeRegisteredFileWatcherSocket(socket: Socket) {
 
 export function hasRegisteredFileWatcherSockets() {
   return registeredFileWatcherSockets.length > 0;
+}
+
+/**
+ * The workspace watcher has died; no further change events will ever arrive.
+ * Registered clients are passive, so without this push they wait forever.
+ */
+export function notifyFileWatcherSocketsOfError(error: Error) {
+  if (!hasRegisteredFileWatcherSockets()) {
+    return;
+  }
+
+  queue.sendToQueue(async () => {
+    await Promise.all(
+      registeredFileWatcherSockets.map(({ socket }) =>
+        handleResult(
+          socket,
+          'FILE-WATCH-CHANGED',
+          () =>
+            Promise.resolve({
+              description: 'File watch error',
+              response: JSON.stringify({ watcherError: error.message }),
+            }),
+          'json'
+        )
+      )
+    );
+  });
 }
 
 export function notifyFileWatcherSockets(
@@ -62,7 +89,7 @@ export function notifyFileWatcherSockets(
             )
           );
 
-          if (config.includeDependentProjects) {
+          if (config.includeDependencies) {
             for (const project of watchedProjects) {
               for (const dep of findAllProjectNodeDependencies(
                 project,
@@ -89,14 +116,18 @@ export function notifyFileWatcherSockets(
         }
 
         if (changedProjects.length > 0 || changedFiles.length > 0) {
-          return handleResult(socket, 'FILE-WATCH-CHANGED', () =>
-            Promise.resolve({
-              description: 'File watch changed',
-              response: JSON.stringify({
-                changedProjects,
-                changedFiles,
+          return handleResult(
+            socket,
+            'FILE-WATCH-CHANGED',
+            () =>
+              Promise.resolve({
+                description: 'File watch changed',
+                response: JSON.stringify({
+                  changedProjects,
+                  changedFiles,
+                }),
               }),
-            })
+            'json'
           );
         }
       })

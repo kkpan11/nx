@@ -1,31 +1,128 @@
-import { Task } from '../config/task-graph';
 import { config as loadDotEnvFile } from 'dotenv';
 import { expand } from 'dotenv-expand';
+import { join } from 'node:path';
+import { ProjectGraph } from '../config/project-graph';
+import { Task } from '../config/task-graph';
 import { workspaceRoot } from '../utils/workspace-root';
+import { getEnvPathsForTask } from './task-env-paths';
+
+/**
+ * Resolves the FORCE_COLOR value for forked child processes.
+ *
+ * When the user sets FORCE_COLOR=0, bin/nx.ts deletes it from process.env
+ * (workaround for picocolors treating "0" as truthy) and saves the original
+ * value in NX_ORIGINAL_FORCE_COLOR. Without this check, the undefined
+ * FORCE_COLOR would default to 'true', re-enabling colors in all children.
+ */
+export function getForceColorForChild(): string {
+  if (process.env.FORCE_COLOR !== undefined) {
+    return process.env.FORCE_COLOR;
+  }
+  if (process.env.NX_ORIGINAL_FORCE_COLOR === '0') {
+    return '0';
+  }
+  return 'true';
+}
 
 export function getEnvVariablesForBatchProcess(
   skipNxCache: boolean,
   captureStderr: boolean
 ): NodeJS.ProcessEnv {
-  return {
+  const res = {
     // User Process Env Variables override Dotenv Variables
     ...process.env,
     // Nx Env Variables overrides everything
     ...getNxEnvVariablesForForkedProcess(
-      process.env.FORCE_COLOR === undefined ? 'true' : process.env.FORCE_COLOR,
+      getForceColorForChild(),
       skipNxCache,
       captureStderr
     ),
   };
+  // NX_ORIGINAL_FORCE_COLOR is an internal signal and should not leak into child processes
+  delete res.NX_ORIGINAL_FORCE_COLOR;
+  return res;
 }
 
-export function getTaskSpecificEnv(task: Task) {
+// The orchestrator now calls this eagerly during the coordinator pre-hash
+// in addition to processTask (and again in hashBatchTasks), so the same
+// task hits this function multiple times per run. Each call reads 3+ .env
+// files from disk — memoize by task.id to skip the repeat work.
+//
+// Cache lifetime is the current Nx invocation: the function is only called
+// from CLI/orchestrator code (not the long-lived daemon), so the map is
+// scoped to a single run. Callers must not mutate the returned env — they
+// already spread it into new objects before adding task-specific overrides
+// (see getEnvVariablesForTask).
+const taskSpecificEnvCache = new Map<string, NodeJS.ProcessEnv>();
+
+export function getTaskSpecificEnv(task: Task, graph: ProjectGraph) {
+  const cached = taskSpecificEnvCache.get(task.id);
+  if (cached) return cached;
+
   // Unload any dot env files at the root of the workspace that were loaded on init of Nx.
   const taskEnv = unloadDotEnvFiles({ ...process.env });
-  return process.env.NX_LOAD_DOT_ENV_FILES === 'true'
-    ? loadDotEnvFilesForTask(task, taskEnv)
-    : // If not loading dot env files, ensure env vars created by system are still loaded
-      taskEnv;
+  const env =
+    process.env.NX_LOAD_DOT_ENV_FILES === 'true'
+      ? loadDotEnvFilesForTask(task, graph, taskEnv)
+      : // If not loading dot env files, ensure env vars created by system are still loaded
+        taskEnv;
+  taskSpecificEnvCache.set(task.id, env);
+  return env;
+}
+
+/**
+ * Reconstructs, at graph-construction time, the env a task would see: the
+ * root dotenv files Nx loaded at init are unloaded from the ambient env, then
+ * the dotenv files the task would load (`.env.<target>`, project-scoped
+ * `.env`, ...) are applied, so a task-scoped file wins over an init-time root
+ * load. The unload compares values, not provenance: a variable whose value
+ * differs from the root file's is kept and wins over the task files, while a
+ * shell-set value equal to the root file's is unloaded like the file's own.
+ *
+ * `createNodes` runs before any task, so the per-task dotenv files that
+ * `getTaskSpecificEnv` loads at run time are not in `process.env` yet. A plugin
+ * inferring targets from a config that reads `process.env` needs those values
+ * to resolve the config the way the task will. This mirrors
+ * `loadDotEnvFilesForTask` but takes the target coordinates directly (there is
+ * no `Task`/graph yet) and gates on `!== 'false'` rather than `=== 'true'`: the
+ * `'true'` marker is only stamped once the graph exists (`run-command.ts`),
+ * which is after this runs. Only the dotenv overlay is reconstructed: run-time
+ * env like `NX_TASK_TARGET_*` or `NX_TASK_HASH` is not included.
+ *
+ * `baseEnv` is the ambient env the overlay applies to, defaulting to the live
+ * `process.env`. A caller that runs config files in-process passes a snapshot
+ * taken under its load lock instead: a concurrent load's transient env writes
+ * would otherwise be read as ambient and mask the task files' values.
+ */
+export function getGraphTimeDotEnvForTask(
+  projectRoot: string,
+  target: string,
+  configuration?: string,
+  nonAtomizedTarget?: string,
+  baseEnv: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  // Unload the root dotenv files loaded on init of Nx so the task-scoped files win.
+  const env = unloadDotEnvFiles({ ...baseEnv });
+  // Fall back to the live env when the snapshot has no entry: Windows resolves
+  // `process.env` case-insensitively but a plain snapshot keeps whichever
+  // spelling was exported, so a lowercase opt-out is invisible here otherwise.
+  if (
+    (baseEnv.NX_LOAD_DOT_ENV_FILES ?? process.env.NX_LOAD_DOT_ENV_FILES) ===
+    'false'
+  ) {
+    return env;
+  }
+  const dotEnvFiles = getEnvPathsForTask(
+    projectRoot,
+    target,
+    configuration,
+    nonAtomizedTarget
+  );
+  loadAndExpandDotEnvFile(
+    dotEnvFiles.map((file) => join(workspaceRoot, file)),
+    env
+  );
+  return env;
 }
 
 export function getEnvVariablesForTask(
@@ -36,7 +133,7 @@ export function getEnvVariablesForTask(
   captureStderr: boolean,
   outputPath: string,
   streamOutput: boolean
-) {
+): NodeJS.ProcessEnv {
   const res = {
     // Start With Dotenv Variables
     ...taskSpecificEnv,
@@ -59,6 +156,9 @@ export function getEnvVariablesForTask(
   }
   // we don't reset NX_BASE or NX_HEAD because those are set by the user and should be preserved
   delete res.NX_SET_CLI;
+  // NX_ORIGINAL_FORCE_COLOR is an internal signal used by getForceColorForChild()
+  // and should not leak into child processes
+  delete res.NX_ORIGINAL_FORCE_COLOR;
   return res;
 }
 
@@ -94,7 +194,7 @@ function getNxEnvVariablesForTask(
   captureStderr: boolean,
   outputPath: string,
   streamOutput: boolean
-) {
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     NX_TASK_TARGET_PROJECT: task.target.project,
     NX_TASK_TARGET_TARGET: task.target.target,
@@ -109,6 +209,10 @@ function getNxEnvVariablesForTask(
     env.NX_TERMINAL_CAPTURE_STDERR = 'true';
   }
 
+  // Pass the root Nx process PID to nested processes for DB-based loop detection.
+  // The root PID is used as a key in the task_invocations table to track which tasks
+  // have been invoked across nested Nx processes.
+
   return {
     ...getNxEnvVariablesForForkedProcess(
       forceColor,
@@ -118,17 +222,25 @@ function getNxEnvVariablesForTask(
       streamOutput
     ),
     ...env,
+    // Ensure the TUI does not get spawned within the TUI if ever tasks invoke Nx again
+    NX_TUI: 'false',
+    // tracks the root PID for child nx tasks, used to verify nx is infinitely recursing through the same tasks
+    NX_INVOCATION_ROOT_PID:
+      process.env.NX_INVOCATION_ROOT_PID ?? String(process.pid),
   };
 }
 
 /**
- * This function loads a .env file and expands the variables in it.
- * It is going to override existing environmentVariables.
- * @param filename
- * @param environmentVariables
+ * This function loads one or more .env files and expands the variables in them.
+ * When multiple files are provided, all files are loaded first, then variable
+ * expansion happens once with the complete set of variables. This ensures
+ * cross-file variable references resolve correctly.
+ * @param filename the .env file(s) to load
+ * @param environmentVariables the object to load environment variables into
+ * @param override whether to override existing environment variables
  */
 export function loadAndExpandDotEnvFile(
-  filename: string,
+  filename: string | string[],
   environmentVariables: NodeJS.ProcessEnv,
   override = false
 ) {
@@ -162,73 +274,58 @@ export function unloadDotEnvFile(
   });
 }
 
-function getEnvFilesForTask(task: Task): string[] {
-  // Collect dot env files that may pertain to a task
-  return [
-    // Load DotEnv Files for a configuration in the project root
-    ...(task.target.configuration
-      ? [
-          `${task.projectRoot}/.env.${task.target.target}.${task.target.configuration}.local`,
-          `${task.projectRoot}/.env.${task.target.target}.${task.target.configuration}`,
-          `${task.projectRoot}/.env.${task.target.configuration}.local`,
-          `${task.projectRoot}/.env.${task.target.configuration}`,
-          `${task.projectRoot}/.${task.target.target}.${task.target.configuration}.local.env`,
-          `${task.projectRoot}/.${task.target.target}.${task.target.configuration}.env`,
-          `${task.projectRoot}/.${task.target.configuration}.local.env`,
-          `${task.projectRoot}/.${task.target.configuration}.env`,
-        ]
-      : []),
+function getOwnerTargetForTask(
+  task: Task,
+  graph: ProjectGraph
+): [string, string?] {
+  const project = graph.nodes[task.target.project];
+  if (project.data.metadata?.targetGroups) {
+    for (const targets of Object.values(project.data.metadata.targetGroups)) {
+      if (targets.includes(task.target.target)) {
+        for (const target of targets) {
+          // a target group can name a target the project does not define —
+          // inference plugins build the group and the targets separately, so
+          // the two can disagree. skip the phantom rather than dereferencing it.
+          if (project.data.targets[target]?.metadata?.nonAtomizedTarget) {
+            return [
+              target,
+              project.data.targets[target]?.metadata?.nonAtomizedTarget,
+            ];
+          }
+        }
+      }
+    }
+  }
+  return [task.target.target];
+}
 
-    // Load DotEnv Files for a target in the project root
-    `${task.projectRoot}/.env.${task.target.target}.local`,
-    `${task.projectRoot}/.env.${task.target.target}`,
-    `${task.projectRoot}/.${task.target.target}.local.env`,
-    `${task.projectRoot}/.${task.target.target}.env`,
-    `${task.projectRoot}/.env.local`,
-    `${task.projectRoot}/.local.env`,
-    `${task.projectRoot}/.env`,
+export function getEnvFilesForTask(task: Task, graph: ProjectGraph): string[] {
+  const [target, nonAtomizedTarget] = getOwnerTargetForTask(task, graph);
 
-    // Load DotEnv Files for a configuration in the workspace root
-    ...(task.target.configuration
-      ? [
-          `.env.${task.target.target}.${task.target.configuration}.local`,
-          `.env.${task.target.target}.${task.target.configuration}`,
-          `.env.${task.target.configuration}.local`,
-          `.env.${task.target.configuration}`,
-          `.${task.target.target}.${task.target.configuration}.local.env`,
-          `.${task.target.target}.${task.target.configuration}.env`,
-          `.${task.target.configuration}.local.env`,
-          `.${task.target.configuration}.env`,
-        ]
-      : []),
-
-    // Load DotEnv Files for a target in the workspace root
-    `.env.${task.target.target}.local`,
-    `.env.${task.target.target}`,
-    `.${task.target.target}.local.env`,
-    `.${task.target.target}.env`,
-
-    // Load base DotEnv Files at workspace root
-    `.local.env`,
-    `.env.local`,
-    `.env`,
-  ];
+  return getEnvPathsForTask(
+    task.projectRoot,
+    target,
+    task.target.configuration,
+    nonAtomizedTarget
+  );
 }
 
 function loadDotEnvFilesForTask(
   task: Task,
+  graph: ProjectGraph,
   environmentVariables: NodeJS.ProcessEnv
 ) {
-  const dotEnvFiles = getEnvFilesForTask(task);
-  for (const file of dotEnvFiles) {
-    loadAndExpandDotEnvFile(file, environmentVariables);
-  }
+  const dotEnvFiles = getEnvFilesForTask(task, graph);
+  loadAndExpandDotEnvFile(
+    dotEnvFiles.map((file) => join(workspaceRoot, file)),
+    environmentVariables
+  );
   return environmentVariables;
 }
 
 function unloadDotEnvFiles(environmentVariables: NodeJS.ProcessEnv) {
   for (const file of ['.env', '.local.env', '.env.local']) {
-    unloadDotEnvFile(file, environmentVariables);
+    unloadDotEnvFile(join(workspaceRoot, file), environmentVariables);
   }
   return environmentVariables;
 }

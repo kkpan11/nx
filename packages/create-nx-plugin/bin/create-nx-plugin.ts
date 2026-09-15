@@ -1,45 +1,45 @@
 #!/usr/bin/env node
-import chalk = require('chalk');
-import enquirer = require('enquirer');
+import { join } from 'path';
+import * as pc from 'picocolors';
 import yargs = require('yargs');
-
 import {
   determineDefaultBase,
+  determineLinterOptions,
   determineNxCloud,
   determinePackageManager,
-} from 'create-nx-workspace/src/internal-utils/prompts';
-import {
   withAllPrompts,
   withGitOptions,
   withNxCloud,
   withOptions,
   withPackageManager,
-} from 'create-nx-workspace/src/internal-utils/yargs-options';
-import { createWorkspace, CreateWorkspaceOptions } from 'create-nx-workspace';
-import { output } from 'create-nx-workspace/src/utils/output';
-import { NxCloud } from 'create-nx-workspace/src/utils/nx/nx-cloud';
-import type { PackageManager } from 'create-nx-workspace/src/utils/package-manager';
-import { showNxWarning } from 'create-nx-workspace/src/utils/nx/show-nx-warning';
-import { printNxCloudSuccessMessage } from 'create-nx-workspace/src/utils/nx/nx-cloud';
-import {
+  output,
   messages,
   recordStat,
-} from 'create-nx-workspace/src/utils/nx/ab-testing';
+  LINTERS,
+  textPrompt,
+} from 'create-nx-workspace/internal';
+import { createWorkspace, CreateWorkspaceOptions } from 'create-nx-workspace';
+import type {
+  Linter,
+  NxCloud,
+  PackageManager,
+} from 'create-nx-workspace/internal';
+import { Arguments } from 'yargs';
 
 export const yargsDecorator = {
-  'Options:': `${chalk.green`Options`}:`,
-  'Examples:': `${chalk.green`Examples`}:`,
-  boolean: `${chalk.blue`boolean`}`,
-  count: `${chalk.blue`count`}`,
-  string: `${chalk.blue`string`}`,
-  array: `${chalk.blue`array`}`,
-  required: `${chalk.blue`required`}`,
-  'default:': `${chalk.blue`default`}:`,
-  'choices:': `${chalk.blue`choices`}:`,
-  'aliases:': `${chalk.blue`aliases`}:`,
+  'Options:': `${pc.green(`Options`)}:`,
+  'Examples:': `${pc.green(`Examples`)}:`,
+  boolean: `${pc.blue(`boolean`)}`,
+  count: `${pc.blue(`count`)}`,
+  string: `${pc.blue(`string`)}`,
+  array: `${pc.blue(`array`)}`,
+  required: `${pc.blue(`required`)}`,
+  'default:': `${pc.blue(`default`)}:`,
+  'choices:': `${pc.blue(`choices`)}:`,
+  'aliases:': `${pc.blue(`aliases`)}:`,
 };
 
-const nxVersion = require('../package.json').version;
+const nxVersion = require(join('create-nx-plugin', 'package.json')).version;
 
 async function determinePluginName(
   parsedArgs: CreateNxPluginArguments
@@ -48,15 +48,11 @@ async function determinePluginName(
     return parsedArgs.pluginName;
   }
 
-  const results = await enquirer.prompt<{ pluginName: string }>([
-    {
-      name: 'pluginName',
-      message: `Plugin name                        `,
-      type: 'input',
-      validate: (s_1) => (s_1.length ? true : 'Plugin name cannot be empty'),
-    },
-  ]);
-  return results.pluginName;
+  return textPrompt({
+    message: `Plugin name                        `,
+    validate: (value) =>
+      value.length ? undefined : 'Plugin name cannot be empty',
+  });
 }
 
 async function determineCreatePackageName(
@@ -66,22 +62,18 @@ async function determineCreatePackageName(
     return parsedArgs.createPackageName;
   }
 
-  const results = await enquirer.prompt<{ createPackageName: string }>([
-    {
-      name: 'createPackageName',
-      message: `Create a package which can be used by npx to create a new workspace (Leave blank to not create this package)`,
-      type: 'input',
-    },
-  ]);
-  return results.createPackageName;
+  return textPrompt({
+    message: `Create a package which can be used by npx to create a new workspace (Leave blank to not create this package)`,
+  });
 }
 
-interface CreateNxPluginArguments {
+interface CreateNxPluginArguments extends CreateWorkspaceOptions {
   pluginName: string;
   createPackageName?: string;
   packageManager: PackageManager;
   allPrompts: boolean;
   nxCloud: NxCloud;
+  linter?: Linter;
 }
 
 export const commandsObject: yargs.Argv<CreateNxPluginArguments> = yargs
@@ -98,13 +90,26 @@ export const commandsObject: yargs.Argv<CreateNxPluginArguments> = yargs
       withOptions(
         yargs
           .positional('pluginName', {
-            describe: chalk.dim`Plugin name`,
+            describe: pc.dim(`Plugin name`),
             type: 'string',
             alias: ['name'],
           })
           .option('createPackageName', {
             describe: 'Name of the CLI package to create workspace with plugin',
             type: 'string',
+          })
+          // `choices` is load-bearing, not documentation: it rejects a typo at
+          // argv parse. The preset's own enum would catch it too, but only after
+          // the workspace has been created and installed.
+          .option('linter', {
+            describe: pc.dim(`Linter to use`),
+            choices: [...LINTERS],
+            type: 'string',
+          })
+          .option('interactive', {
+            describe: pc.dim(`Enable interactive mode`),
+            type: 'boolean',
+            default: true,
           }),
         withNxCloud,
         withAllPrompts,
@@ -113,7 +118,7 @@ export const commandsObject: yargs.Argv<CreateNxPluginArguments> = yargs
       ),
     async (argv: yargs.ArgumentsCamelCase<CreateNxPluginArguments>) => {
       await main(argv).catch((error) => {
-        const { version } = require('../package.json');
+        const { version } = require(join('create-nx-plugin', 'package.json'));
         output.error({
           title: `Something went wrong! v${version}`,
         });
@@ -122,16 +127,18 @@ export const commandsObject: yargs.Argv<CreateNxPluginArguments> = yargs
     },
     [normalizeArgsMiddleware]
   )
-  .help('help', chalk.dim`Show help`)
+  .help('help', pc.dim(`Show help`))
   .updateLocale(yargsDecorator)
   .version(
     'version',
-    chalk.dim`Show version`,
+    pc.dim(`Show version`),
     nxVersion
   ) as yargs.Argv<CreateNxPluginArguments>;
 
+let rawArgs: Arguments<CreateNxPluginArguments>;
+
 async function main(parsedArgs: yargs.Arguments<CreateNxPluginArguments>) {
-  const populatedArguments: CreateNxPluginArguments & CreateWorkspaceOptions = {
+  const populatedArguments: CreateNxPluginArguments = {
     ...parsedArgs,
     name: parsedArgs.pluginName.includes('/')
       ? parsedArgs.pluginName.split('/')[1]
@@ -146,25 +153,29 @@ async function main(parsedArgs: yargs.Arguments<CreateNxPluginArguments>) {
     ],
   });
 
-  const workspaceInfo = await createWorkspace(
+  const workspaceInfo = await createWorkspace<CreateNxPluginArguments>(
     `@nx/plugin@${nxVersion}`,
-    populatedArguments
+    populatedArguments,
+    rawArgs
   );
-
-  showNxWarning(parsedArgs.pluginName);
 
   await recordStat({
     nxVersion,
-    command: 'create-nx-workspace',
+    command: 'create-nx-plugin',
     useCloud: parsedArgs.nxCloud !== 'skip',
-    meta: [
-      messages.codeOfSelectedPromptMessage('setupCI'),
-      messages.codeOfSelectedPromptMessage('setupNxCloud'),
-    ],
+    meta: {
+      type: 'complete',
+      setupCIPrompt: messages.codeOfSelectedPromptMessage('setupCI'),
+      setupCloudPrompt: messages.codeOfSelectedPromptMessage('setupNxCloud'),
+      nxCloudArg: parsedArgs.nxCloud ?? '',
+      nxCloudArgRaw: rawArgs.nxCloud ?? '',
+      pushedToVcs: '',
+      connectUrl: workspaceInfo.connectUrl ?? '',
+    },
   });
 
   if (parsedArgs.nxCloud && workspaceInfo.nxCloudInfo) {
-    printNxCloudSuccessMessage(workspaceInfo.nxCloudInfo);
+    console.log(workspaceInfo.nxCloudInfo);
   }
 }
 
@@ -177,12 +188,23 @@ async function main(parsedArgs: yargs.Arguments<CreateNxPluginArguments>) {
 async function normalizeArgsMiddleware(
   argv: yargs.Arguments<CreateNxPluginArguments>
 ): Promise<void> {
+  rawArgs = { ...argv };
   try {
+    await recordStat({
+      nxVersion,
+      command: 'create-nx-plugin',
+      meta: {
+        type: 'start',
+      },
+      useCloud: argv.nxCloud !== 'skip',
+    });
+
     const pluginName = await determinePluginName(argv);
     const createPackageName = await determineCreatePackageName(argv);
     const packageManager = await determinePackageManager(argv);
     const defaultBase = await determineDefaultBase(argv);
     const nxCloud = await determineNxCloud(argv);
+    const linter = await determineLinterOptions(argv);
 
     Object.assign(argv, {
       pluginName,
@@ -190,6 +212,7 @@ async function normalizeArgsMiddleware(
       nxCloud,
       packageManager,
       defaultBase,
+      linter,
     } as Partial<CreateNxPluginArguments>);
   } catch (e) {
     console.error(e);

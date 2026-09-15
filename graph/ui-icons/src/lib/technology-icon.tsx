@@ -49,7 +49,7 @@ function UnknownTechnologyIcon({
       {...props}
       className={twMerge(
         'h-4 w-4',
-        'flex items-center justify-center rounded border border-slate-400 text-sm text-slate-400',
+        'flex items-center justify-center rounded-xs border border-slate-400 text-sm text-slate-400',
         props.className
       )}
       data-tooltip={showTooltip ? technology : null}
@@ -67,7 +67,8 @@ export function TechnologyIconMonochromatic({
   if (!technology) {
     return null;
   }
-  const Icon = MonochromaticTechnologyIconsMap[technology as any]?.icon;
+  const entry = MonochromaticTechnologyIconsMap[technology as any];
+  const Icon = entry?.icon;
 
   if (!Icon) {
     return (
@@ -82,7 +83,11 @@ export function TechnologyIconMonochromatic({
   return (
     <div
       {...props}
-      className={twMerge('text-slate-400', 'h-4 w-4', props.className)}
+      className={twMerge(
+        entry?.className ?? 'text-slate-400',
+        'h-4 w-4',
+        props.className
+      )}
       data-tooltip={showTooltip ? technology : null}
     >
       <Icon />

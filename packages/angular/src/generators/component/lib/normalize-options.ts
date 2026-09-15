@@ -1,15 +1,18 @@
 import type { Tree } from '@nx/devkit';
 import { names, readProjectConfiguration } from '@nx/devkit';
-import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/src/generators/artifact-name-and-directory-utils';
+import { determineArtifactNameAndDirectoryOptions } from '@nx/devkit/internal';
 import type { AngularProjectConfiguration } from '../../../utils/types';
 import { buildSelector, validateHtmlSelector } from '../../utils/selector';
+import { validateClassName } from '../../utils/validations';
+import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
 import type { NormalizedSchema, Schema } from '../schema';
 
 export async function normalizeOptions(
   tree: Tree,
   options: Schema
 ): Promise<NormalizedSchema> {
-  options.type ??= 'component';
+  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
+
   const {
     artifactName: name,
     directory,
@@ -17,19 +20,22 @@ export async function normalizeOptions(
     filePath,
     project: projectName,
   } = await determineArtifactNameAndDirectoryOptions(tree, {
-    artifactType: 'component',
-    callingGenerator: '@nx/angular:component',
     name: options.name,
-    directory: options.directory ?? options.path,
-    flat: options.flat,
-    nameAndDirectoryFormat: options.nameAndDirectoryFormat,
-    project: options.project,
-    suffix: options.type ?? 'component',
+    path: options.path,
+    suffix: options.type,
+    allowedFileExtensions: ['ts'],
+    fileExtension: 'ts',
   });
+  if (name.includes('/')) {
+    throw new Error(
+      `The component name '${name}' cannot contain a slash as it must be a valid JS symbol. Please use a different name.`
+    );
+  }
 
   const { className } = names(name);
-  const { className: suffixClassName } = names(options.type);
+  const suffixClassName = options.type ? names(options.type).className : '';
   const symbolName = `${className}${suffixClassName}`;
+  validateClassName(symbolName);
 
   const { prefix, root, sourceRoot } = readProjectConfiguration(
     tree,
@@ -44,7 +50,9 @@ export async function normalizeOptions(
     ...options,
     name,
     projectName,
-    changeDetection: options.changeDetection ?? 'Default',
+    changeDetection:
+      options.changeDetection ??
+      (angularMajorVersion >= 22 ? 'OnPush' : 'Default'),
     style: options.style ?? 'css',
     standalone: options.standalone ?? true,
     directory,

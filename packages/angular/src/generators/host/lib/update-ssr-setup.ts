@@ -6,14 +6,18 @@ import {
   readProjectConfiguration,
   updateProjectConfiguration,
 } from '@nx/devkit';
+import { getProjectSourceRoot } from '@nx/js/internal';
 import { join } from 'path';
 import {
   corsVersion,
   moduleFederationNodeVersion,
   typesCorsVersion,
 } from '../../../utils/versions';
-import { getInstalledAngularVersionInfo } from '../../utils/version-utils';
 import type { Schema } from '../schema';
+import {
+  getInstalledAngularVersionInfo,
+  supportsSsrAllowedHosts,
+} from '../../utils/version-utils';
 
 export async function updateSsrSetup(
   tree: Tree,
@@ -22,32 +26,26 @@ export async function updateSsrSetup(
   typescriptConfiguration: boolean
 ) {
   let project = readProjectConfiguration(tree, appName);
+  const sourceRoot = getProjectSourceRoot(project, tree);
 
   tree.rename(
-    joinPathFragments(project.sourceRoot, 'main.server.ts'),
-    joinPathFragments(project.sourceRoot, 'bootstrap.server.ts')
+    joinPathFragments(sourceRoot, 'main.server.ts'),
+    joinPathFragments(sourceRoot, 'bootstrap.server.ts')
   );
-  tree.write(
-    joinPathFragments(project.root, 'server.ts'),
-    "import('./src/main.server');"
-  );
+  const pathToServerEntry = joinPathFragments(sourceRoot, 'server.ts');
+  tree.write(pathToServerEntry, `import('./main.server');`);
 
   const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
-  generateFiles(
-    tree,
-    join(
-      __dirname,
-      '../files/common',
-      angularMajorVersion >= 17 ? 'v17+' : 'pre-v17'
-    ),
-    project.root,
-    {
-      appName,
-      browserBundleOutput: project.targets.build.options.outputPath,
-      standalone: options.standalone,
-      tmpl: '',
-    }
-  );
+  generateFiles(tree, join(__dirname, '../files/common'), project.root, {
+    appName,
+    browserBundleOutput: project.targets.build.options.outputPath,
+    standalone: options.standalone,
+    zoneless: options.zoneless,
+    useDefaultImport: angularMajorVersion >= 21,
+    angularMajorVersion,
+    supportsAllowedHosts: supportsSsrAllowedHosts(tree),
+    tmpl: '',
+  });
 
   const pathToTemplateFiles = typescriptConfiguration ? 'ts' : 'js';
 

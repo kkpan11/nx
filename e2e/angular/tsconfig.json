@@ -1,11 +1,24 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    "ignoreDeprecations": "6.0"
   },
   "include": [],
   "files": [],
   "references": [
+    {
+      "path": "../../packages/angular"
+    },
+    {
+      "path": "../utils"
+    },
+    {
+      "path": "../../packages/devkit"
+    },
+    {
+      "path": "../../packages/nx"
+    },
     {
       "path": "./tsconfig.spec.json"
     }

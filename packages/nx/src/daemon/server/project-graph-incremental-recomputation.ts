@@ -1,3 +1,4 @@
+import { Socket } from 'net';
 import { performance } from 'perf_hooks';
 import { readNxJson } from '../../config/nx-json';
 import {
@@ -7,45 +8,68 @@ import {
   ProjectGraphExternalNode,
 } from '../../config/project-graph';
 import { ProjectConfiguration } from '../../config/workspace-json-project-json';
-import { hashArray } from '../../hasher/file-hasher';
+import { hashArray, hashObject } from '../../hasher/file-hasher';
+import { NxWorkspaceFilesExternals } from '../../native';
 import { buildProjectGraphUsingProjectFileMap as buildProjectGraphUsingFileMap } from '../../project-graph/build-project-graph';
+import {
+  DaemonProjectGraphError,
+  ProjectConfigurationsError,
+  isAggregateProjectGraphError,
+} from '../../project-graph/error-types';
 import { updateFileMap } from '../../project-graph/file-map-utils';
 import {
   FileMapCache,
   nxProjectGraph,
   readFileMapCache,
   writeCache,
+  writeCacheIfStale,
 } from '../../project-graph/nx-deps-cache';
+import {
+  getPlugins,
+  getPluginsSeparated,
+  SeparatedPlugins,
+} from '../../project-graph/plugins/get-plugins';
+import type { LoadedNxPlugin } from '../../project-graph/plugins/loaded-nx-plugin';
+import { ConfigurationResult } from '../../project-graph/utils/project-configuration-utils';
+import { ConfigurationSourceMaps } from '../../project-graph/utils/project-configuration/source-maps';
 import {
   retrieveProjectConfigurations,
   retrieveWorkspaceFiles,
 } from '../../project-graph/utils/retrieve-workspace-files';
 import { fileExists } from '../../utils/fileutils';
 import {
+  rescanAndDiffInContext,
   resetWorkspaceContext,
   updateFilesInContext,
 } from '../../utils/workspace-context';
 import { workspaceRoot } from '../../utils/workspace-root';
-import { notifyFileWatcherSockets } from './file-watching/file-watcher-sockets';
-import { serverLogger } from './logger';
-import { NxWorkspaceFilesExternals } from '../../native';
-import { ConfigurationResult } from '../../project-graph/utils/project-configuration-utils';
-import { LoadedNxPlugin } from '../../project-graph/plugins/internal-api';
-import { getPlugins } from './plugins';
+import { ProgressTopics } from '../../utils/progress-topics';
 import {
-  DaemonProjectGraphError,
-  ProjectConfigurationsError,
-  isAggregateProjectGraphError,
-} from '../../project-graph/error-types';
+  subscribeClientToTopic,
+  unsubscribeClientFromTopic,
+} from './client-socket-context';
+import {
+  clearDotEnvFileHashes,
+  drainPendingDotEnvEvents,
+  hasPendingDotEnvEvidence,
+  hasRelevantPendingDotEnvEvidence,
+} from './dotenv-graph-changes';
+import { notifyFileChangeListeners } from './file-watching/file-change-events';
+import { notifyFileWatcherSockets } from './file-watching/file-watcher-sockets';
+import { notifyProjectGraphListenerSockets } from './project-graph-listener-sockets';
+import {
+  flushPendingWorkspaceChanges,
+  restartDaemonIfIgnoreFilesChanged,
+} from './watcher';
+import { serverLogger } from '../logger';
 
 interface SerializedProjectGraph {
   error: Error | null;
   projectGraph: ProjectGraph | null;
   projectFileMapCache: FileMapCache | null;
-  fileMap: FileMap | null;
-  allWorkspaceFiles: FileData[] | null;
   serializedProjectGraph: string | null;
   serializedSourceMaps: string | null;
+  sourceMaps: ConfigurationSourceMaps | null;
   rustReferences: NxWorkspaceFilesExternals | null;
 }
 
@@ -53,95 +77,413 @@ let cachedSerializedProjectGraphPromise: Promise<SerializedProjectGraph>;
 export let fileMapWithFiles:
   | {
       fileMap: FileMap;
-      allWorkspaceFiles: FileData[];
       rustReferences: NxWorkspaceFilesExternals;
     }
   | undefined;
 export let currentProjectFileMapCache: FileMapCache | undefined;
 export let currentProjectGraph: ProjectGraph | undefined;
+export let currentSourceMaps: ConfigurationSourceMaps | undefined;
 
-const collectedUpdatedFiles = new Set<string>();
-const collectedDeletedFiles = new Set<string>();
+// Maps file path to a version counter that increments on each modification.
+// This lets us detect mid-flight re-modifications when clearing processed files.
+const collectedUpdatedFiles = new Map<
+  string,
+  { version: number; hash: string }
+>();
+const collectedDeletedFiles = new Map<string, number>();
+
+const projectGraphRecomputationListeners = new Set<
+  (
+    projectGraph: ProjectGraph,
+    sourceMaps: ConfigurationSourceMaps,
+    error: Error | null
+  ) => void
+>();
 let storedWorkspaceConfigHash: string | undefined;
-let waitPeriod = 100;
-let scheduledTimeoutId;
 let knownExternalNodes: Record<string, ProjectGraphExternalNode> = {};
+let fileChangeCounter = 0;
+let recomputationGeneration = 0;
 
-export async function getCachedSerializedProjectGraphPromise(): Promise<SerializedProjectGraph> {
-  try {
-    // recomputing it now on demand. we can ignore the scheduled timeout
-    if (scheduledTimeoutId) {
-      clearTimeout(scheduledTimeoutId);
-      scheduledTimeoutId = undefined;
-    }
+// The graph the settled cached promise serves, with the generation its
+// computation claimed. Set only when a computation's own success becomes the
+// cached result; any newer kickoff or invalidation clears it, so non-null
+// means the cached promise is settled and this is exactly what it serves. The
+// warm-reuse dotenv check classifies against this, never against
+// `currentProjectGraph`: a slow stale computation overwrites that after the
+// winner settles and only then chains away. The candidate is written by the
+// computation itself (which knows its generation) and promoted by
+// kickOffRecompute after the outer plugin-hash and cached-pointer identity
+// checks, which can still reject the result.
+let servedGraphState: { graph: ProjectGraph; generation: number } | null = null;
+let servedGraphCandidate: typeof servedGraphState = null;
 
-    // reset the wait time
-    waitPeriod = 100;
-    await resetInternalStateIfNxDepsMissing();
-    const plugins = await getPlugins();
-    if (collectedUpdatedFiles.size == 0 && collectedDeletedFiles.size == 0) {
-      if (!cachedSerializedProjectGraphPromise) {
-        cachedSerializedProjectGraphPromise =
-          processFilesAndCreateAndSerializeProjectGraph(plugins);
+// True after the first successful persistProjectGraphToDisk call. Until
+// that happens, "project-graph.json missing on disk" is the expected
+// state (we just haven't written it yet) and must not trigger a reset.
+let cacheHasBeenPersisted = false;
+
+/**
+ * Freshness-gated recompute. Each IIFE snapshots the nx.json `plugins`
+ * hash at kickoff and re-reads at commit; if it changed mid-flight, bail
+ * and kick a successor instead of clobbering the winner. Without this,
+ * `cachedSerializedProjectGraphPromise` is last-kickoff-wins and can
+ * return a graph built against a stale plugin set
+ * (see spread.test.ts "middle plugin" flake).
+ */
+function kickOffRecompute() {
+  // The cached pointer is about to hold an unsettled promise, so whatever the
+  // previous state described is no longer what the cache serves.
+  servedGraphState = null;
+  let myPromise: Promise<SerializedProjectGraph>;
+  myPromise = (async () => {
+    // Must resolve, never reject: kickOffRecompute() runs fire-and-forget, so
+    // a rejected myPromise crashes the daemon (unhandled rejection). A throwing
+    // prologue (e.g. plugin load fails) becomes an errorResult the next requester surfaces.
+    try {
+      // Single read shared with getPluginsSeparated below. This collapses
+      // what would otherwise be two independent nx.json reads (our snap +
+      // the plugin loader's) into one, so the snap hash and the plugin
+      // set the compute uses always reflect the same disk state.
+      const nxJson = readNxJson(workspaceRoot);
+      const myPluginsHash = hashObject(nxJson.plugins ?? []);
+
+      const plugins = await getPluginsSeparated(nxJson, workspaceRoot);
+
+      // Plugin set we just loaded may already be stale vs disk.
+      if (isStale(myPluginsHash)) return chainToSuccessor(myPromise);
+
+      const result =
+        await processFilesAndCreateAndSerializeProjectGraph(plugins);
+
+      // Compute may have run against plugins that are now stale.
+      if (isStale(myPluginsHash)) return chainToSuccessor(myPromise);
+
+      if (
+        cachedSerializedProjectGraphPromise === myPromise &&
+        result.projectGraph
+      ) {
+        // The graph identity ties the candidate's generation to exactly this
+        // result; a chained result never matches (its computation's kickoff
+        // replaced the cached pointer, failing the identity check above).
+        if (servedGraphCandidate?.graph === result.projectGraph) {
+          servedGraphState = servedGraphCandidate;
+        }
+        notifyProjectGraphRecomputationListeners(
+          result.projectGraph,
+          result.sourceMaps,
+          result.error
+        );
+        persistProjectGraphToDisk(result);
       }
-    } else {
-      cachedSerializedProjectGraphPromise =
-        processFilesAndCreateAndSerializeProjectGraph(plugins);
+      return result;
+    } catch (e) {
+      return errorResult(e);
     }
-    return await cachedSerializedProjectGraphPromise;
+  })();
+  cachedSerializedProjectGraphPromise = myPromise;
+}
+
+function isStale(expectedHash: string): boolean {
+  return readNxJsonPluginsHash() !== expectedHash;
+}
+
+/**
+ * Starts a successor recompute only when this IIFE is still the cached one.
+ * If a newer recompute already replaced the cached pointer, that newer
+ * recompute will produce the fresh result and we just need to return the
+ * pointer so awaiters chain onto it.
+ */
+function chainToSuccessor(
+  myPromise: Promise<SerializedProjectGraph>
+): Promise<SerializedProjectGraph> {
+  serverLogger.log(
+    'Discarding stale recompute result (nx.json plugins changed mid-compute).'
+  );
+  if (cachedSerializedProjectGraphPromise === myPromise) kickOffRecompute();
+  return cachedSerializedProjectGraphPromise;
+}
+
+function readNxJsonPluginsHash(): string {
+  return hashObject(readNxJson(workspaceRoot).plugins ?? []);
+}
+
+export async function getCachedSerializedProjectGraphPromise(
+  socket?: Socket
+): Promise<SerializedProjectGraph> {
+  // Subscribe the requesting client to the graph-construction topic
+  // for the duration of the await, so in-flight progress/log messages
+  // — including those produced by a recomputation that was already
+  // started before this caller arrived — are broadcast to them.
+  if (socket) {
+    subscribeClientToTopic(socket, ProgressTopics.GraphConstruction);
+  }
+  try {
+    // Drain anything the native watcher has buffered before deciding
+    // whether the cached graph is fresh. Without this, a file change
+    // that already arrived in the watcher's accumulator but hasn't
+    // flushed past IDLE_WINDOW yet would be invisible to the staleness
+    // check below — the daemon would return a stale graph.
+    await flushPendingWorkspaceChanges();
+
+    await resetInternalStateIfNxDepsMissing();
+
+    // Yield one macrotask boundary so any TSFN-queued watcher callbacks
+    // run before we read collected*. Without this, an event that left
+    // the native side but is still queued in libuv's I/O queue (behind
+    // our request handler) would be invisible here and we'd serve a
+    // stale graph. Placed right before the read so no microtask gap
+    // separates them.
+    await new Promise(setImmediate);
+
+    // The queue can hold evidence against the settled cached graph itself: a
+    // tracked dotenv edit only the outputs watcher has delivered yet queues
+    // without invalidating, and the workspace watcher's recomputation may lag
+    // this request. Classified against the exact graph the cache serves; an
+    // in-flight computation needs no check here because its own pre-serve
+    // replay consumes the queue. Content hashes are dropped before the
+    // successor can read, as in the error retry: one recorded when the edit
+    // was classified could suppress a revert landing mid-read. Fails toward
+    // recomputing, since a stale graph on a dotenv edit is the bug this
+    // prevents.
+    try {
+      if (
+        servedGraphState &&
+        hasRelevantPendingDotEnvEvidence(
+          servedGraphState.graph,
+          servedGraphState.generation
+        )
+      ) {
+        clearDotEnvFileHashes();
+        invalidateGraphCache();
+      }
+    } catch (e) {
+      serverLogger.log(
+        `Failed to check pending dotenv changes against the cached graph; recomputing to be safe: ${
+          e instanceof Error ? e.message : e
+        }`
+      );
+      clearDotEnvFileHashes();
+      invalidateGraphCache();
+    }
+
+    // If no compute exists or events are still in collected*, kick one off.
+    // Otherwise reuse whatever is already in flight or cached.
+    const needsRecompute =
+      !cachedSerializedProjectGraphPromise ||
+      collectedUpdatedFiles.size > 0 ||
+      collectedDeletedFiles.size > 0;
+    if (needsRecompute) {
+      serverLogger.log(
+        cachedSerializedProjectGraphPromise
+          ? `Recomputing project graph because of ${collectedUpdatedFiles.size} updated and ${collectedDeletedFiles.size} deleted files.`
+          : 'No in-memory cached project graph found. Recomputing it...'
+      );
+      kickOffRecompute();
+    } else {
+      serverLogger.log(
+        'Reusing in-memory cached project graph because no files changed.'
+      );
+    }
+
+    // A stale compute returns cachedSerializedProjectGraphPromise (the
+    // newer compute that replaced it); promise unwrapping flattens the
+    // chain so we always end up with the latest real result.
+    const result = await cachedSerializedProjectGraphPromise;
+
+    // Even when the loop didn't recompute, write the cache if it's stale on
+    // disk relative to the in-memory result. This protects against
+    // non-daemon processes overwriting the daemon's valid graph with a
+    // stale/errored one.
+    if (
+      !needsRecompute &&
+      result.projectGraph &&
+      result.projectFileMapCache &&
+      result.sourceMaps
+    ) {
+      writeCacheIfStale(
+        result.projectFileMapCache,
+        result.projectGraph,
+        result.sourceMaps,
+        extractErrors(result.error)
+      );
+    }
+
+    const errors = extractErrors(result.error);
+
+    if (errors?.length) {
+      cachedSerializedProjectGraphPromise = null;
+    }
+
+    return result;
   } catch (e) {
+    // We return the project graph, but we don't want to persist the cache to
+    // serve the same state, as it could cause issues if the error is caused by something
+    // transient
+    cachedSerializedProjectGraphPromise = null;
     return {
       error: e,
       serializedProjectGraph: null,
       serializedSourceMaps: null,
+      sourceMaps: null,
       projectGraph: null,
       projectFileMapCache: null,
-      fileMap: null,
-      allWorkspaceFiles: null,
       rustReferences: null,
     };
+  } finally {
+    if (socket) {
+      unsubscribeClientFromTopic(socket, ProgressTopics.GraphConstruction);
+    }
   }
 }
 
-export function addUpdatedAndDeletedFiles(
+export function scheduleProjectGraphRecomputation(
   createdFiles: string[],
   updatedFiles: string[],
   deletedFiles: string[]
 ) {
-  for (let f of [...createdFiles, ...updatedFiles]) {
+  ++fileChangeCounter;
+
+  // Hash the changed files up front and drop no-op rewrites before they can
+  // trigger an expensive recompute. Restoring a cached task output, a
+  // `git checkout` back to the same content, or a formatter that changes
+  // nothing all rewrite a file (new inode) the watcher reports as changed
+  // even though the bytes are identical. updateFilesInContext updates the
+  // workspace context and returns only the files whose content actually
+  // changed. Hashing here — once per watcher batch — rather than inside the
+  // recompute keeps it off the stale-retry path, which would otherwise see
+  // "no change" after the first pass already updated the context hashes.
+  performance.mark('hash-watched-changes-start');
+  const changedFileHashes =
+    createdFiles.length > 0 ||
+    updatedFiles.length > 0 ||
+    deletedFiles.length > 0
+      ? (updateFilesInContext(
+          workspaceRoot,
+          [...createdFiles, ...updatedFiles],
+          deletedFiles
+        ) ?? {})
+      : {};
+  performance.mark('hash-watched-changes-end');
+  performance.measure(
+    'hash changed files from watcher',
+    'hash-watched-changes-start',
+    'hash-watched-changes-end'
+  );
+
+  for (const [f, hash] of Object.entries(changedFileHashes)) {
     collectedDeletedFiles.delete(f);
-    collectedUpdatedFiles.add(f);
+    collectedUpdatedFiles.set(f, { version: fileChangeCounter, hash });
   }
 
   for (let f of deletedFiles) {
     collectedUpdatedFiles.delete(f);
-    collectedDeletedFiles.add(f);
+    collectedDeletedFiles.set(f, fileChangeCounter);
   }
 
-  if (updatedFiles.length > 0 || deletedFiles.length > 0) {
-    notifyFileWatcherSockets(null, updatedFiles, deletedFiles);
+  // The native watcher already coalesces a burst of events into one batch,
+  // so socket + listener notifications dispatch immediately.
+  if (Object.keys(changedFileHashes).length > 0 || deletedFiles.length > 0) {
+    notifyFileChangeListeners({ createdFiles, updatedFiles, deletedFiles });
+    notifyFileWatcherSockets(createdFiles, updatedFiles, deletedFiles);
+    // Bump generation synchronously so any in-flight compute fails its
+    // next isStale() check and chains to the newer one. kickOffRecompute
+    // would also bump on first resume, but only after its first await —
+    // a window during which the old compute could falsely pass.
+    ++recomputationGeneration;
+    kickOffRecompute();
+  } else {
+    // First call (initial startup) — no events but we still need a graph.
+    if (!cachedSerializedProjectGraphPromise) {
+      kickOffRecompute();
+    }
+  }
+}
+
+/**
+ * The watcher reported dropped events (a kernel event-queue overflow), so the
+ * per-path stream cannot be trusted complete. Recover by re-walking the
+ * workspace and diffing it against the context's known files, then feed the
+ * synthesized changes through the same collection and notification path a
+ * normal watcher batch takes.
+ *
+ * The walk and the diff both happen in the workspace context: it already owns
+ * the file map, so diffing there keeps the whole workspace from crossing the
+ * napi boundary twice per recovery, and lets the context re-gather in place
+ * instead of being torn down and rebuilt.
+ */
+export async function handleWatcherRescan(): Promise<void> {
+  performance.mark('watcher-rescan-start');
+  const { createdFiles, updatedFiles, deletedFiles } =
+    rescanAndDiffInContext(workspaceRoot);
+  performance.mark('watcher-rescan-end');
+  performance.measure(
+    're-walk workspace after watcher rescan',
+    'watcher-rescan-start',
+    'watcher-rescan-end'
+  );
+
+  // An overflow can drop an ignore-file edit outright, so dispatchWorkspaceChanges
+  // never sees it and the native filterer keeps stale ignore rules. The re-walk
+  // is where it resurfaces, so restart here too — the fresh daemon rebuilds the
+  // filterer from the current ignore files.
+  if (
+    restartDaemonIfIgnoreFilesChanged([
+      ...createdFiles.map(({ file }) => file),
+      ...updatedFiles.map(({ file }) => file),
+      ...deletedFiles,
+    ])
+  ) {
+    serverLogger.watcherLog(
+      'Rescan recovered an ignore-file change; restarting the daemon to reload ignore rules.'
+    );
+    return;
   }
 
-  if (createdFiles.length > 0) {
-    waitPeriod = 100; // reset it to process the graph faster
+  if (
+    createdFiles.length === 0 &&
+    updatedFiles.length === 0 &&
+    deletedFiles.length === 0
+  ) {
+    serverLogger.watcherLog(
+      'Rescan re-walk found no differences; keeping the cached graph.'
+    );
+    return;
+  }
+  serverLogger.watcherLog(
+    `Rescan re-walk recovered ${createdFiles.length} created, ` +
+      `${updatedFiles.length} updated and ${deletedFiles.length} deleted file(s).`
+  );
+
+  ++fileChangeCounter;
+  for (const { file, hash } of [...createdFiles, ...updatedFiles]) {
+    collectedDeletedFiles.delete(file);
+    collectedUpdatedFiles.set(file, { version: fileChangeCounter, hash });
+  }
+  for (const file of deletedFiles) {
+    collectedUpdatedFiles.delete(file);
+    collectedDeletedFiles.set(file, fileChangeCounter);
   }
 
-  if (!scheduledTimeoutId) {
-    scheduledTimeoutId = setTimeout(async () => {
-      scheduledTimeoutId = undefined;
-      if (waitPeriod < 4000) {
-        waitPeriod = waitPeriod * 2;
-      }
+  const createdFileNames = createdFiles.map(({ file }) => file);
+  const updatedFileNames = updatedFiles.map(({ file }) => file);
+  notifyFileChangeListeners({
+    createdFiles: createdFileNames,
+    updatedFiles: updatedFileNames,
+    deletedFiles,
+  });
+  notifyFileWatcherSockets(createdFileNames, updatedFileNames, deletedFiles);
+  ++recomputationGeneration;
+  kickOffRecompute();
+}
 
-      cachedSerializedProjectGraphPromise =
-        processFilesAndCreateAndSerializeProjectGraph(await getPlugins());
-      await cachedSerializedProjectGraphPromise;
-
-      if (createdFiles.length > 0) {
-        notifyFileWatcherSockets(createdFiles, null, null);
-      }
-    }, waitPeriod);
-  }
+export function registerProjectGraphRecomputationListener(
+  listener: (
+    projectGraph: ProjectGraph,
+    sourceMaps: ConfigurationSourceMaps,
+    error: Error | null
+  ) => void
+) {
+  projectGraphRecomputationListeners.add(listener);
 }
 
 function computeWorkspaceConfigHash(
@@ -158,42 +500,45 @@ function computeWorkspaceConfigHash(
   return hashArray(projectConfigurationStrings);
 }
 
+type FileMapUpdate = {
+  fileMap: NonNullable<typeof fileMapWithFiles>;
+  configHash: string;
+  knownExternalNodes?: Record<string, ProjectGraphExternalNode>;
+};
+
 async function processCollectedUpdatedAndDeletedFiles(
   { projects, externalNodes, projectRootMap }: ConfigurationResult,
   updatedFileHashes: Record<string, string>,
   deletedFiles: string[]
-) {
+): Promise<FileMapUpdate> {
   try {
-    const workspaceConfigHash = computeWorkspaceConfigHash(projects);
+    const configHash = computeWorkspaceConfigHash(projects);
 
-    // when workspace config changes we cannot incrementally update project file map
-    if (workspaceConfigHash !== storedWorkspaceConfigHash) {
-      storedWorkspaceConfigHash = workspaceConfigHash;
+    // Config changed → can't incrementally update; refetch the file map
+    // from disk. Returning instead of mutating module state lets the caller
+    // gate the commit on its staleness check, so a slower stale compute
+    // can't clobber a faster newer one's already-committed state.
+    if (configHash !== storedWorkspaceConfigHash) {
+      const fresh = await retrieveWorkspaceFiles(workspaceRoot, projectRootMap);
+      return { fileMap: fresh, configHash, knownExternalNodes: externalNodes };
+    }
 
-      ({ ...fileMapWithFiles } = await retrieveWorkspaceFiles(
-        workspaceRoot,
-        projectRootMap
-      ));
-
-      knownExternalNodes = externalNodes;
-    } else {
-      if (fileMapWithFiles) {
-        fileMapWithFiles = updateFileMap(
+    // Config unchanged → patch the existing file map in place.
+    if (fileMapWithFiles) {
+      return {
+        fileMap: updateFileMap(
           projects,
           fileMapWithFiles.rustReferences,
           updatedFileHashes,
           deletedFiles
-        );
-      } else {
-        fileMapWithFiles = await retrieveWorkspaceFiles(
-          workspaceRoot,
-          projectRootMap
-        );
-      }
+        ),
+        configHash,
+      };
     }
 
-    collectedUpdatedFiles.clear();
-    collectedDeletedFiles.clear();
+    // No prior map (first compute on this daemon).
+    const fresh = await retrieveWorkspaceFiles(workspaceRoot, projectRootMap);
+    return { fileMap: fresh, configHash };
   } catch (e) {
     // this is expected
     // for instance, project.json can be incorrect or a file we are trying to has
@@ -210,25 +555,117 @@ async function processCollectedUpdatedAndDeletedFiles(
   }
 }
 
+/**
+ * Discards the cached graph when a graph input outside the file watcher's view
+ * (e.g. the daemon env) changes. Clearing the cached promise makes the next
+ * request trigger a fresh computation; the generation bump marks any in-flight
+ * compute stale so it chains to that successor instead of committing, because
+ * a compute passing its chainToLatest checks would serve a graph built under
+ * the old input to whoever already awaits it.
+ */
+export function invalidateGraphCache() {
+  // We intentionally do NOT call getCachedSerializedProjectGraphPromise() here
+  // because assigning its return Promise to the module-level variable causes a
+  // deadlock: the async function resumes, sees the variable is non-null (pointing
+  // at its own Promise), takes the "reuse" branch, and awaits itself forever.
+  cachedSerializedProjectGraphPromise = null;
+  ++recomputationGeneration;
+  servedGraphState = null;
+}
+
+/**
+ * The current recomputation generation, stamped on queued dotenv events so
+ * the pre-serve drain can prove whether a computation started before an
+ * event arrived.
+ */
+export function getRecomputationGeneration(): number {
+  return recomputationGeneration;
+}
+
+// isKnownWorkspaceFile's membership set, derived lazily from the map object it
+// was built from; every `fileMapWithFiles` write clears it, so a replaced map
+// generation is not retained through the memo.
+let knownWorkspaceFiles: Set<string> | undefined;
+let knownWorkspaceFilesSource: typeof fileMapWithFiles;
+
+/**
+ * Whether the ignore-filtered workspace file map knows `path`. The workspace
+ * watcher applies the same ignore rules, so a change to a known file also
+ * reaches scheduleProjectGraphRecomputation; an unknown file is either
+ * ignored, or created since the last recompute committed.
+ */
+export function isKnownWorkspaceFile(path: string): boolean {
+  if (!fileMapWithFiles) {
+    return false;
+  }
+  if (knownWorkspaceFilesSource !== fileMapWithFiles) {
+    const { projectFileMap, nonProjectFiles } = fileMapWithFiles.fileMap;
+    knownWorkspaceFiles = new Set<string>();
+    for (const { file } of nonProjectFiles) {
+      knownWorkspaceFiles.add(file);
+    }
+    for (const files of Object.values(projectFileMap)) {
+      for (const { file } of files) {
+        knownWorkspaceFiles.add(file);
+      }
+    }
+    knownWorkspaceFilesSource = fileMapWithFiles;
+  }
+  return knownWorkspaceFiles.has(path);
+}
+
 async function processFilesAndCreateAndSerializeProjectGraph(
-  plugins: LoadedNxPlugin[]
+  separatedPlugins: SeparatedPlugins
 ): Promise<SerializedProjectGraph> {
+  const plugins = [
+    ...separatedPlugins.specifiedPlugins,
+    ...separatedPlugins.defaultPlugins,
+  ];
+  const myGeneration = ++recomputationGeneration;
+  // A hash recorded before this claim can describe bytes this computation
+  // never reads (a callback classified between a forced invalidation and this
+  // claim records one no handler-side clear has seen), and retained it could
+  // suppress a coalesced revert landing mid-read. Bounding every hash to the
+  // window since the last claim closes that for any successor, however it was
+  // forced. A callback landing after this claim re-records and re-queues, and
+  // its stamp then marks this computation stale at the drain.
+  clearDotEnvFileHashes();
+
+  // A newer kickOffRecompute has already replaced
+  // cachedSerializedProjectGraphPromise. Returning it lets the async
+  // unwrap chain our caller onto the newer compute's result; pass
+  // notifyAbort=true when the graph-phase counters still need balancing.
+  const chainToLatest = (notifyAbort: boolean) => {
+    if (myGeneration === recomputationGeneration) return null;
+    if (notifyAbort) notifyPluginsGraphAborted(plugins);
+    // Defensive: if the cache was cleared (e.g. resetInternalState ran)
+    // there is nothing to chain to. Returning undefined lets `if (stale)
+    // return stale` fall through and the compute commits stale data.
+    // Kick off a successor so we always have a real promise to chain to.
+    if (!cachedSerializedProjectGraphPromise) {
+      kickOffRecompute();
+    }
+    return cachedSerializedProjectGraphPromise;
+  };
+
   try {
-    performance.mark('hash-watched-changes-start');
-    const updatedFiles = [...collectedUpdatedFiles.values()];
-    const deletedFiles = [...collectedDeletedFiles.values()];
-    let updatedFileHashes = updateFilesInContext(updatedFiles, deletedFiles);
-    performance.mark('hash-watched-changes-end');
-    performance.measure(
-      'hash changed files from watcher',
-      'hash-watched-changes-start',
-      'hash-watched-changes-end'
-    );
+    const updatedFilesSnapshot = new Map(collectedUpdatedFiles);
+    const deletedFilesSnapshot = new Map(collectedDeletedFiles);
+    const updatedFiles = [...updatedFilesSnapshot.keys()];
+    const deletedFiles = [...deletedFilesSnapshot.keys()];
+    // Hashes were already computed (and the workspace context updated) in
+    // scheduleProjectGraphRecomputation, which also dropped no-op rewrites.
+    // Reuse them so the context isn't re-hashed on every (possibly stale)
+    // recompute attempt.
+    const updatedFileHashes: Record<string, string> = {};
+    for (const [f, { hash }] of updatedFilesSnapshot) {
+      updatedFileHashes[f] = hash;
+    }
     serverLogger.requestLog(
       `Updated workspace context based on watched changes, recomputing project graph...`
     );
-    serverLogger.requestLog([...updatedFiles.values()]);
-    serverLogger.requestLog([...deletedFiles]);
+    serverLogger.requestLog(updatedFiles);
+    serverLogger.requestLog(deletedFiles);
     const nxJson = readNxJson(workspaceRoot);
     global.NX_GRAPH_CREATION = true;
 
@@ -237,7 +674,7 @@ async function processFilesAndCreateAndSerializeProjectGraph(
 
     try {
       projectConfigurationsResult = await retrieveProjectConfigurations(
-        plugins,
+        separatedPlugins,
         workspaceRoot,
         nxJson
       );
@@ -249,65 +686,166 @@ async function processFilesAndCreateAndSerializeProjectGraph(
         throw e;
       }
     }
-    await processCollectedUpdatedAndDeletedFiles(
+
+    const stalePostCreateNodes = chainToLatest(true);
+    if (stalePostCreateNodes) return stalePostCreateNodes;
+
+    const fileMapUpdate = await processCollectedUpdatedAndDeletedFiles(
       projectConfigurationsResult,
       updatedFileHashes,
       deletedFiles
     );
+
+    const stalePreCreateDependencies = chainToLatest(true);
+    if (stalePreCreateDependencies) return stalePreCreateDependencies;
+
+    // Latest writer commits to module state. Stale computes returned via
+    // chainToLatest above without touching `fileMapWithFiles`, so they
+    // can't clobber a newer compute's write.
+    fileMapWithFiles = fileMapUpdate.fileMap;
+    knownWorkspaceFiles = undefined;
+    knownWorkspaceFilesSource = undefined;
+    storedWorkspaceConfigHash = fileMapUpdate.configHash;
+    if (fileMapUpdate.knownExternalNodes) {
+      knownExternalNodes = fileMapUpdate.knownExternalNodes;
+    }
+
+    // Drain only after committing — a stale compute that returns at the
+    // staleness check above must leave its snapshot in `collected*` so the
+    // newer compute still sees those files. Removing them earlier would
+    // make the next compute snapshot empty and the file changes vanish
+    // from the daemon's view (project graph misses recently added files).
+    // Match version-stamps so a file modified mid-flight (higher version)
+    // stays in the queue for reprocessing.
+    for (const [f, { version }] of updatedFilesSnapshot) {
+      if (collectedUpdatedFiles.get(f)?.version === version) {
+        collectedUpdatedFiles.delete(f);
+      }
+    }
+    for (const [f, version] of deletedFilesSnapshot) {
+      if (collectedDeletedFiles.get(f) === version) {
+        collectedDeletedFiles.delete(f);
+      }
+    }
+
     const g = await createAndSerializeProjectGraph(projectConfigurationsResult);
 
     delete global.NX_GRAPH_CREATION;
 
+    // createDependencies/createMetadata already ran via wrapped hooks, so
+    // graph-phase counters are balanced — no notifyAbort needed.
+    const stalePostBuild = chainToLatest(false);
+    if (stalePostBuild) return stalePostBuild;
+
     const errors = [...(projectConfigurationsError?.errors ?? [])];
+    const aggregate =
+      g.error && isAggregateProjectGraphError(g.error) && g.error.errors?.length
+        ? g.error
+        : null;
 
-    if (g.error) {
-      if (isAggregateProjectGraphError(g.error) && g.error.errors?.length) {
-        errors.push(...g.error.errors);
-      } else {
-        return {
-          error: g.error,
-          projectGraph: null,
-          projectFileMapCache: null,
-          fileMap: null,
-          rustReferences: null,
-          allWorkspaceFiles: null,
-          serializedProjectGraph: null,
-          serializedSourceMaps: null,
-        };
-      }
-    }
-
-    if (errors.length > 0) {
-      return {
-        error: new DaemonProjectGraphError(
-          errors,
-          g.projectGraph,
-          projectConfigurationsResult.sourceMaps
-        ),
-        projectGraph: null,
-        projectFileMapCache: null,
-        fileMap: null,
-        rustReferences: null,
-        allWorkspaceFiles: null,
-        serializedProjectGraph: null,
-        serializedSourceMaps: null,
-      };
-    } else {
-      writeCache(g.projectFileMapCache, g.projectGraph);
-      return g;
-    }
-  } catch (err) {
-    return {
-      error: err,
-      projectGraph: null,
-      projectFileMapCache: null,
-      fileMap: null,
-      rustReferences: null,
-      allWorkspaceFiles: null,
-      serializedProjectGraph: null,
-      serializedSourceMaps: null,
+    // An error result is never cached, notified, or persisted, so a queued
+    // dotenv edit that may already have fixed the failing input earns one
+    // retry instead of surfacing the error. The peek consumes nothing (a
+    // successful successor's drain classifies the entries against a real
+    // graph, which these branches may lack: `g.projectGraph` can be null
+    // here) and a persistent error retries once, because the successor
+    // claims a generation above every recorded stamp. Content hashes are
+    // dropped, though: one recorded during this failed computation could
+    // suppress a callback landing while the successor reads. The catch at
+    // the end of this function stays excluded: a throw there can predate
+    // projectConfigurationsResult and the plugin hooks' balancing, and the
+    // next request recomputes at a fresh generation anyway.
+    const retryForPendingDotEnv = () => {
+      if (!hasPendingDotEnvEvidence(myGeneration)) return null;
+      clearDotEnvFileHashes();
+      invalidateGraphCache();
+      return chainToLatest(false);
     };
+
+    if (g.error && !aggregate) {
+      return retryForPendingDotEnv() ?? errorResult(g.error);
+    }
+    if (aggregate) errors.push(...aggregate.errors);
+    if (errors.length > 0) {
+      return (
+        retryForPendingDotEnv() ??
+        errorResult(
+          new DaemonProjectGraphError(
+            errors,
+            g.projectGraph,
+            projectConfigurationsResult.sourceMaps
+          )
+        )
+      );
+    }
+
+    // Replay the dotenv events no committed root could classify on arrival
+    // against the graph about to be served. Runs after the last staleness
+    // gate so a stale compute leaves the queue for its successor, and only
+    // on the success path: an error result is never notified or persisted.
+    // Queue evidence is decisive here even for files the workspace watcher
+    // tracks: the two watchers deliver independently, so tracking alone does
+    // not prove that watcher's recomputation was already scheduled.
+    let staleDotEnv: boolean;
+    try {
+      const pending = drainPendingDotEnvEvents(g.projectGraph, myGeneration);
+      staleDotEnv = pending.overflowed || pending.invalidating.length > 0;
+    } catch (e) {
+      serverLogger.log(
+        `Failed to re-check pending dotenv changes; recomputing to be safe: ${
+          e instanceof Error ? e.message : e
+        }`
+      );
+      staleDotEnv = true;
+    }
+    if (staleDotEnv) {
+      // This graph read the file before the queued edit landed. The bump plus
+      // chain hands every awaiting caller the successor's result and keeps
+      // this one from being notified or persisted.
+      invalidateGraphCache();
+      return chainToLatest(false);
+    }
+    servedGraphCandidate = { graph: g.projectGraph, generation: myGeneration };
+    return g;
+  } catch (err) {
+    return errorResult(err);
   }
+}
+
+function errorResult(
+  error: SerializedProjectGraph['error']
+): SerializedProjectGraph {
+  return {
+    error,
+    projectGraph: null,
+    projectFileMapCache: null,
+    rustReferences: null,
+    serializedProjectGraph: null,
+    serializedSourceMaps: null,
+    sourceMaps: null,
+  };
+}
+
+function extractErrors(error: SerializedProjectGraph['error']) {
+  if (!error) return [];
+  return error instanceof DaemonProjectGraphError ? error.errors : [error];
+}
+
+function persistProjectGraphToDisk(result: SerializedProjectGraph) {
+  if (
+    !result.projectGraph ||
+    !result.projectFileMapCache ||
+    !result.sourceMaps
+  ) {
+    return;
+  }
+  writeCache(
+    result.projectFileMapCache,
+    result.projectGraph,
+    result.sourceMaps,
+    extractErrors(result.error)
+  );
+  cacheHasBeenPersisted = true;
 }
 
 function copyFileData<T extends FileData>(d: T[]) {
@@ -332,22 +870,21 @@ async function createAndSerializeProjectGraph({
   try {
     performance.mark('create-project-graph-start');
     const fileMap = copyFileMap(fileMapWithFiles.fileMap);
-    const allWorkspaceFiles = copyFileData(fileMapWithFiles.allWorkspaceFiles);
     const rustReferences = fileMapWithFiles.rustReferences;
     const { projectGraph, projectFileMapCache } =
       await buildProjectGraphUsingFileMap(
         projects,
         knownExternalNodes,
         fileMap,
-        allWorkspaceFiles,
         rustReferences,
         currentProjectFileMapCache || readFileMapCache(),
-        await getPlugins(),
+        await getPlugins(readNxJson(workspaceRoot)),
         sourceMaps
       );
 
     currentProjectFileMapCache = projectFileMapCache;
     currentProjectGraph = projectGraph;
+    currentSourceMaps = sourceMaps;
 
     performance.mark('create-project-graph-end');
     performance.measure(
@@ -370,10 +907,9 @@ async function createAndSerializeProjectGraph({
       error: null,
       projectGraph,
       projectFileMapCache,
-      fileMap,
-      allWorkspaceFiles,
       serializedProjectGraph,
       serializedSourceMaps,
+      sourceMaps,
       rustReferences,
     };
   } catch (e) {
@@ -384,10 +920,9 @@ async function createAndSerializeProjectGraph({
       error: e,
       projectGraph: null,
       projectFileMapCache: null,
-      fileMap: null,
-      allWorkspaceFiles: null,
       serializedProjectGraph: null,
       serializedSourceMaps: null,
+      sourceMaps: null,
       rustReferences: null,
     };
   }
@@ -395,21 +930,54 @@ async function createAndSerializeProjectGraph({
 
 async function resetInternalState() {
   cachedSerializedProjectGraphPromise = undefined;
+  servedGraphState = null;
+  servedGraphCandidate = null;
   fileMapWithFiles = undefined;
+  knownWorkspaceFiles = undefined;
+  knownWorkspaceFilesSource = undefined;
   currentProjectFileMapCache = undefined;
   currentProjectGraph = undefined;
+  currentSourceMaps = undefined;
   collectedUpdatedFiles.clear();
   collectedDeletedFiles.clear();
+  cacheHasBeenPersisted = false;
   resetWorkspaceContext();
-  waitPeriod = 100;
 }
 
 async function resetInternalStateIfNxDepsMissing() {
+  // Only meaningful AFTER we've persisted the cache at least once.
+  // Before then, "file missing" is the expected state — an in-flight
+  // first compute hasn't written yet, and resetting would tear down its
+  // promise mid-await and force a redundant recompute.
+  if (!cacheHasBeenPersisted) {
+    return;
+  }
   try {
     if (!fileExists(nxProjectGraph) && cachedSerializedProjectGraphPromise) {
       await resetInternalState();
     }
-  } catch (e) {
-    await resetInternalState();
+  } catch {
+    // A transient stat error shouldn't nuke state — the next request
+    // will retry.
   }
+}
+
+function notifyPluginsGraphAborted(plugins: LoadedNxPlugin[]) {
+  // At both abort sites, only createNodes has been called.
+  // createDependencies and createMetadata are called later in
+  // createAndSerializeProjectGraph, which hasn't run yet.
+  for (const plugin of plugins) {
+    plugin.notifyPhaseAborted?.('graph', 'createNodes');
+  }
+}
+
+function notifyProjectGraphRecomputationListeners(
+  projectGraph: ProjectGraph,
+  sourceMaps: ConfigurationSourceMaps,
+  error: Error | null
+) {
+  for (const listener of projectGraphRecomputationListeners) {
+    listener(projectGraph, sourceMaps, error);
+  }
+  notifyProjectGraphListenerSockets(projectGraph, sourceMaps, error);
 }

@@ -1,5 +1,5 @@
 import { ProjectGraph } from '@nx/devkit';
-import { AssetGlob } from '@nx/js/src/utils/assets/assets';
+import { AssetGlob } from '@nx/js/internal';
 
 export interface AssetGlobPattern {
   glob: string;
@@ -37,6 +37,10 @@ export interface OptimizationOptions {
   styles: boolean;
 }
 
+export interface TypeCheckOptions {
+  async: boolean;
+}
+
 export interface NxAppWebpackPluginOptions {
   /**
    * The tsconfig file for the project. e.g. `tsconfig.json`
@@ -65,7 +69,7 @@ export interface NxAppWebpackPluginOptions {
   /**
    * Set <base href> for the resulting index.html.
    */
-  baseHref?: string;
+  baseHref?: string | false;
   /**
    * Build the libraries from source. Default is `true`.
    */
@@ -81,9 +85,10 @@ export interface NxAppWebpackPluginOptions {
    */
   crossOrigin?: 'none' | 'anonymous' | 'use-credentials';
   /**
-   * Delete the output path before building.
+   * Hash algorithm used to generate CSS module class names. Defaults to `md5`,
+   * which FIPS-restricted OpenSSL rejects. Changing it renames generated class names.
    */
-  deleteOutputPath?: boolean;
+  cssModuleHashFunction?: string;
   /**
    * The deploy path for the application. e.g. `/my-app/`
    */
@@ -92,9 +97,14 @@ export interface NxAppWebpackPluginOptions {
    * Define external packages that will not be bundled.
    * Use `all` to exclude all 3rd party packages, and `none` to bundle all packages.
    * Use an array to exclude specific packages from the bundle.
-   * Default is `none`.
+   * Default is `all`.
    */
   externalDependencies?: 'all' | 'none' | string[];
+  /**
+   * Whether to combine plugin externals config with the existing webpack external config.
+   * Default is `false`.
+   */
+  mergeExternals?: boolean;
   /**
    * Extract CSS as an external file. Default is `true`.
    */
@@ -115,6 +125,10 @@ export interface NxAppWebpackPluginOptions {
    * Generate a `package.json` file for the bundle. Useful for Node applications.
    */
   generatePackageJson?: boolean;
+  /**
+   * Add runtime dependencies to the generated `package.json` file. Useful for Docker install.
+   */
+  runtimeDependencies?: string[];
   /**
    * Path to the `index.html`.
    */
@@ -168,13 +182,31 @@ export interface NxAppWebpackPluginOptions {
    */
   scripts?: Array<ExtraEntryPointClass | string>;
   /**
+   * Do not add a `overrides` and `resolutions` entries to the generated package.json file. Only works in conjunction with `generatePackageJson` option.
+   */
+  skipOverrides?: boolean;
+  /**
+   * Do not add a `packageManager` entry to the generated package.json file. Only works in conjunction with `generatePackageJson` option.
+   */
+  skipPackageManager?: boolean;
+  /**
    * Skip type checking. Default is `false`.
+   * @deprecated Use `typeCheckOptions` option instead. This option will be removed in Nx 24.
    */
   skipTypeChecking?: boolean;
   /**
+   * Configure type checking during the build.
+   * - Set to `true` to enable type checking with default options (async: true).
+   * - Set to `false` to disable type checking entirely.
+   * - Use `{ async: true }` to run type checking in a separate process without blocking the build.
+   * - Use `{ async: false }` to run type checking synchronously.
+   * Default is `{ async: true }`.
+   */
+  typeCheckOptions?: boolean | TypeCheckOptions;
+  /**
    * Generate source maps.
    */
-  sourceMap?: boolean | 'hidden';
+  sourceMap?: boolean | string;
   /**
    * When `true`, `process.env.NODE_ENV` will be excluded from the bundle. Useful for building a web application to run in a Node environment.
    */
@@ -186,7 +218,11 @@ export interface NxAppWebpackPluginOptions {
   /**
    * Options for the style preprocessor. e.g. `{ "includePaths": [] }` for SASS.
    */
-  stylePreprocessorOptions?: any;
+  stylePreprocessorOptions?: {
+    includePaths?: string[];
+    sassOptions?: Record<string, any>;
+    lessOptions?: Record<string, any>;
+  };
   /**
    * External stylesheets that will be included with the application.
    */
@@ -204,6 +240,10 @@ export interface NxAppWebpackPluginOptions {
    */
   transformers?: TransformerEntry[];
   /**
+   * Use tsconfig-paths-webpack-plugin to resolve modules using paths in the tsconfig file.
+   */
+  useTsconfigPaths?: boolean;
+  /**
    * Generate a separate vendor chunk for 3rd party packages.
    */
   vendorChunk?: boolean;
@@ -216,6 +256,10 @@ export interface NxAppWebpackPluginOptions {
    */
   watch?: boolean;
   /**
+   * Configure webpack caching behavior. When not specified, defaults to `{ type: 'memory' }` for Node targets in watch mode, and `undefined` otherwise.
+   */
+  cache?: boolean | { type: 'memory' | 'filesystem'; [key: string]: any };
+  /**
    * Set a public path for assets resources with absolute paths.
    */
   publicPath?: string;
@@ -223,10 +267,13 @@ export interface NxAppWebpackPluginOptions {
    * Whether to rebase absolute path for assets in postcss cli resources.
    */
   rebaseRootRelative?: boolean;
+  /**
+   * Watch buildable dependencies and rebuild when they change.
+   */
+  watchDependencies?: boolean;
 }
 
-export interface NormalizedNxAppWebpackPluginOptions
-  extends NxAppWebpackPluginOptions {
+export interface NormalizedNxAppWebpackPluginOptions extends NxAppWebpackPluginOptions {
   projectName: string;
   root: string;
   projectRoot: string;

@@ -8,18 +8,15 @@ import {
   ensurePackage,
   joinPathFragments,
   offsetFromRoot,
-  readJson,
   readNxJson,
   readProjectConfiguration,
   stripIndents,
   updateJson,
   updateProjectConfiguration,
-  visitNotIgnoredFiles,
-  writeJson,
 } from '@nx/devkit';
-import { Linter, lintProjectGenerator } from '@nx/eslint';
+import { lintProjectGenerator } from '@nx/eslint';
 import { getRootTsConfigPathInTree, insertImport } from '@nx/js';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
+import { ensureTypescript } from '@nx/js/internal';
 import { basename, relative } from 'path';
 import type {
   Node,
@@ -56,23 +53,15 @@ type CypressCommonConfig = {
 };
 
 const cypressConfig = {
-  v9OrLess: {
-    srcPaths: ['supportFile', 'supportFolder', 'fixturesFolder'],
-    distPaths: ['videosFolder', 'screenshotsFolder', 'downloadsFolder'],
-    globPatterns: ['excludeSpecPattern', 'specPattern'],
-  },
-  v10OrMore: {
-    srcPaths: ['supportFile', 'supportFolder', 'fixturesFolder'],
-    distPaths: ['videosFolder', 'screenshotsFolder', 'downloadsFolder'],
-    globPatterns: ['excludeSpecPattern', 'specPattern'],
-  },
+  srcPaths: ['supportFile', 'supportFolder', 'fixturesFolder'],
+  distPaths: ['videosFolder', 'screenshotsFolder', 'downloadsFolder'],
+  globPatterns: ['excludeSpecPattern', 'specPattern'],
 };
 
 export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
   private appConfig: ProjectConfiguration;
   private appName: string;
   private isProjectUsingEsLint: boolean;
-  private cypressInstalledVersion: number;
   private cypressPreset: Record<string, any>;
 
   constructor(
@@ -186,10 +175,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
       const configFile =
         this.projectConfig.targets[this.targetNames.e2e].options?.configFile;
       if (configFile === undefined && !this.getOldCypressConfigFilePath()) {
-        const expectedConfigFile =
-          this.cypressInstalledVersion < 10
-            ? 'cypress.json'
-            : 'cypress.config.{ts,js,mjs,cjs}';
+        const expectedConfigFile = 'cypress.config.{ts,js,mjs,cjs}';
 
         return [
           {
@@ -262,10 +248,6 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
       };
     } else if (this.isCypressE2eProject()) {
       ensurePackage('@nx/cypress', nxVersion);
-      const {
-        installedCypressVersion,
-      } = require('@nx/cypress/src/utils/cypress-version');
-      this.cypressInstalledVersion = installedCypressVersion();
       this.project = {
         ...this.project,
         name,
@@ -306,19 +288,14 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
     });
 
     // add e2e project config
-    addProjectConfiguration(
-      this.tree,
-      this.project.name,
-      {
-        ...this.projectConfig,
-      },
-      true
-    );
+    addProjectConfiguration(this.tree, this.project.name, {
+      ...this.projectConfig,
+    });
 
     if (this.isProjectUsingEsLint) {
       await lintProjectGenerator(this.tree, {
         project: this.project.name,
-        linter: Linter.EsLint,
+        linter: 'eslint',
         unitTestRunner: this.options.unitTestRunner,
         tsConfigPaths: [
           joinPathFragments(this.project.newRoot, 'tsconfig.json'),
@@ -348,7 +325,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
     );
     await configurationGenerator(this.tree, {
       project: this.project.name,
-      linter: this.isProjectUsingEsLint ? Linter.EsLint : Linter.None,
+      linter: this.isProjectUsingEsLint ? 'eslint' : 'none',
       skipFormat: true,
       // any target would do, we replace it later with the target existing in the project being migrated
       devServerTarget: `${this.appName}:serve`,
@@ -373,7 +350,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
     );
 
     // replace the generated source with the project source
-    visitNotIgnoredFiles(this.tree, this.project.newSourceRoot, (filePath) => {
+    this.visitFiles(this.project.newSourceRoot, (filePath) => {
       this.tree.delete(filePath);
     });
     this.moveDir(
@@ -391,7 +368,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
       this.project.newRoot,
       basename(configFile)
     );
-    this.updateCypressConfigFilePaths(configFile);
+    this.updateCypressConfigFile(configFile);
     this.tree.delete(cypressConfigFilePath);
     this.moveFile(configFile, cypressConfigFilePath);
 
@@ -456,59 +433,6 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
     return updatedTarget;
   }
 
-  private updateCypressConfigFilePaths(configFilePath: string): void {
-    if (this.cypressInstalledVersion >= 10) {
-      this.updateCypress10ConfigFile(configFilePath);
-      return;
-    }
-
-    const srcPaths = [
-      'integrationFolder',
-      'supportFile',
-      'pluginsFile',
-      'fixturesFolder',
-    ];
-    const distPaths = ['videosFolder', 'screenshotsFolder'];
-    const globPatterns = ['ignoreTestFiles', 'testFiles'];
-
-    const cypressConfig = readJson(this.tree, configFilePath);
-
-    cypressConfig.fileServerFolder = '.';
-    srcPaths.forEach((path) => {
-      if (cypressConfig[path]) {
-        cypressConfig[path] = this.cypressConfigSrcPathToNewPath(
-          cypressConfig[path]
-        );
-      }
-    });
-
-    distPaths.forEach((path) => {
-      if (cypressConfig[path]) {
-        cypressConfig[path] = this.cypressConfigDistPathToNewPath(
-          cypressConfig[path]
-        );
-      }
-    });
-
-    globPatterns.forEach((stringOrArrayGlob) => {
-      if (!cypressConfig[stringOrArrayGlob]) {
-        return;
-      }
-
-      if (Array.isArray(cypressConfig[stringOrArrayGlob])) {
-        cypressConfig[stringOrArrayGlob] = cypressConfig[stringOrArrayGlob].map(
-          (glob: string) => this.cypressConfigGlobToNewGlob(glob)
-        );
-      } else {
-        cypressConfig[stringOrArrayGlob] = this.cypressConfigGlobToNewGlob(
-          cypressConfig[stringOrArrayGlob]
-        );
-      }
-    });
-
-    writeJson(this.tree, configFilePath, cypressConfig);
-  }
-
   private cypressConfigGlobToNewGlob(
     globPattern: string | undefined
   ): string | undefined {
@@ -554,7 +478,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
       : undefined;
   }
 
-  private updateCypress10ConfigFile(configFilePath: string): void {
+  private updateCypressConfigFile(configFilePath: string): void {
     const { isPropertyAssignment } = ensureTypescript();
     const { tsquery } = require('@phenomnomnominal/tsquery');
     const { nxE2EPreset } = require('@nx/cypress/plugins/cypress-preset');
@@ -698,7 +622,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
         if (
           this.isValidPathLikePropertyWithStringLiteralValue(
             node,
-            cypressConfig.v10OrMore.srcPaths
+            cypressConfig.srcPaths
           )
         ) {
           const newValue = this.cypressConfigSrcPathToNewPath(oldValue);
@@ -706,7 +630,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
         } else if (
           this.isValidPathLikePropertyWithStringLiteralValue(
             node,
-            cypressConfig.v10OrMore.distPaths
+            cypressConfig.distPaths
           )
         ) {
           const newValue = this.cypressConfigDistPathToNewPath(oldValue);
@@ -714,7 +638,7 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
         } else if (
           this.isValidPathLikePropertyWithStringLiteralValue(
             node,
-            cypressConfig.v10OrMore.globPatterns
+            cypressConfig.globPatterns
           )
         ) {
           const newValue = this.cypressConfigGlobToNewGlob(oldValue);
@@ -781,21 +705,21 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
     if (
       this.isValidPathLikePropertyWithStringLiteralValue(
         node,
-        cypressConfig.v10OrMore.srcPaths
+        cypressConfig.srcPaths
       )
     ) {
       newValue = this.cypressConfigSrcPathToNewPath(oldValue);
     } else if (
       this.isValidPathLikePropertyWithStringLiteralValue(
         node,
-        cypressConfig.v10OrMore.distPaths
+        cypressConfig.distPaths
       )
     ) {
       newValue = this.cypressConfigDistPathToNewPath(oldValue);
     } else if (
       this.isValidPathLikePropertyWithStringLiteralValue(
         node,
-        cypressConfig.v10OrMore.globPatterns
+        cypressConfig.globPatterns
       )
     ) {
       newValue = this.cypressConfigGlobToNewGlob(oldValue);
@@ -878,18 +802,10 @@ export class E2eMigrator extends ProjectMigrator<SupportedTargets> {
   }
 
   private getDefaultCypressConfigFilePath(): string {
-    return this.cypressInstalledVersion < 10
-      ? joinPathFragments(this.project.newRoot, 'cypress.json')
-      : joinPathFragments(this.project.newRoot, 'cypress.config.ts');
+    return joinPathFragments(this.project.newRoot, 'cypress.config.ts');
   }
 
   private findCypressConfigFilePath(dir: string): string | null {
-    if (this.cypressInstalledVersion < 10) {
-      return this.tree.exists(joinPathFragments(dir, 'cypress.json'))
-        ? joinPathFragments(dir, 'cypress.json')
-        : null;
-    }
-
     // https://docs.cypress.io/guides/references/configuration#Configuration-File
     const possibleFiles = [
       joinPathFragments(dir, 'cypress.config.ts'),

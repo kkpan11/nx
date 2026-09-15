@@ -1,37 +1,36 @@
 import { cacheDir, ExecutorContext, logger } from '@nx/devkit';
+import { createAsyncIterable } from '@nx/devkit/internal';
 import { exec, execSync } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { existsSync, removeSync } from 'fs-extra';
-import { createAsyncIterable } from '@nx/devkit/src/utils/async-iterable';
-import { NormalizedSwcExecutorOptions, SwcCliOptions } from '../schema';
+import { NormalizedSwcExecutorOptions } from '../schema';
 import { printDiagnostics } from '../typescript/print-diagnostics';
 import { runTypeCheck, TypeCheckOptions } from '../typescript/run-type-check';
 import { relative } from 'path';
 
-function getSwcCmd(
+export function getSwcCmd(
   {
     swcCliOptions: { swcrcPath, destPath, stripLeadingPaths },
     root,
     projectRoot,
-    originalProjectRoot,
     sourceRoot,
-    inline,
+    main,
   }: NormalizedSwcExecutorOptions,
   watch = false
 ) {
   const swcCLI = require.resolve('@swc/cli/bin/swc.js');
   let inputDir: string;
-  // TODO(v20): remove inline feature
-  if (inline) {
-    inputDir = originalProjectRoot.split('/')[0];
+
+  if (sourceRoot) {
+    // A main entry outside sourceRoot (e.g. Next.js custom server at <projectRoot>/server)
+    // is only emitted when compiling from the project root.
+    inputDir = relative(sourceRoot, main).startsWith('..')
+      ? '.'
+      : relative(projectRoot, sourceRoot);
   } else {
-    if (sourceRoot) {
-      inputDir = relative(projectRoot, sourceRoot);
-    } else {
-      // If sourceRoot is not provided, check if `src` exists and use that instead.
-      // This is important for root projects to avoid compiling too many directories.
-      inputDir = existsSync(join(root, projectRoot, 'src')) ? 'src' : '.';
-    }
+    // If sourceRoot is not provided, check if `src` exists and use that instead.
+    // This is important for root projects to avoid compiling too many directories.
+    inputDir = existsSync(join(root, projectRoot, 'src')) ? 'src' : '.';
   }
 
   let swcCmd = `node ${swcCLI} ${
@@ -50,10 +49,10 @@ function getTypeCheckOptions(normalizedOptions: NormalizedSwcExecutorOptions) {
     !normalizedOptions.swcCliOptions.stripLeadingPaths
       ? projectRoot
       : sourceRoot
-      ? sourceRoot
-      : existsSync(join(root, projectRoot, 'src'))
-      ? join(projectRoot, 'src')
-      : projectRoot;
+        ? sourceRoot
+        : existsSync(join(root, projectRoot, 'src'))
+          ? join(projectRoot, 'src')
+          : projectRoot;
 
   const typeCheckOptions: TypeCheckOptions = {
     mode: 'emitDeclarationOnly',
@@ -65,7 +64,14 @@ function getTypeCheckOptions(normalizedOptions: NormalizedSwcExecutorOptions) {
 
   if (watch) {
     typeCheckOptions.incremental = true;
-    typeCheckOptions.cacheDir = cacheDir;
+    // Scope the incremental .tsbuildinfo per project (in its own subdir, not
+    // alongside Nx's cache files) so concurrent watch type-checks don't collide
+    // on a single file.
+    typeCheckOptions.cacheDir = join(cacheDir, 'swc', projectRoot);
+  }
+
+  if (normalizedOptions.isTsSolutionSetup && normalizedOptions.skipTypeCheck) {
+    typeCheckOptions.ignoreDiagnostics = true;
   }
 
   return typeCheckOptions;
@@ -79,19 +85,31 @@ export async function compileSwc(
   logger.log(`Compiling with SWC for ${context.projectName}...`);
 
   if (normalizedOptions.clean) {
-    removeSync(normalizedOptions.outputPath);
+    rmSync(normalizedOptions.outputPath, { recursive: true, force: true });
   }
 
-  const swcCmdLog = execSync(getSwcCmd(normalizedOptions), {
-    encoding: 'utf8',
-    cwd: normalizedOptions.swcCliOptions.swcCwd,
-  });
-  logger.log(swcCmdLog.replace(/\n/, ''));
-  const isCompileSuccess = swcCmdLog.includes('Successfully compiled');
+  try {
+    const swcCmdLog = execSync(getSwcCmd(normalizedOptions), {
+      encoding: 'utf8',
+      cwd: normalizedOptions.swcCliOptions.swcCwd,
+      windowsHide: true,
+      stdio: 'pipe',
+    });
+    logger.log(swcCmdLog.replace(/\n/, ''));
+  } catch (error) {
+    logger.error(`SWC compilation failed: ${error?.message ?? error}`);
+    if (error?.stderr) {
+      logger.error(error.stderr.toString());
+    }
+    if (error?.stdout) {
+      logger.error(error.stdout.toString());
+    }
+    return { success: false };
+  }
 
-  if (normalizedOptions.skipTypeCheck) {
+  if (normalizedOptions.skipTypeCheck && !normalizedOptions.isTsSolutionSetup) {
     await postCompilationCallback();
-    return { success: isCompileSuccess };
+    return { success: true };
   }
 
   const { errors, warnings } = await runTypeCheck(
@@ -106,7 +124,7 @@ export async function compileSwc(
 
   await postCompilationCallback();
   return {
-    success: !hasErrors && isCompileSuccess,
+    success: !hasErrors,
     outfile: normalizedOptions.mainOutputPath,
   };
 }
@@ -125,18 +143,20 @@ export async function* compileSwcWatch(
   let initialPostCompile = true;
 
   if (normalizedOptions.clean) {
-    removeSync(normalizedOptions.outputPath);
+    rmSync(normalizedOptions.outputPath, { recursive: true, force: true });
   }
 
   return yield* createAsyncIterable<{ success: boolean; outfile: string }>(
     async ({ next, done }) => {
       let processOnExit: () => void;
+      let handleCallback: (type: string, data?: string) => void;
       let stdoutOnData: () => void;
       let stderrOnData: () => void;
       let watcherOnExit: () => void;
 
       const swcWatcher = exec(getSwcCmd(normalizedOptions, true), {
         cwd: normalizedOptions.swcCliOptions.swcCwd,
+        windowsHide: true,
       });
 
       processOnExit = () => {
@@ -147,61 +167,74 @@ export async function* compileSwcWatch(
         process.off('exit', processOnExit);
       };
 
-      stdoutOnData = async (data?: string) => {
-        process.stdout.write(data);
-        if (!data.startsWith('Watching')) {
-          const swcStatus = data.includes('Successfully');
+      handleCallback = async (type: string, data?: string) => {
+        if (type === 'stdout' || data.includes('Successfully')) {
+          process.stdout.write(data);
+          if (!data.startsWith('Watching')) {
+            const swcStatus = data.includes('Successfully');
 
-          if (initialPostCompile) {
-            await postCompilationCallback();
-            initialPostCompile = false;
+            if (initialPostCompile) {
+              await postCompilationCallback();
+              initialPostCompile = false;
+            }
+
+            if (
+              normalizedOptions.skipTypeCheck ||
+              normalizedOptions.isTsSolutionSetup
+            ) {
+              next(getResult(swcStatus));
+              return;
+            }
+
+            if (!typeCheckOptions) {
+              typeCheckOptions = getTypeCheckOptions(normalizedOptions);
+            }
+
+            const delayed = delay(5000);
+            next(
+              getResult(
+                await Promise.race([
+                  delayed
+                    .start()
+                    .then(() => ({ tscStatus: false, type: 'timeout' })),
+                  runTypeCheck(typeCheckOptions).then(
+                    ({ errors, warnings }) => {
+                      const hasErrors = errors.length > 0;
+                      if (hasErrors) {
+                        printDiagnostics(errors, warnings);
+                      }
+                      return {
+                        tscStatus: !hasErrors,
+                        type: 'tsc',
+                      };
+                    }
+                  ),
+                ]).then(({ type, tscStatus }) => {
+                  if (type === 'tsc') {
+                    delayed.cancel();
+                    return tscStatus && swcStatus;
+                  }
+
+                  return swcStatus;
+                })
+              )
+            );
           }
-
-          if (normalizedOptions.skipTypeCheck) {
-            next(getResult(swcStatus));
+        } else if (type === 'stderr' && !data.includes('Successfully')) {
+          process.stderr.write(data);
+          if (data.includes('Debugger attached.')) {
             return;
           }
-
-          if (!typeCheckOptions) {
-            typeCheckOptions = getTypeCheckOptions(normalizedOptions);
-          }
-
-          const delayed = delay(5000);
-          next(
-            getResult(
-              await Promise.race([
-                delayed
-                  .start()
-                  .then(() => ({ tscStatus: false, type: 'timeout' })),
-                runTypeCheck(typeCheckOptions).then(({ errors, warnings }) => {
-                  const hasErrors = errors.length > 0;
-                  if (hasErrors) {
-                    printDiagnostics(errors, warnings);
-                  }
-                  return {
-                    tscStatus: !hasErrors,
-                    type: 'tsc',
-                  };
-                }),
-              ]).then(({ type, tscStatus }) => {
-                if (type === 'tsc') {
-                  delayed.cancel();
-                  return tscStatus && swcStatus;
-                }
-
-                return swcStatus;
-              })
-            )
-          );
+          next(getResult(false));
         }
       };
 
+      stdoutOnData = async (data?: string) => {
+        handleCallback('stdout', data);
+      };
+
       stderrOnData = (err?: any) => {
-        process.stderr.write(err);
-        if (err.includes('Debugger attached.')) {
-          return;
-        }
-        next(getResult(false));
+        handleCallback('stderr', err);
       };
 
       watcherOnExit = () => {

@@ -1,19 +1,16 @@
 import { UnitTestRunner } from '../../../utils/test-runners';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface NormalizedSchema {
   libraryOptions: {
-    name: string;
-    addTailwind?: boolean;
+    directory: string;
+    name?: string;
     skipFormat?: boolean;
-    simpleName?: boolean;
     addModuleSpec?: boolean;
-    directory?: string;
     sourceDir?: string;
     buildable?: boolean;
     publishable?: boolean;
     importPath?: string;
-    standaloneConfig?: boolean;
     spec?: boolean;
     commonModule?: boolean;
     routing?: boolean;
@@ -22,12 +19,17 @@ export interface NormalizedSchema {
     tags?: string;
     strict?: boolean;
     compilationMode?: 'full' | 'partial';
+    enableTypedLinting?: boolean;
+    /**
+     * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+     */
     setParserOptionsProject?: boolean;
     skipModule?: boolean;
     skipPackageJson?: boolean;
     skipPostInstall?: boolean;
+    skipTsConfig?: boolean;
     standalone?: boolean;
-    linter: Linter;
+    linter: LinterType;
     unitTestRunner: UnitTestRunner;
     prefix: string;
     fileName: string;
@@ -38,6 +40,7 @@ export interface NormalizedSchema {
     parsedTags: string[];
     ngCliSchematicLibRoot: string;
     standaloneComponentName: string;
+    moduleTypeSeparator: '-' | '.';
   };
   componentOptions: {
     name: string;
@@ -46,11 +49,12 @@ export interface NormalizedSchema {
     inlineStyle?: boolean;
     inlineTemplate?: boolean;
     viewEncapsulation?: 'Emulated' | 'None' | 'ShadowDom';
-    changeDetection?: 'Default' | 'OnPush';
+    changeDetection?: 'Default' | 'Eager' | 'OnPush';
     style?: 'css' | 'scss' | 'sass' | 'less' | 'none';
     skipTests?: boolean;
     selector?: string;
     skipSelector?: boolean;
     flat?: boolean;
+    type?: string;
   };
 }

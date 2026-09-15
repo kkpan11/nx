@@ -4,54 +4,38 @@
   "sourceRoot": "packages/node",
   "projectType": "library",
   "targets": {
-    "build-base": {
-      "executor": "@nx/js:tsc",
-      "options": {
-        "assets": [
-          {
-            "input": "packages/node",
-            "glob": "**/files/**",
-            "output": "/"
-          },
-          {
-            "input": "packages/node",
-            "glob": "**/files/**/.gitkeep",
-            "output": "/"
-          },
-          {
-            "input": "packages/node",
-            "glob": "**/*.json",
-            "ignore": ["**/tsconfig*.json", "project.json", ".eslintrc.json"],
-            "output": "/"
-          },
-          {
-            "input": "packages/node",
-            "glob": "**/*.js",
-            "ignore": ["**/jest.config.js"],
-            "output": "/"
-          },
-          {
-            "input": "packages/node",
-            "glob": "**/*.d.ts",
-            "output": "/"
-          },
-          {
-            "input": "",
-            "glob": "LICENSE",
-            "output": "/"
-          }
-        ]
-      }
-    },
     "build": {
-      "executor": "nx:run-commands",
-      "outputs": ["{workspaceRoot}/build/packages/node"],
-      "options": {
-        "command": "node ./scripts/copy-readme.js node"
-      }
+      "dependsOn": ["build-base"],
+      "outputs": ["{projectRoot}/README.md"],
+      "command": "node ./scripts/copy-readme.js node packages/node/readme-template.md packages/node/README.md",
+      "inputs": ["copyReadme"]
     },
-    "add-extra-dependencies": {
-      "command": "node ./scripts/add-dependency-to-build.js node @nrwl/node"
+    "build-base": {
+      "dependsOn": [
+        {
+          "projects": [
+            "nx",
+            "devkit",
+            "workspace",
+            "js",
+            "cypress",
+            "module-federation",
+            "playwright",
+            "webpack",
+            "jest",
+            "vitest",
+            "eslint",
+            "docker"
+          ],
+          "target": "build-base"
+        },
+        "build-native",
+        "copy-assets"
+      ]
+    },
+    "nx-release-publish": {
+      "dependsOn": []
     }
-  }
+  },
+  "implicitDependencies": ["angular", "nest", "webpack"]
 }

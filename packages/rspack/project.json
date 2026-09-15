@@ -1,0 +1,14 @@
+{
+  "name": "rspack",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/rspack/src",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "outputs": ["{projectRoot}/README.md"],
+      "command": "node ./scripts/copy-readme.js rspack packages/rspack/readme-template.md packages/rspack/README.md",
+      "inputs": ["copyReadme"]
+    }
+  },
+  "tags": []
+}

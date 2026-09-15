@@ -1,8 +1,8 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import runCommands from './run-commands';
-import { readProjectConfiguration } from 'nx/src/generators/utils/project-configuration';
+import { readProjectConfiguration } from '@nx/devkit';
 
 // nx-ignore-next-line
 const { libraryGenerator } = require('@nx/js');
@@ -19,7 +19,7 @@ describe('run-commands', () => {
     };
 
     await libraryGenerator(tree, {
-      name: 'lib',
+      directory: 'lib',
     });
 
     await runCommands(tree, opts);

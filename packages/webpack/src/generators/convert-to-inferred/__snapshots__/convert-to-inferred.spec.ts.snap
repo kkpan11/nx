@@ -1,4 +1,4 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`convert-to-inferred all projects should migrate all projects using the webpack executors 1`] = `
 "const { NxAppWebpackPlugin } = require('@nx/webpack/app-plugin');
@@ -44,10 +44,7 @@ const configValues = {
     default: {
       hot: true,
       liveReload: false,
-      server: {
-        type: 'https',
-        options: { cert: './server.crt', key: './server.key' },
-      },
+      server: { type: 'https', options: { cert: './server.crt', key: './server.key' } },
       proxy: { '/api': { target: 'http://localhost:3333', secure: false } },
       port: 4200,
       headers: { 'Access-Control-Allow-Origin': '*' },
@@ -137,10 +134,7 @@ const configValues = {
     default: {
       hot: true,
       liveReload: false,
-      server: {
-        type: 'https',
-        options: { cert: './server.crt', key: './server.key' },
-      },
+      server: { type: 'https', options: { cert: './server.crt', key: './server.key' } },
       proxy: { '/api': { target: 'http://localhost:3333', secure: false } },
       port: 4200,
       headers: { 'Access-Control-Allow-Origin': '*' },
@@ -230,10 +224,7 @@ const configValues = {
     default: {
       hot: true,
       liveReload: false,
-      server: {
-        type: 'https',
-        options: { cert: './server.crt', key: './server.key' },
-      },
+      server: { type: 'https', options: { cert: './server.crt', key: './server.key' } },
       proxy: { '/api': { target: 'http://localhost:3333', secure: false } },
       port: 4200,
       headers: { 'Access-Control-Allow-Origin': '*' },

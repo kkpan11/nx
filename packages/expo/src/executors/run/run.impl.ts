@@ -1,13 +1,15 @@
 import { ExecutorContext, names } from '@nx/devkit';
-import { join, resolve as pathResolve } from 'path';
+import { signalToCode } from '@nx/devkit/internal';
 import { ChildProcess, fork } from 'child_process';
+import { resolveExpoCliPath } from '../../utils/resolve-expo-cli';
+import { existsSync } from 'node:fs';
 import { platform } from 'os';
-import { existsSync } from 'fs-extra';
+import { join, resolve as pathResolve } from 'path';
 
 import { ExpoRunOptions } from './schema';
 import { prebuildAsync } from '../prebuild/prebuild.impl';
 import { podInstall } from '../../utils/pod-install-task';
-import { installAsync } from '../install/install.impl';
+import { warnExpoExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ExpoRunOutput {
   success: boolean;
@@ -19,6 +21,8 @@ export default async function* runExecutor(
   options: ExpoRunOptions,
   context: ExecutorContext
 ): AsyncGenerator<ExpoRunOutput> {
+  warnExpoExecutorDeprecation('run');
+
   if (platform() !== 'darwin' && options.platform === 'ios') {
     throw new Error(`The run-ios build requires Mac to run`);
   }
@@ -34,7 +38,10 @@ export default async function* runExecutor(
   }
 
   if (options.install) {
-    await installAsync(context.root, {});
+    const {
+      installAsync,
+    } = require('@expo/cli/build/src/install/installAsync');
+    await installAsync([], {});
     if (options.platform === 'ios') {
       podInstall(join(context.root, projectRoot, 'ios'));
     }
@@ -58,7 +65,7 @@ function runCliRun(
 ) {
   return new Promise((resolve, reject) => {
     childProcess = fork(
-      require.resolve('@expo/cli/build/bin/cli'),
+      resolveExpoCliPath(),
       ['run:' + options.platform, ...createRunOptions(options), '--no-install'], // pass in no-install to prevent node_modules install
       {
         cwd: pathResolve(workspaceRoot, projectRoot),
@@ -73,7 +80,8 @@ function runCliRun(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

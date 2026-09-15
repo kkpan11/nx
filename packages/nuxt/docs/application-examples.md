@@ -41,54 +41,36 @@ Your new app will contain the following:
 
 ## Examples
 
-{% tabs %}
-{% tab label="Create app in a directory" %}
-
-{% callout type="note" title="Directory Flag Behavior Changes" %}
-The command below uses the `as-provided` directory flag behavior, which is the default in Nx 16.8.0. If you're on an earlier version of Nx or using the `derived` option, use `--directory=nested`. See the [as-provided vs. derived documentation](/deprecated/as-provided-vs-derived) for more details.
-{% /callout %}
+##### Create app in a nested directory
 
 ```shell
-nx g @nx/nuxt:app myapp --directory=apps/nested/myapp
+nx g @nx/nuxt:app apps/nested/myapp
 ```
 
-{% /tab %}
-
-{% tab label="Create app with vitest configured" %}
+##### Create app with vitest configured
 
 ```shell
-nx g @nx/nuxt:app myapp --directory=apps/nested/myapp --unitTestRunner=vitest
+nx g @nx/nuxt:app apps/nested/myapp --unitTestRunner=vitest
 ```
 
-{% /tab %}
-
-{% tab label="Use plain JavaScript (not TypeScript)" %}
+##### Use plain JavaScript (not TypeScript)
 
 ```shell
-nx g @nx/nuxt:app myapp --js
+nx g @nx/nuxt:app apps/myapp --js
 ```
-
-{% /tab %}
-{% /tabs %}
 
 ## Generate pages and components
 
 You can use the the [`@nx/vue:component` generator](/nx-api/vue/generators/component) to generate new pages and components for your application. You can read more on the [`@nx/vue:component` generator documentation page](/nx-api/vue/generators/component), but here are some examples:
 
-{% tabs %}
-{% tab label="New page" %}
+##### New page
 
 ```shell
-nx g @nx/nuxt:component --directory=my-app/src/pages --name=my-page
+nx g @nx/nuxt:component my-app/src/pages/my-page
 ```
 
-{% /tab %}
-
-{% tab label="New component" %}
+##### New component
 
 ```shell
-nx g @nx/nuxt:component --directory=my-app/src/components/my-cmp --name=my-cmp
+nx g @nx/nuxt:component my-app/src/components/my-cmp
 ```
-
-{% /tab %}
-{% /tabs %}

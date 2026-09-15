@@ -20,9 +20,9 @@ nx run mobile:run-android
 
 ## Examples
 
-{% tabs %}
-{% tab label="Run on a specific device/simulator" %}
-To see all the avaiable emulators, run command:
+##### Run on a specific device/simulator
+
+To see all the available emulators, run command:
 
 ```bash
 emulator -list-avds
@@ -39,8 +39,8 @@ The `deviceId` option allows you to launch your android app in a specific device
     }
 ```
 
-{% /tab %}
-{% tab label="Run the debug/release app" %}
+##### Run the debug/release app
+
 The `mode` option allows to specify the build variant, such as `debug` or `release`.
 
 ```json
@@ -51,8 +51,5 @@ The `mode` option allows to specify the build variant, such as `debug` or `relea
       }
     }
 ```
-
-{% /tab %}
-{% /tabs %}
 
 ---

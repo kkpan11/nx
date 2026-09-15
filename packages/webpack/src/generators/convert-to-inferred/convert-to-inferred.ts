@@ -1,17 +1,24 @@
 import {
+  AggregatedLog,
+  migrateProjectExecutorsToPlugin,
+  NoTargetsToMigrateError,
+} from '@nx/devkit/internal';
+import {
   addDependenciesToPackageJson,
   createProjectGraphAsync,
   formatFiles,
   runTasksInSerial,
   type ProjectConfiguration,
   type Tree,
+  logger as devkitLogger,
 } from '@nx/devkit';
-import { AggregatedLog } from '@nx/devkit/src/generators/plugin-migrations/aggregate-log-util';
-import { migrateProjectExecutorsToPlugin } from '@nx/devkit/src/generators/plugin-migrations/executor-to-plugin-migrator';
-import { tsquery } from '@phenomnomnominal/tsquery';
+import { ast, query } from '@phenomnomnominal/tsquery';
 import * as ts from 'typescript';
 import { createNodesV2, type WebpackPluginOptions } from '../../plugins/plugin';
-import { webpackCliVersion } from '../../utils/versions';
+import {
+  webpackCliVersion,
+  assertSupportedWebpackVersion,
+} from '../../utils/versions';
 import {
   buildPostTargetTransformerFactory,
   servePostTargetTransformerFactory,
@@ -24,12 +31,16 @@ interface Schema {
 }
 
 export async function convertToInferred(tree: Tree, options: Schema) {
+  assertSupportedWebpackVersion(tree);
+
   const projectGraph = await createProjectGraphAsync();
   const migrationContext: MigrationContext = {
     logger: new AggregatedLog(),
     projectGraph,
     workspaceRoot: tree.root,
   };
+
+  const logger = createCollectingLogger();
 
   const migratedProjects =
     await migrateProjectExecutorsToPlugin<WebpackPluginOptions>(
@@ -59,11 +70,24 @@ export async function convertToInferred(tree: Tree, options: Schema) {
           skipProjectFilter: skipProjectFilterFactory(tree),
         },
       ],
-      options.project
+      options.project,
+      logger
     );
 
   if (migratedProjects.size === 0) {
-    throw new Error('Could not find any targets to migrate.');
+    const convertMessage = [...logger.loggedMessages.values()]
+      .flat()
+      .find((v) => v.includes('@nx/webpack:convert-config-to-webpack-plugin'));
+
+    if (convertMessage.length > 0) {
+      logger.flushLogs((message) => !convertMessage.includes(message));
+      throw new Error(convertMessage);
+    } else {
+      logger.flushLogs();
+      throw new NoTargetsToMigrateError();
+    }
+  } else {
+    logger.flushLogs();
   }
 
   const installCallback = addDependenciesToPackageJson(
@@ -98,11 +122,11 @@ function skipProjectFilterFactory(tree: Tree) {
       return `The webpack config path is missing in the project configuration (${projectConfiguration.root}).`;
     }
 
-    const sourceFile = tsquery.ast(tree.read(webpackConfigPath, 'utf-8'));
+    const sourceFile = ast(tree.read(webpackConfigPath, 'utf-8'));
 
     const composePluginsSelector =
       'CallExpression:has(Identifier[name=composePlugins])';
-    const composePlugins = tsquery<ts.CallExpression>(
+    const composePlugins = query<ts.CallExpression>(
       sourceFile,
       composePluginsSelector
     )[0];
@@ -113,7 +137,7 @@ function skipProjectFilterFactory(tree: Tree) {
 
     const nxAppWebpackPluginSelector =
       'PropertyAssignment:has(Identifier[name=plugins]) NewExpression:has(Identifier[name=NxAppWebpackPlugin])';
-    const nxAppWebpackPlugin = tsquery<ts.NewExpression>(
+    const nxAppWebpackPlugin = query<ts.NewExpression>(
       sourceFile,
       nxAppWebpackPluginSelector
     )[0];
@@ -124,4 +148,43 @@ function skipProjectFilterFactory(tree: Tree) {
 
     return false;
   };
+}
+
+export function createCollectingLogger(): typeof devkitLogger & {
+  loggedMessages: Map<string, string[]>;
+  flushLogs: (filter?: (message: string) => boolean) => void;
+} {
+  const loggedMessages = new Map<string, string[]>();
+
+  const flushLogs = (filter?: (message: string) => boolean) => {
+    loggedMessages.forEach((messages, method) => {
+      messages.forEach((message) => {
+        if (!filter || filter(message)) {
+          devkitLogger[method](message);
+        }
+      });
+    });
+  };
+
+  return new Proxy(
+    { ...devkitLogger, loggedMessages, flushLogs },
+    {
+      get(target, property) {
+        const originalMethod = target[property];
+
+        if (typeof originalMethod === 'function') {
+          return (...args) => {
+            const message = args.join(' ');
+            const propertyString = String(property);
+            if (!loggedMessages.has(message)) {
+              loggedMessages.set(propertyString, []);
+            }
+            loggedMessages.get(propertyString).push(message);
+          };
+        }
+
+        return originalMethod;
+      },
+    }
+  );
 }

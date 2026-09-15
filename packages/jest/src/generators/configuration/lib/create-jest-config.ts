@@ -7,12 +7,13 @@ import {
   type TargetConfiguration,
   type Tree,
 } from '@nx/devkit';
-import { readTargetDefaultsForTarget } from 'nx/src/project-graph/utils/project-configuration-utils';
 import {
   findRootJestConfig,
   type JestPresetExtension,
 } from '../../../utils/config/config-file';
 import type { NormalizedJestProjectSchema } from '../schema';
+import { getProjectType } from '@nx/js/internal';
+import { readTargetDefaultsForTarget } from '@nx/devkit/internal';
 
 export async function createJestConfig(
   tree: Tree,
@@ -32,7 +33,7 @@ export default { ...nxPreset };`
       tree.write(
         `jest.preset.${presetExt}`,
         `const nxPreset = require('@nx/jest/preset').default;
-  
+
 module.exports = { ...nxPreset };`
       );
     }
@@ -91,7 +92,13 @@ module.exports = { ...nxPreset };`
       }
 
       const jestProjectConfig = `jest.config.${
-        rootProjectConfig.projectType === 'application' ? 'app' : 'lib'
+        getProjectType(
+          tree,
+          rootProjectConfig.root,
+          rootProjectConfig.projectType
+        ) === 'application'
+          ? 'app'
+          : 'lib'
       }.${options.js ? 'js' : 'ts'}`;
 
       tree.rename(rootJestPath, jestProjectConfig);
@@ -139,17 +146,16 @@ module.exports = { ...nxPreset };`
 
 function generateGlobalConfig(tree: Tree, isJS: boolean) {
   const contents = isJS
-    ? stripIndents`
-    const { getJestProjectsAsync } = require('@nx/jest');
+    ? `const { getJestProjectsAsync } = require('@nx/jest');
 
-    module.exports = async () => ({
-      projects: await getJestProjectsAsync()
-    });`
-    : stripIndents`
-    import { getJestProjectsAsync } from '@nx/jest';
+module.exports = async () => ({
+  projects: await getJestProjectsAsync()
+});`
+    : `import type { Config } from 'jest';
+import { getJestProjectsAsync } from '@nx/jest';
 
-    export default async () => ({
-     projects: await getJestProjectsAsync()
-    });`;
+export default async (): Promise<Config> => ({
+  projects: await getJestProjectsAsync()
+});`;
   tree.write(`jest.config.${isJS ? 'js' : 'ts'}`, contents);
 }

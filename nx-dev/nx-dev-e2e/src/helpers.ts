@@ -1,4 +1,4 @@
-import { Page, test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 /**
  * Assert a text is present on the visited page.
  * @param page
@@ -11,11 +11,11 @@ export function assertTextOnPage(
   title: string,
   selector: string = 'h1'
 ): void {
-  test.describe(path, () =>
+  test.describe(path, () => {
     test(`should display "${title}"`, async ({ page }) => {
       await page.goto(path);
       const locator = page.locator(selector);
       await expect(locator).toContainText(title);
-    })
-  );
+    });
+  });
 }

@@ -4,20 +4,21 @@
   "sourceRoot": "graph/client/src",
   "projectType": "application",
   "targets": {
+    "lint": {
+      "options": {
+        "max-warnings": 15
+      }
+    },
     "generate-dev-environment-js": {
       "executor": "nx:run-commands",
       "options": {
-        "commands": [
-          "ts-node -P ./scripts/tsconfig.scripts.json ./scripts/generate-graph-environment.ts"
-        ]
+        "commands": ["tsx ./scripts/generate-graph-environment.ts"]
       }
     },
     "generate-graph-base": {
       "executor": "nx:run-commands",
       "options": {
-        "commands": [
-          "ts-node -P ./scripts/tsconfig.scripts.json ./scripts/generate-graph.ts"
-        ]
+        "commands": ["tsx ./scripts/generate-graph.ts"]
       }
     },
     "generate-graph": {
@@ -31,6 +32,7 @@
       }
     },
     "build-client": {
+      "dependsOn": ["nx:build-native"],
       "configurations": {
         "dev": {},
         "nx-console": {},
@@ -40,6 +42,14 @@
         "dev-e2e": {}
       },
       "defaultConfiguration": "release"
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck", "nx:build-native"],
+      "inputs": [
+        "...",
+        "{workspaceRoot}/packages/devkit/tsconfig.lib.json",
+        "{workspaceRoot}/packages/nx/tsconfig.lib.json"
+      ]
     },
     "serve-base": {
       "configurations": {
@@ -83,31 +93,6 @@
         }
       },
       "defaultConfiguration": "dev"
-    },
-    "storybook": {
-      "executor": "@nx/storybook:storybook",
-      "options": {
-        "port": 4400,
-        "configDir": "graph/client/.storybook"
-      },
-      "configurations": {
-        "ci": {
-          "quiet": true
-        }
-      }
-    },
-    "build-storybook": {
-      "executor": "@nx/storybook:build",
-      "outputs": ["{options.outputDir}"],
-      "options": {
-        "configDir": "graph/client/.storybook",
-        "outputDir": "dist/storybook/graph-client"
-      },
-      "configurations": {
-        "ci": {
-          "quiet": true
-        }
-      }
     }
   },
   "tags": []

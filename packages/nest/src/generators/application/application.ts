@@ -10,6 +10,8 @@ import {
   updateTsConfig,
 } from './lib';
 import type { ApplicationGeneratorOptions } from './schema';
+import { assertSupportedNestJsVersion } from '../../utils/assert-supported-nestjs-version';
+import { assertVitestSupported } from '../../utils/assert-vitest-supported';
 import { ensureDependencies } from '../../utils/ensure-dependencies';
 
 export async function applicationGenerator(
@@ -18,7 +20,7 @@ export async function applicationGenerator(
 ): Promise<GeneratorCallback> {
   return await applicationGeneratorInternal(tree, {
     addPlugin: false,
-    projectNameAndRootFormat: 'derived',
+    useProjectJson: true,
     ...rawOptions,
   });
 }
@@ -27,7 +29,13 @@ export async function applicationGeneratorInternal(
   tree: Tree,
   rawOptions: ApplicationGeneratorOptions
 ): Promise<GeneratorCallback> {
+  assertSupportedNestJsVersion(tree);
+
   const options = await normalizeOptions(tree, rawOptions);
+
+  if (options.unitTestRunner === 'vitest') {
+    assertVitestSupported(tree);
+  }
 
   const tasks: GeneratorCallback[] = [];
   const initTask = await initGenerator(tree, {
@@ -44,7 +52,13 @@ export async function applicationGeneratorInternal(
   updateTsConfig(tree, options);
 
   if (!options.skipPackageJson) {
+    // Install dependencies to root package.json
     tasks.push(ensureDependencies(tree));
+
+    // Install dependencies to project's package.json (for PM Workspaces)
+    if (tree.exists(`${options.appProjectRoot}/package.json`)) {
+      tasks.push(ensureDependencies(tree, options.appProjectRoot));
+    }
   }
 
   if (!options.skipFormat) {

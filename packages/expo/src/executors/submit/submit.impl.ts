@@ -1,10 +1,12 @@
 import { ExecutorContext, names } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 
 import { resolveEas } from '../../utils/resolve-eas';
 
 import { SubmitExecutorSchema } from './schema';
+import { warnExpoExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ReactNativeSubmitOutput {
   success: boolean;
@@ -16,6 +18,8 @@ export default async function* submitExecutor(
   options: SubmitExecutorSchema,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeSubmitOutput> {
+  warnExpoExecutorDeprecation('submit');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -52,7 +56,8 @@ function runCliSubmit(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(code);
       } else {

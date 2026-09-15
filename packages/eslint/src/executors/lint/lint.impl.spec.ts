@@ -1,7 +1,28 @@
 import type { ExecutorContext } from '@nx/devkit';
 import { TempFs } from '@nx/devkit/internal-testing-utils';
 import * as fs from 'fs';
+// jest.spyOn must target the module the code under test binds (packages/devkit
+// imports nx/src/devkit-internals directly); spying on the @nx/devkit/internal
+// barrel re-export would not intercept it.
+// oxlint-disable-next-line no-restricted-imports
+import * as devkitInternals from 'nx/src/devkit-internals';
 import { resolve } from 'path';
+
+const realFs = jest.requireActual<typeof import('fs')>('fs');
+
+jest.mock('fs', () => {
+  const actual = jest.requireActual('fs');
+  return {
+    ...actual,
+    existsSync: jest.fn((path: any) => actual.existsSync(path)),
+    writeFileSync: jest.fn((path: any, data: any, options?: any) =>
+      actual.writeFileSync(path, data, options)
+    ),
+    mkdirSync: jest.fn((path: any, options?: any) =>
+      actual.mkdirSync(path, options)
+    ),
+  };
+});
 import type { Schema } from './schema';
 
 const formattedReports = 'formatted report 1';
@@ -12,7 +33,7 @@ const mockLoadFormatter = jest.fn().mockReturnValue(mockFormatter);
 const mockIsPathIgnored = jest.fn().mockReturnValue(Promise.resolve(false));
 const mockOutputFixes = jest.fn();
 
-const VALID_ESLINT_VERSION = '7.6';
+const VALID_ESLINT_VERSION = '8.0';
 
 let mockReports: any[] = [{ results: [], usedDeprecatedRules: [] }];
 const mockLintFiles = jest.fn().mockImplementation(() => mockReports);
@@ -38,7 +59,8 @@ const mockResolveAndInstantiateESLint = jest.fn().mockReturnValue(
 
 jest.mock('./utility/eslint-utils', () => {
   return {
-    resolveAndInstantiateESLint: mockResolveAndInstantiateESLint,
+    resolveAndInstantiateESLint: (...args) =>
+      mockResolveAndInstantiateESLint(...args),
   };
 });
 import lintExecutor from './lint.impl';
@@ -69,6 +91,8 @@ function createValidRunBuilderOptions(
     reportUnusedDisableDirectives: null,
     printConfig: null,
     errorOnUnmatchedPattern: true,
+    suppressAll: false,
+    suppressRule: [],
     ...additionalOptions,
   };
 }
@@ -76,6 +100,17 @@ function createValidRunBuilderOptions(
 function setupMocks() {
   jest.resetModules();
   jest.clearAllMocks();
+  // Reset fs mocks to pass-through real implementations
+  (fs.existsSync as jest.Mock).mockImplementation((path: fs.PathLike) =>
+    realFs.existsSync(path)
+  );
+  (fs.writeFileSync as jest.Mock).mockImplementation(
+    (path: fs.PathOrFileDescriptor, data: any, options?: any) =>
+      realFs.writeFileSync(path, data, options)
+  );
+  (fs.mkdirSync as jest.Mock).mockImplementation(
+    (path: fs.PathLike, options?: any) => realFs.mkdirSync(path, options)
+  );
   jest.spyOn(process, 'chdir').mockImplementation(mockChdir);
   console.warn = jest.fn();
   console.error = jest.fn();
@@ -95,6 +130,22 @@ describe('Linter Builder', () => {
       projectName,
       root: tempFs.tempDir,
       cwd: tempFs.tempDir,
+      projectGraph: {
+        nodes: {
+          [projectName]: {
+            type: 'app',
+            name: projectName,
+            data: {
+              root: `apps/${projectName}`,
+              sourceRoot: `apps/${projectName}/src`,
+              targets: {},
+            },
+          },
+        },
+        dependencies: {
+          [projectName]: [],
+        },
+      },
       projectsConfigurations: {
         version: 2,
         projects: {
@@ -117,11 +168,14 @@ describe('Linter Builder', () => {
   });
 
   it('should throw if the eslint version is not supported', async () => {
-    MockESLint.version = '1.6';
+    jest.spyOn(devkitInternals, 'readModulePackageJson').mockReturnValueOnce({
+      packageJson: { name: 'eslint', version: '7.32.0' },
+      path: '',
+    });
     setupMocks();
     const result = lintExecutor(createValidRunBuilderOptions(), mockContext);
     await expect(result).rejects.toThrow(
-      /ESLint must be version 7.6 or higher/
+      'Unsupported version of `eslint` detected'
     );
   });
 
@@ -144,7 +198,7 @@ describe('Linter Builder', () => {
         force: false,
         silent: false,
         ignorePath: null,
-        maxWarnings: null,
+        maxWarnings: -1,
         outputFile: null,
         quiet: false,
         reportUnusedDisableDirectives: null,
@@ -164,13 +218,15 @@ describe('Linter Builder', () => {
         force: false,
         silent: false,
         ignorePath: null,
-        maxWarnings: null,
+        maxWarnings: -1,
         outputFile: null,
         quiet: false,
         noEslintrc: false,
         rulesdir: [],
         resolvePluginsRelativeTo: null,
         reportUnusedDisableDirectives: null,
+        suppressAll: false,
+        suppressRule: [],
       },
       false
     );
@@ -420,7 +476,7 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
 
     it('should intercept the error from `@typescript-eslint` regarding missing parserServices and provide a more detailed user-facing message logging the found flat config', async () => {
       setupMocks();
-      tempFs.createFileSync('apps/proj/eslint.config.js', '');
+      tempFs.createFileSync('apps/proj/eslint.config.cjs', '');
       tempFs.createFileSync('apps/proj/src/some-file.ts', '');
 
       mockLintFiles.mockImplementation(() => {
@@ -440,7 +496,7 @@ Occurred while linting ${mockContext.root}/apps/proj/src/some-file.ts`
       );
       expect(console.error).toHaveBeenCalledWith(
         `
-Error: You have attempted to use the lint rule "@typescript-eslint/await-thenable" which requires the full TypeScript type-checker to be available, but you do not have "parserOptions.project" configured to point at your project tsconfig.json files in the relevant TypeScript file "overrides" block of your ESLint config "apps/proj/eslint.config.js"
+Error: You have attempted to use the lint rule "@typescript-eslint/await-thenable" which requires the full TypeScript type-checker to be available, but you do not have "parserOptions.project" configured to point at your project tsconfig.json files in the relevant TypeScript file "overrides" block of your ESLint config "apps/proj/eslint.config.cjs"
 Occurred while linting ${mockContext.root}/apps/proj/src/some-file.ts
 
 Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how to resolve this issue.
@@ -450,7 +506,7 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
 
     it('should intercept the error from `@typescript-eslint` regarding missing parserServices and provide a more detailed user-facing message logging the found flat config at the workspace root', async () => {
       setupMocks();
-      tempFs.createFileSync('eslint.config.js', '');
+      tempFs.createFileSync('eslint.config.cjs', '');
       tempFs.createFileSync('apps/proj/src/some-file.ts', '');
 
       mockLintFiles.mockImplementation(() => {
@@ -470,7 +526,7 @@ Occurred while linting ${mockContext.root}/apps/proj/src/some-file.ts`
       );
       expect(console.error).toHaveBeenCalledWith(
         `
-Error: You have attempted to use the lint rule "@typescript-eslint/await-thenable" which requires the full TypeScript type-checker to be available, but you do not have "parserOptions.project" configured to point at your project tsconfig.json files in the relevant TypeScript file "overrides" block of your ESLint config "eslint.config.js"
+Error: You have attempted to use the lint rule "@typescript-eslint/await-thenable" which requires the full TypeScript type-checker to be available, but you do not have "parserOptions.project" configured to point at your project tsconfig.json files in the relevant TypeScript file "overrides" block of your ESLint config "eslint.config.cjs"
 Occurred while linting ${mockContext.root}/apps/proj/src/some-file.ts
 
 Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how to resolve this issue.
@@ -738,6 +794,38 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
     expect(output.success).toBeTruthy();
   });
 
+  it('should be a failure if there are more warnings than the set maxWarnings', async () => {
+    mockReports = [
+      {
+        errorCount: 0,
+        warningCount: 4,
+        results: [],
+        usedDeprecatedRules: [],
+      },
+      {
+        errorCount: 0,
+        warningCount: 6,
+        results: [],
+        usedDeprecatedRules: [],
+      },
+    ];
+    setupMocks();
+    const output = await lintExecutor(
+      createValidRunBuilderOptions({
+        eslintConfig: './.eslintrc.json',
+        lintFilePatterns: ['includedFile1'],
+        format: 'json',
+        silent: true,
+        maxWarnings: 3,
+      }),
+      mockContext
+    );
+    expect(output.success).toBe(false);
+    expect(console.info).toHaveBeenCalledWith(
+      'ESLint found too many warnings (maximum: 3).'
+    );
+  });
+
   it('should be a success if there are errors but the force flag is true', async () => {
     mockReports = [
       {
@@ -818,7 +906,6 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
 
   it('should not attempt to write the lint results to the output file, if not specified', async () => {
     setupMocks();
-    jest.spyOn(fs, 'writeFileSync').mockImplementation();
     await lintExecutor(
       createValidRunBuilderOptions({
         eslintConfig: './.eslintrc.json',
@@ -846,7 +933,7 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
         force: false,
         silent: false,
         ignorePath: null,
-        maxWarnings: null,
+        maxWarnings: -1,
         outputFile: null,
         quiet: false,
         reportUnusedDisableDirectives: null,
@@ -858,15 +945,15 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
     expect(result).toEqual({ success: true });
   });
 
-  it('should pass path to eslint.config.js to resolveAndInstantiateESLint if it is unspecified and we are using flag configuration', async () => {
+  it('should pass path to eslint.config.cjs to resolveAndInstantiateESLint if it is unspecified and we are using flag configuration', async () => {
     setupMocks();
-    jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
     await lintExecutor(createValidRunBuilderOptions(), mockContext);
     expect(mockResolveAndInstantiateESLint).toHaveBeenCalledWith(
-      `${mockContext.root}/apps/proj/eslint.config.js`,
+      `${mockContext.root}/apps/proj/eslint.config.cjs`,
       {
         lintFilePatterns: [],
-        eslintConfig: 'apps/proj/eslint.config.js',
+        eslintConfig: 'apps/proj/eslint.config.cjs',
         fix: true,
         cache: true,
         cacheLocation: 'cacheLocation1/proj',
@@ -882,8 +969,88 @@ Please see https://nx.dev/recipes/tips-n-tricks/eslint for full guidance on how 
         rulesdir: [],
         resolvePluginsRelativeTo: null,
         reportUnusedDisableDirectives: null,
+        suppressAll: false,
+        suppressRule: [],
       },
       true
     );
+  });
+
+  describe('Bulk Suppression Support', () => {
+    it('should pass suppressAll option to ESLint when enabled', async () => {
+      setupMocks();
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+      MockESLint.version = '9.24.0';
+      await lintExecutor(
+        createValidRunBuilderOptions({
+          suppressAll: true,
+        }),
+        mockContext
+      );
+      expect(mockResolveAndInstantiateESLint).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          suppressAll: true,
+        }),
+        expect.any(Boolean)
+      );
+    });
+
+    it('should pass suppressRule option to ESLint when specified', async () => {
+      setupMocks();
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+      MockESLint.version = '9.24.0';
+      await lintExecutor(
+        createValidRunBuilderOptions({
+          suppressRule: ['no-console', 'no-unused-vars'],
+        }),
+        mockContext
+      );
+      expect(mockResolveAndInstantiateESLint).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          suppressRule: ['no-console', 'no-unused-vars'],
+        }),
+        expect.any(Boolean)
+      );
+    });
+
+    it('should throw error when using suppression options with ESLint < 9.24.0', async () => {
+      setupMocks();
+      MockESLint.version = '9.23.0';
+
+      // Mock the resolveAndInstantiateESLint to throw the error
+      mockResolveAndInstantiateESLint.mockRejectedValueOnce(
+        new Error(
+          'Bulk suppression options (suppressAll, suppressRule, suppressionsLocation) require ESLint v9.24.0 or higher. Current version: 9.23.0'
+        )
+      );
+
+      await expect(
+        lintExecutor(
+          createValidRunBuilderOptions({
+            suppressAll: true,
+          }),
+          mockContext
+        )
+      ).rejects.toThrow(
+        'Bulk suppression options (suppressAll, suppressRule, suppressionsLocation) require ESLint v9.24.0 or higher. Current version: 9.23.0'
+      );
+    });
+
+    it('should not pass suppression options when not specified', async () => {
+      setupMocks();
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+      MockESLint.version = '9.24.0';
+      await lintExecutor(createValidRunBuilderOptions(), mockContext);
+      expect(mockResolveAndInstantiateESLint).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          suppressAll: false,
+          suppressRule: [],
+        }),
+        expect.any(Boolean)
+      );
+    });
   });
 });

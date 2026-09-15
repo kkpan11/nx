@@ -5,15 +5,19 @@ import {
   stripIndents,
   type Tree,
 } from '@nx/devkit';
-import { type Schema } from './schema';
+import { assertSupportedAngularVersion } from '../../utils/assert-supported-angular-version';
+import { UnitTestRunner } from '../../utils/test-runners';
+import { getInstalledAngularVersionInfo } from '../utils/version-utils';
 import {
   addFileToRemoteTsconfig,
   addPathToExposes,
   addPathToTsConfig,
   addRemote,
 } from './lib';
+import type { Schema } from './schema';
 
 export async function federateModuleGenerator(tree: Tree, schema: Schema) {
+  assertSupportedAngularVersion(tree);
   if (!tree.exists(schema.path)) {
     throw new Error(stripIndents`The "path" provided  does not exist. Please verify the path is correct and pointing to a file that exists in the workspace.
     
@@ -21,6 +25,13 @@ export async function federateModuleGenerator(tree: Tree, schema: Schema) {
   }
 
   schema.standalone = schema.standalone ?? true;
+
+  const { major: angularMajorVersion } = getInstalledAngularVersionInfo(tree);
+  // federate-module uses webpack/rspack bundlers, so vitest-angular is not available
+  schema.unitTestRunner ??=
+    angularMajorVersion >= 21
+      ? UnitTestRunner.VitestAnalog
+      : UnitTestRunner.Jest;
 
   const { tasks, projectRoot, remoteName } = await addRemote(tree, schema);
 

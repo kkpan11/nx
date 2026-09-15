@@ -1,37 +1,48 @@
 import axios from 'axios';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import { gt, major, minor, parse } from 'semver';
-import {
-  getAngularCliMigrationGenerator,
-  getAngularCliMigrationGeneratorSpec,
-} from './files/angular-cli-upgrade-migration';
+import { readFileSync, writeFileSync } from 'fs';
+import { gte, major, minor, parse } from 'semver';
 
 async function addMigrationPackageGroup(
   angularPackageMigrations: Record<string, any>,
   targetNxVersion: string,
   targetNxMigrationVersion: string,
-  packageVersionMap: Map<string, string>
+  packageVersionMap: Map<string, string>,
+  isPrerelease: boolean
 ) {
+  const existingEntry =
+    angularPackageMigrations.packageJsonUpdates[targetNxVersion];
   angularPackageMigrations.packageJsonUpdates[targetNxVersion] = {
     version: `${targetNxMigrationVersion}`,
   };
 
-  const promptAndRequirements = await getPromptAndRequiredVersions(
-    packageVersionMap
-  );
-  if (!promptAndRequirements) {
-    console.warn(
-      '❗️ - The `@angular/core` latest version is greater than the next version. Skipping generating migration prompt and requirements.\n' +
-        '     Please review the migrations and manually add the prompt and requirements if needed.'
+  const angularCoreRequirement = await getAngularCoreRequirement();
+  if (angularCoreRequirement) {
+    angularPackageMigrations.packageJsonUpdates[targetNxVersion].requires = {
+      '@angular/core': angularCoreRequirement,
+    };
+  } else if (existingEntry?.requires) {
+    // latest >= next: preserve the requires from the pre-release entry and
+    // update the upper bound to the stable major.minor.0
+    const angularCoreVersion = packageVersionMap.get('@angular/core');
+    const { major: majorVersion, minor: minorVersion } =
+      parse(angularCoreVersion)!;
+    const existingReq = existingEntry.requires['@angular/core'] as string;
+    const updatedReq = existingReq.replace(
+      /<.*$/,
+      `<${majorVersion}.${minorVersion}.0`
+    );
+
+    angularPackageMigrations.packageJsonUpdates[targetNxVersion].requires = {
+      '@angular/core': updatedReq,
+    };
+    console.log(
+      'ℹ️ - The `@angular/core` latest version is greater than or equal to the next version. Preserving existing migration requirements.'
     );
   } else {
-    angularPackageMigrations.packageJsonUpdates[targetNxVersion][
-      'x-prompt'
-    ] = `Do you want to update the Angular version to ${promptAndRequirements.promptVersion}?`;
-    angularPackageMigrations.packageJsonUpdates[targetNxVersion].requires = {
-      '@angular/core': promptAndRequirements.angularCoreRequirement,
-    };
+    console.warn(
+      '❗️ - The `@angular/core` latest version is greater than or equal to the next version and no existing entry found.\n' +
+        '     Please manually add the requires field.'
+    );
   }
 
   angularPackageMigrations.packageJsonUpdates[targetNxVersion].packages = {};
@@ -39,9 +50,11 @@ async function addMigrationPackageGroup(
     if (
       pkgName.startsWith('@angular/') &&
       ![
+        '@angular/cli',
         '@angular/core',
         '@angular/material',
         '@angular/cdk',
+        '@angular/google-maps',
         '@angular/ssr',
         '@angular/pwa',
         '@angular/build',
@@ -50,48 +63,41 @@ async function addMigrationPackageGroup(
       continue;
     }
 
-    angularPackageMigrations.packageJsonUpdates[targetNxVersion].packages[
-      pkgName
-    ] = {
-      version: `~${version}`,
+    const packageUpdate: any = {
+      version: isPrerelease ? version : `~${version}`,
       alwaysAddToPackageJson: pkgName === '@angular/core',
     };
+    if (pkgName === '@angular/cli') {
+      packageUpdate.ignorePackageGroup = true;
+      packageUpdate.ignoreMigrations = true;
+    }
+
+    angularPackageMigrations.packageJsonUpdates[targetNxVersion].packages[
+      pkgName
+    ] = packageUpdate;
   }
 }
 
-async function getPromptAndRequiredVersions(
-  packageVersionMap: Map<string, string>
-): Promise<{
-  angularCoreRequirement: string;
-  promptVersion: string;
-} | null> {
-  // @angular/core
+async function getAngularCoreRequirement(): Promise<string | null> {
   const angularCoreMetadata = await axios.get(
     'https://registry.npmjs.org/@angular/core'
   );
   const { latest, next } = angularCoreMetadata.data['dist-tags'];
-  if (gt(latest, next)) {
+  // When latest >= next (e.g. a stable GA also published to the `next` tag),
+  // `latest` is the new version, not the previous one - so it can't seed the
+  // requires lower bound. Bail and let the caller preserve the pre-release
+  // entry's requires or warn for manual entry.
+  if (gte(latest, next)) {
     return null;
   }
-  const angularCoreRequirement = `>=${major(latest)}.${minor(
-    latest
-  )}.0 <${next}`;
-
-  // prompt version (e.g. v16 or v16.1)
-  const angularCoreVersion = packageVersionMap.get('@angular/core');
-  const { major: majorVersion, minor: minorVersion } =
-    parse(angularCoreVersion)!;
-  const promptVersion = `v${majorVersion}${
-    minorVersion !== 0 ? `.${minorVersion}` : ''
-  }`;
-
-  return { angularCoreRequirement, promptVersion };
+  return `>=${major(latest)}.${minor(latest)}.0 <${next}`;
 }
 
 export async function buildMigrations(
   packageVersionMap: Map<string, string>,
   targetNxVersion: string,
-  targetNxMigrationVersion: string
+  targetNxMigrationVersion: string,
+  isPrerelease: boolean
 ) {
   console.log('⏳ - Writing migrations...');
   const pathToMigrationsJsonFile = 'packages/angular/migrations.json';
@@ -103,66 +109,13 @@ export async function buildMigrations(
     angularPackageMigrations,
     targetNxVersion,
     targetNxMigrationVersion,
-    packageVersionMap
+    packageVersionMap,
+    isPrerelease
   );
-
-  const angularCLIVersion = packageVersionMap.get('@angular/cli') as string;
-  const angularCliMigrationGeneratorContents =
-    getAngularCliMigrationGenerator(angularCLIVersion);
-  const angularCliMigrationGeneratorSpecContents =
-    getAngularCliMigrationGeneratorSpec();
-
-  // Create the directory update-targetNxVersion.dasherize()
-  // Write the generator
-  // Update angularPackageMigrations
-
-  const migrationGeneratorFolderName =
-    'update-' + targetNxVersion.replace(/\./g, '-');
-  const migrationFileName = 'update-angular-cli';
-  const generatorName = `update-angular-cli-version-${angularCLIVersion.replace(
-    /\./g,
-    '-'
-  )}`;
-
-  const angularCoreVersion = packageVersionMap.get('@angular/core');
-  angularPackageMigrations.generators[generatorName] = {
-    cli: 'nx',
-    version: targetNxMigrationVersion,
-    requires: {
-      '@angular/core': `>=${angularCoreVersion}`,
-    },
-    description: `Update the @angular/cli package version to ~${angularCLIVersion}.`,
-    factory: `./src/migrations/${migrationGeneratorFolderName}/${migrationFileName}`,
-  };
 
   writeFileSync(
     pathToMigrationsJsonFile,
     JSON.stringify(angularPackageMigrations, null, 2)
-  );
-
-  const pathToMigrationFolder = join(
-    'packages/angular/src/migrations',
-    migrationGeneratorFolderName
-  );
-  if (!existsSync(pathToMigrationFolder)) {
-    mkdirSync(pathToMigrationFolder);
-  }
-
-  const pathToMigrationGeneratorFile = join(
-    pathToMigrationFolder,
-    `${migrationFileName}.ts`
-  );
-  const pathToMigrationGeneratorSpecFile = join(
-    pathToMigrationFolder,
-    `${migrationFileName}.spec.ts`
-  );
-  writeFileSync(
-    pathToMigrationGeneratorFile,
-    angularCliMigrationGeneratorContents
-  );
-  writeFileSync(
-    pathToMigrationGeneratorSpecFile,
-    angularCliMigrationGeneratorSpecContents
   );
 
   console.log('✅ - Wrote migrations');

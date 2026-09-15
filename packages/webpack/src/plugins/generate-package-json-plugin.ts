@@ -1,15 +1,16 @@
-import { type Compiler, sources, type WebpackPluginInstance } from 'webpack';
+import * as fs from 'fs';
+import type { Compiler, WebpackPluginInstance } from 'webpack';
 import {
-  createLockFile,
   createPackageJson,
+  generatePrunedDeployOutput,
   getHelperDependenciesFromProjectGraph,
-  getLockFileName,
   HelperDependency,
   readTsConfig,
 } from '@nx/js';
 import {
   detectPackageManager,
   type ProjectGraph,
+  readJsonFile,
   serializeJson,
 } from '@nx/devkit';
 
@@ -18,16 +19,33 @@ const pluginName = 'GeneratePackageJsonPlugin';
 export class GeneratePackageJsonPlugin implements WebpackPluginInstance {
   constructor(
     private readonly options: {
+      skipPackageManager?: boolean;
       tsConfig: string;
       outputFileName: string;
       root: string;
       projectName: string;
       targetName: string;
       projectGraph: ProjectGraph;
+      runtimeDependencies?: string[];
     }
   ) {}
 
+  private resolveRuntimeDependencies(): Record<string, string> {
+    const runtimeDependencies: Record<string, string> = {};
+    if (this.options.runtimeDependencies) {
+      for (const dep of this.options.runtimeDependencies) {
+        const depPkgJson = require.resolve(`${dep}/package.json`);
+        if (!fs.existsSync(depPkgJson)) continue;
+        const { name, version } = readJsonFile(depPkgJson);
+        runtimeDependencies[name] = version;
+      }
+    }
+    return runtimeDependencies;
+  }
+
   apply(compiler: Compiler): void {
+    const { sources } = require('webpack') as typeof import('webpack');
+
     compiler.hooks.thisCompilation.tap(pluginName, (compilation) => {
       compilation.hooks.processAssets.tap(
         {
@@ -56,6 +74,7 @@ export class GeneratePackageJsonPlugin implements WebpackPluginInstance {
               target: HelperDependency.tsc,
             });
           }
+          const runtimeDependencies = this.resolveRuntimeDependencies();
 
           const packageJson = createPackageJson(
             this.options.projectName,
@@ -65,24 +84,36 @@ export class GeneratePackageJsonPlugin implements WebpackPluginInstance {
               root: this.options.root,
               isProduction: true,
               helperDependencies: helperDependencies.map((dep) => dep.target),
+              skipPackageManager: this.options.skipPackageManager,
             }
           );
           packageJson.main = packageJson.main ?? this.options.outputFileName;
 
+          packageJson.dependencies = {
+            ...packageJson.dependencies,
+            ...runtimeDependencies,
+          };
+
+          const packageManager = detectPackageManager(this.options.root);
+
+          generatePrunedDeployOutput(
+            packageJson,
+            this.options.projectGraph,
+            this.options.projectGraph.nodes[this.options.projectName].data.root,
+            {
+              emit: (assetPath, content) =>
+                compilation.emitAsset(
+                  assetPath,
+                  new sources.RawSource(content)
+                ),
+              packageManager,
+              workspaceRoot: this.options.root,
+            }
+          );
+
           compilation.emitAsset(
             'package.json',
             new sources.RawSource(serializeJson(packageJson))
-          );
-          const packageManager = detectPackageManager(this.options.root);
-          compilation.emitAsset(
-            getLockFileName(packageManager),
-            new sources.RawSource(
-              createLockFile(
-                packageJson,
-                this.options.projectGraph,
-                packageManager
-              )
-            )
           );
         }
       );

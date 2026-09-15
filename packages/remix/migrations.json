@@ -1,134 +1,84 @@
 {
-  "generators": {},
+  "generators": {
+    "update-23-0-0-migrate-create-nodes-v2-import": {
+      "version": "23.0.0-beta.24",
+      "description": "Rename imports of `createNodesV2` from `@nx/remix/plugin` to the canonical `createNodes` export.",
+      "implementation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes",
+      "documentation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes.md"
+    },
+    "update-23-1-0-remove-remix-eslint-config": {
+      "version": "23.1.0-beta.0",
+      "description": "Remove the unused @remix-run/eslint-config dependency (ESLint v8 only) that earlier Nx versions added but never wired into the generated lint setup.",
+      "implementation": "./dist/src/migrations/update-23-1-0/remove-remix-eslint-config"
+    }
+  },
   "packageJsonUpdates": {
-    "17.2.1": {
-      "version": "17.2.1-beta.0",
+    "22.3.4": {
+      "version": "22.3.4-beta.0",
       "packages": {
         "@remix-run/node": {
-          "version": "^2.3.0",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": true
         },
         "@remix-run/react": {
-          "version": "^2.3.0",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": true
         },
         "@remix-run/serve": {
-          "version": "^2.3.0",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": true
         },
         "@remix-run/dev": {
-          "version": "^2.3.0",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": true
         },
         "@remix-run/css-bundle": {
-          "version": "^2.3.0",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": true
         },
         "@remix-run/eslint-config": {
-          "version": "^2.3.0",
-          "alwaysAddToPackageJson": true
-        },
-        "isbot": {
-          "version": "^3.6.8",
-          "alwaysAddToPackageJson": true
-        },
-        "eslint": {
-          "version": "^8.38.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@testing-library/react": {
-          "version": "^14.1.2",
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
         },
-        "@testing-library/jest-dom": {
-          "version": "^6.1.4",
+        "@remix-run/server-runtime": {
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
         },
-        "@testing-library/user-event": {
-          "version": "^14.5.1",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "18.1.0": {
-      "version": "18.1.0-beta.1",
-      "packages": {
-        "@remix-run/node": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@remix-run/react": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@remix-run/serve": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@remix-run/dev": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@remix-run/css-bundle": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@remix-run/eslint-config": {
-          "version": "^2.6.0",
-          "alwaysAddToPackageJson": true
-        },
-        "isbot": {
-          "version": "^4.4.0",
-          "alwaysAddToPackageJson": true
-        },
-        "eslint": {
-          "version": "^8.56.0",
-          "alwaysAddToPackageJson": true
-        },
-        "@testing-library/react": {
-          "version": "^14.1.2",
+        "@remix-run/testing": {
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
         },
-        "@testing-library/jest-dom": {
-          "version": "^6.2.0",
+        "@remix-run/express": {
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
         },
-        "@testing-library/user-event": {
-          "version": "^14.5.2",
+        "@remix-run/cloudflare": {
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
         },
-        "typescript": {
-          "version": "^5.3.3",
+        "@remix-run/cloudflare-pages": {
+          "version": "2.17.3",
           "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "18.1.1": {
-      "version": "18.1.1-beta.0",
-      "packages": {
-        "@remix-run/node": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
         },
-        "@remix-run/react": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
+        "@remix-run/cloudflare-workers": {
+          "version": "2.17.3",
+          "alwaysAddToPackageJson": false
         },
-        "@remix-run/serve": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
+        "@remix-run/architect": {
+          "version": "2.17.3",
+          "alwaysAddToPackageJson": false
         },
-        "@remix-run/dev": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
+        "@remix-run/deno": {
+          "version": "2.17.3",
+          "alwaysAddToPackageJson": false
         },
-        "@remix-run/css-bundle": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
+        "@remix-run/route-config": {
+          "version": "2.17.3",
+          "alwaysAddToPackageJson": false
         },
-        "@remix-run/eslint-config": {
-          "version": "^2.8.0",
-          "alwaysAddToPackageJson": true
+        "@remix-run/fs-routes": {
+          "version": "2.17.3",
+          "alwaysAddToPackageJson": false
         }
       }
     }

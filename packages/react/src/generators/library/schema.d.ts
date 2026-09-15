@@ -1,5 +1,4 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 import type { SupportedStyles } from '../../../typings/style';
 
 export interface Schema {
@@ -8,17 +7,19 @@ export interface Schema {
   bundler?: 'none' | 'rollup' | 'vite';
   compiler?: 'babel' | 'swc';
   component?: boolean;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
+  directory: string;
   globalCss?: boolean;
   importPath?: string;
   inSourceTests?: boolean;
   js?: boolean;
-  linter: Linter;
-  name: string;
-  pascalCaseFiles?: boolean;
+  linter?: LinterType;
+  name?: string;
   publishable?: boolean;
   routing?: boolean;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   skipFormat?: boolean;
   skipPackageJson?: boolean;
@@ -28,18 +29,22 @@ export interface Schema {
   tags?: string;
   unitTestRunner?: 'jest' | 'vitest' | 'none';
   minimal?: boolean;
-  simpleName?: boolean;
   addPlugin?: boolean;
+  useProjectJson?: boolean;
 }
 
 export interface NormalizedSchema extends Schema {
+  // `normalizeOptions` always resolves this, so it is no longer optional.
+  linter: LinterType;
   js: boolean;
   name: string;
   fileName: string;
   projectRoot: string;
   routePath: string;
   parsedTags: string[];
+  importPath: string;
   appMain?: string;
   appSourceRoot?: string;
   unitTestRunner: 'jest' | 'vitest' | 'none';
+  isUsingTsSolutionConfig?: boolean;
 }

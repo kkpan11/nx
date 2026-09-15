@@ -5,11 +5,12 @@ import {
 } from '@heroicons/react/24/outline';
 import Link from 'next/link';
 
+export type PluginType = 'nxOpenSource' | 'nxPowerpack' | 'community';
 export interface PluginCardProps {
   name: string;
   description: string;
   url: string;
-  isOfficial: boolean;
+  pluginType: PluginType;
   lastPublishedDate?: string;
   npmDownloads?: string;
   githubStars?: string;
@@ -20,16 +21,16 @@ export function PluginCard({
   name,
   description,
   url,
-  isOfficial,
+  pluginType,
   lastPublishedDate,
   npmDownloads,
   githubStars,
   nxVersion,
 }: PluginCardProps): JSX.Element {
   return (
-    <div className="focus-within:ring-focus-within:ring-blue-500 relative flex w-full rounded-lg border border border-slate-200 bg-white shadow-sm transition hover:bg-slate-50 dark:border-slate-900 dark:bg-slate-800/60 dark:focus-within:ring-sky-500 dark:hover:bg-slate-800">
+    <div className="focus-within:ring-focus-within:ring-blue-500 relative flex w-full rounded-lg border border-zinc-200 bg-white shadow-xs transition hover:bg-zinc-50 dark:border-zinc-900 dark:bg-zinc-800/60 dark:focus-within:ring-blue-500 dark:hover:bg-zinc-800">
       <div className="flex w-full flex-col px-4 py-3">
-        <h3 className="mb-4 flex items-center font-semibold leading-tight">
+        <h3 className="mb-4 flex items-center leading-tight font-semibold">
           <svg
             className="mr-3 h-5 w-5"
             role="img"
@@ -44,8 +45,8 @@ export function PluginCard({
         </h3>
         <Link
           href={url}
-          target={isOfficial ? undefined : '_blank'}
-          rel={isOfficial ? undefined : 'noreferrer'}
+          target={pluginType ? undefined : '_blank'}
+          rel={pluginType ? undefined : 'noreferrer'}
           className="flex grow flex-col focus:outline-none"
           prefetch={false}
         >
@@ -67,19 +68,27 @@ export function PluginCard({
               <GithubStarsWidget githubStars={githubStars}></GithubStarsWidget>
             </div>
             <div className="flex flex-grow justify-end">
-              {isOfficial ? (
-                <div
-                  data-tooltip="Maintained by the Nx Team"
-                  data-tooltip-align-right
-                  className="my-1 ml-1 inline-block rounded-full border border-green-300 bg-green-50 px-3 py-0.5 text-xs font-medium capitalize text-green-600 dark:border-green-900 dark:bg-green-900/30 dark:text-green-400"
-                >
-                  Nx Team
-                </div>
-              ) : (
+              {pluginType === 'community' ? (
                 <div className="my-1 ml-1">
                   <NxVersionWidget nxVersion={nxVersion}></NxVersionWidget>
                 </div>
-              )}
+              ) : pluginType === 'nxOpenSource' ? (
+                <div
+                  data-tooltip="Maintained by the Nx Team"
+                  data-tooltip-align-right
+                  className="my-1 ml-1 inline-block rounded-full border border-green-300 bg-green-50 px-3 py-0.5 text-xs font-medium text-green-600 capitalize dark:border-green-900 dark:bg-green-900/30 dark:text-green-400"
+                >
+                  Nx Open Source
+                </div>
+              ) : pluginType === 'nxPowerpack' ? (
+                <div
+                  data-tooltip="Maintained by the Nx Team"
+                  data-tooltip-align-right
+                  className="my-1 ml-1 inline-block rounded-full border border-green-300 bg-green-50 px-3 py-0.5 text-xs font-medium text-green-600 capitalize dark:border-green-900 dark:bg-green-900/30 dark:text-green-400"
+                >
+                  Nx Powerpack
+                </div>
+              ) : undefined}
             </div>
           </div>
         </Link>

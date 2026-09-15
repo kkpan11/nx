@@ -1,11 +1,10 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 import type { E2eTestRunner, UnitTestRunner } from '../../utils/test-runners';
 import type { Styles } from '../utils/types';
 
 export interface Schema {
-  name: string;
-  addTailwind?: boolean;
+  directory: string;
+  name?: string;
   skipFormat?: boolean;
   inlineStyle?: boolean;
   inlineTemplate?: boolean;
@@ -14,21 +13,26 @@ export interface Schema {
   prefix?: string;
   style?: Styles;
   skipTests?: boolean;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   tags?: string;
-  linter?: Linter;
+  linter?: LinterType;
   unitTestRunner?: UnitTestRunner;
   e2eTestRunner?: E2eTestRunner;
   backendProject?: string;
   strict?: boolean;
-  standaloneConfig?: boolean;
   port?: number;
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   skipPackageJson?: boolean;
   standalone?: boolean;
   rootProject?: boolean;
   minimal?: boolean;
-  bundler?: 'webpack' | 'esbuild';
+  bundler?: 'webpack' | 'esbuild' | 'rspack';
   ssr?: boolean;
+  nxCloudToken?: string;
+  addPlugin?: boolean;
+  zoneless?: boolean;
+  formatter?: 'prettier' | 'oxfmt' | 'none';
 }

@@ -1,15 +1,23 @@
 import type { TSESLint } from '@typescript-eslint/utils';
 import { ESLintUtils } from '@typescript-eslint/utils';
 import type { AST } from 'jsonc-eslint-parser';
+import { readFileSync } from 'fs';
+import { query } from '@phenomnomnominal/tsquery';
 
 import {
+  ProjectConfiguration,
   ProjectGraphProjectNode,
-  readJsonFile,
   workspaceRoot,
 } from '@nx/devkit';
-import { getRootTsConfigPath } from '@nx/js';
-import { registerTsProject } from '@nx/js/src/internal';
-import { existsSync } from 'fs';
+import { loadTsFile, requireWithTsconfigFallback } from '@nx/js/internal';
+import {
+  ImplementationResolutionError,
+  PromptResolutionError,
+  resolveImplementation,
+  resolvePrompt,
+  resolveSchema,
+  SchemaResolutionError,
+} from '@nx/devkit/internal';
 import * as path from 'path';
 import { valid } from 'semver';
 import { readProjectGraph } from '../utils/project-graph-utils';
@@ -19,14 +27,15 @@ import {
   getSourceFilePath,
 } from '../utils/runtime-lint-utils';
 
-type Options = [
+export type Options = [
   {
     generatorsJson?: string;
     executorsJson?: string;
     migrationsJson?: string;
     packageJson?: string;
     allowedVersionStrings: string[];
-  }
+    tsConfig?: string;
+  },
 ];
 
 const DEFAULT_OPTIONS: Options[0] = {
@@ -35,6 +44,7 @@ const DEFAULT_OPTIONS: Options[0] = {
   migrationsJson: 'migrations.json',
   packageJson: 'package.json',
   allowedVersionStrings: ['*', 'latest', 'next'],
+  tsConfig: 'tsconfig.lib.json',
 };
 
 export type MessageIds =
@@ -44,11 +54,13 @@ export type MessageIds =
   | 'invalidImplementationPath'
   | 'invalidImplementationModule'
   | 'unableToReadImplementationExports'
+  | 'invalidPromptPath'
   | 'invalidVersion'
   | 'missingVersion'
   | 'noGeneratorsOrSchematicsFound'
   | 'noExecutorsOrBuildersFound'
-  | 'valueShouldBeObject';
+  | 'valueShouldBeObject'
+  | 'duplicateKey';
 
 export const RULE_NAME = 'nx-plugin-checks';
 
@@ -57,7 +69,6 @@ export default ESLintUtils.RuleCreator(() => ``)<Options, MessageIds>({
   meta: {
     docs: {
       description: 'Checks common nx-plugin configuration files for validity',
-      recommended: 'recommended',
     },
     schema: [
       {
@@ -89,6 +100,11 @@ export default ESLintUtils.RuleCreator(() => ``)<Options, MessageIds>({
               'A list of specifiers that are valid for versions within package group. Defaults to ["*", "latest", "next"]',
             items: { type: 'string' },
           },
+          tsConfig: {
+            type: 'string',
+            description:
+              'The path to the tsconfig file used to build the plugin. Defaults to "tsconfig.lib.json".',
+          },
         },
         additionalProperties: false,
       },
@@ -111,7 +127,10 @@ export default ESLintUtils.RuleCreator(() => ``)<Options, MessageIds>({
       missingRequiredSchema: '{{ key }}: Missing required property - `schema`',
       missingImplementation:
         '{{ key }}: Missing required property - `implementation`',
+      invalidPromptPath: '{{ key }}: Prompt path should point to a valid file',
       missingVersion: '{{ key }}: Missing required property - `version`',
+      duplicateKey:
+        '{{ key }}: Duplicate key. JSON parsers keep only the last occurrence, silently dropping the earlier one',
     },
   },
   defaultOptions: [DEFAULT_OPTIONS],
@@ -122,6 +141,11 @@ export default ESLintUtils.RuleCreator(() => ``)<Options, MessageIds>({
     }
 
     const { projectGraph, projectRootMappings } = readProjectGraph(RULE_NAME);
+
+    const projects: Record<string, ProjectConfiguration> = {};
+    for (const [projectName, node] of Object.entries(projectGraph.nodes)) {
+      projects[projectName] = node.data;
+    }
 
     const sourceFilePath = getSourceFilePath(
       context.filename ?? context.getFilename(),
@@ -150,21 +174,17 @@ export default ESLintUtils.RuleCreator(() => ``)<Options, MessageIds>({
       return {};
     }
 
-    if (!(global as any).tsProjectRegistered) {
-      registerTsProject(getRootTsConfigPath());
-      (global as any).tsProjectRegistered = true;
-    }
-
     return {
       ['JSONExpressionStatement > JSONObjectExpression'](
         node: AST.JSONObjectExpression
       ) {
+        validateNoDuplicateKeys(node, context);
         if (sourceFilePath === generatorsJson) {
-          checkCollectionFileNode(node, 'generator', context);
+          checkCollectionFileNode(node, 'generator', context, projects);
         } else if (sourceFilePath === migrationsJson) {
-          checkCollectionFileNode(node, 'migration', context);
+          checkCollectionFileNode(node, 'migration', context, projects);
         } else if (sourceFilePath === executorsJson) {
-          checkCollectionFileNode(node, 'executor', context);
+          checkCollectionFileNode(node, 'executor', context, projects);
         } else if (sourceFilePath === packageJson) {
           validatePackageGroup(node, context);
         }
@@ -200,7 +220,8 @@ function normalizeOptions(
 export function checkCollectionFileNode(
   baseNode: AST.JSONObjectExpression,
   mode: 'migration' | 'generator' | 'executor',
-  context: TSESLint.RuleContext<MessageIds, Options>
+  context: TSESLint.RuleContext<MessageIds, Options>,
+  projects: Record<string, ProjectConfiguration>
 ) {
   const schematicsRootNode = baseNode.properties.find(
     (x) => x.key.type === 'JSONLiteral' && x.key.value === 'schematics'
@@ -247,7 +268,7 @@ export function checkCollectionFileNode(
         node: schematicsRootNode as any,
       });
     } else {
-      checkCollectionNode(collectionNode.value, mode, context);
+      checkCollectionNode(collectionNode.value, mode, context, projects);
     }
   }
 }
@@ -255,7 +276,8 @@ export function checkCollectionFileNode(
 export function checkCollectionNode(
   baseNode: AST.JSONObjectExpression,
   mode: 'migration' | 'generator' | 'executor',
-  context: TSESLint.RuleContext<MessageIds, Options>
+  context: TSESLint.RuleContext<MessageIds, Options>,
+  projects: Record<string, ProjectConfiguration>
 ) {
   const entries = baseNode.properties;
 
@@ -271,7 +293,8 @@ export function checkCollectionNode(
         entryNode.value,
         entryNode.key.value.toString(),
         mode,
-        context
+        context,
+        projects
       );
     }
   }
@@ -281,8 +304,9 @@ export function validateEntry(
   baseNode: AST.JSONObjectExpression,
   key: string,
   mode: 'migration' | 'generator' | 'executor',
-  context: TSESLint.RuleContext<MessageIds, Options>
-) {
+  context: TSESLint.RuleContext<MessageIds, Options>,
+  projects: Record<string, ProjectConfiguration>
+): void {
   const schemaNode = baseNode.properties.find(
     (x) => x.key.type === 'JSONLiteral' && x.key.value === 'schema'
   );
@@ -304,23 +328,21 @@ export function validateEntry(
         node: schemaNode.value as any,
       });
     } else {
-      const schemaFilePath = path.join(
-        path.dirname(context.filename ?? context.getFilename()),
-        schemaNode.value.value
-      );
-      if (!existsSync(schemaFilePath)) {
-        context.report({
-          messageId: 'invalidSchemaPath',
-          node: schemaNode.value as any,
-        });
-      } else {
-        try {
-          readJsonFile(schemaFilePath);
-        } catch (e) {
+      try {
+        resolveSchema(
+          schemaNode.value.value,
+          path.dirname(context.filename ?? context.getFilename()),
+          context.filename ?? context.getFilename(),
+          projects
+        );
+      } catch (e) {
+        if (e instanceof SchemaResolutionError) {
           context.report({
             messageId: 'invalidSchemaPath',
             node: schemaNode.value as any,
           });
+        } else {
+          throw e;
         }
       }
     }
@@ -331,7 +353,10 @@ export function validateEntry(
       x.key.type === 'JSONLiteral' &&
       (x.key.value === 'implementation' || x.key.value === 'factory')
   );
-  if (!implementationNode) {
+  const promptNode = baseNode.properties.find(
+    (x) => x.key.type === 'JSONLiteral' && x.key.value === 'prompt'
+  );
+  if (!implementationNode && !(mode === 'migration' && promptNode)) {
     context.report({
       messageId: 'missingImplementation',
       data: {
@@ -339,8 +364,11 @@ export function validateEntry(
       },
       node: baseNode as any,
     });
-  } else {
-    validateImplemenationNode(implementationNode, key, context);
+  } else if (implementationNode) {
+    validateImplementationNode(implementationNode, key, context, projects);
+  }
+  if (mode === 'migration' && promptNode) {
+    validatePromptNode(promptNode, key, context);
   }
 
   if (mode === 'migration') {
@@ -381,10 +409,11 @@ export function validateEntry(
   }
 }
 
-export function validateImplemenationNode(
+export function validateImplementationNode(
   implementationNode: AST.JSONProperty,
   key: string,
-  context: TSESLint.RuleContext<MessageIds, Options>
+  context: TSESLint.RuleContext<MessageIds, Options>,
+  projects: Record<string, ProjectConfiguration>
 ) {
   if (
     implementationNode.value.type !== 'JSONLiteral' ||
@@ -402,27 +431,30 @@ export function validateImplemenationNode(
       implementationNode.value.value.split('#');
     let resolvedPath: string;
 
-    const modulePath = path.join(
-      path.dirname(context.filename ?? context.getFilename()),
-      implementationPath
-    );
-
     try {
-      resolvedPath = require.resolve(modulePath);
+      resolvedPath = resolveImplementation(
+        implementationPath,
+        path.dirname(context.filename ?? context.getFilename()),
+        context.filename ?? context.getFilename(),
+        projects
+      );
     } catch (e) {
-      context.report({
-        messageId: 'invalidImplementationPath',
-        data: {
-          key,
-        },
-        node: implementationNode.value as any,
-      });
+      if (e instanceof ImplementationResolutionError) {
+        context.report({
+          messageId: 'invalidImplementationPath',
+          data: {
+            key,
+          },
+          node: implementationNode.value as any,
+        });
+      } else {
+        throw e;
+      }
     }
 
-    if (identifier) {
+    if (resolvedPath && identifier) {
       try {
-        const m = require(resolvedPath);
-        if (!(identifier in m && typeof m[identifier] === 'function')) {
+        if (!checkIfIdentifierIsFunction(resolvedPath, identifier)) {
           context.report({
             messageId: 'invalidImplementationModule',
             node: implementationNode.value as any,
@@ -433,6 +465,7 @@ export function validateImplemenationNode(
           });
         }
       } catch {
+        // require can throw if the module is not found
         context.report({
           messageId: 'unableToReadImplementationExports',
           node: implementationNode.value as any,
@@ -441,6 +474,45 @@ export function validateImplemenationNode(
           },
         });
       }
+    }
+  }
+}
+
+export function validatePromptNode(
+  promptNode: AST.JSONProperty,
+  key: string,
+  context: TSESLint.RuleContext<MessageIds, Options>
+) {
+  if (
+    promptNode.value.type !== 'JSONLiteral' ||
+    typeof promptNode.value.value !== 'string'
+  ) {
+    context.report({
+      messageId: 'invalidPromptPath',
+      data: {
+        key,
+      },
+      node: promptNode.value as any,
+    });
+    return;
+  }
+
+  try {
+    resolvePrompt(
+      promptNode.value.value,
+      path.dirname(context.filename ?? context.getFilename())
+    );
+  } catch (e) {
+    if (e instanceof PromptResolutionError) {
+      context.report({
+        messageId: 'invalidPromptPath',
+        data: {
+          key,
+        },
+        node: promptNode.value as any,
+      });
+    } else {
+      throw e;
     }
   }
 }
@@ -519,6 +591,51 @@ export function validatePackageGroup(
   }
 }
 
+/**
+ * A duplicate key anywhere in these manifests silently drops data:
+ * JSON parsers keep only the last occurrence, so a duplicated generator,
+ * executor, or migration entry key discards the earlier definition with no
+ * error at runtime.
+ */
+export function validateNoDuplicateKeys(
+  node: AST.JSONObjectExpression | AST.JSONArrayExpression,
+  context: TSESLint.RuleContext<MessageIds, Options>
+): void {
+  if (node.type === 'JSONObjectExpression') {
+    const seen = new Set<string>();
+    for (const property of node.properties) {
+      const key =
+        property.key.type === 'JSONLiteral'
+          ? String(property.key.value)
+          : property.key.name;
+      if (seen.has(key)) {
+        context.report({
+          messageId: 'duplicateKey',
+          data: { key },
+          node: property.key as any,
+        });
+      }
+      seen.add(key);
+      if (
+        property.value.type === 'JSONObjectExpression' ||
+        property.value.type === 'JSONArrayExpression'
+      ) {
+        validateNoDuplicateKeys(property.value, context);
+      }
+    }
+  } else {
+    for (const element of node.elements) {
+      if (
+        element &&
+        (element.type === 'JSONObjectExpression' ||
+          element.type === 'JSONArrayExpression')
+      ) {
+        validateNoDuplicateKeys(element, context);
+      }
+    }
+  }
+}
+
 export function validateVersionJsonExpression(
   node: AST.JSONExpression,
   context: TSESLint.RuleContext<MessageIds, Options>
@@ -530,4 +647,43 @@ export function validateVersionJsonExpression(
     (valid(node.value) ||
       context.options[0]?.allowedVersionStrings.includes(node.value))
   );
+}
+
+export function checkIfIdentifierIsFunction(
+  filePath: string,
+  identifier: string
+): boolean {
+  try {
+    const ts = require('typescript');
+    const sourceCode = readFileSync(filePath, 'utf-8');
+    const sourceFile = ts.createSourceFile(
+      filePath,
+      sourceCode,
+      ts.ScriptTarget.Latest,
+      true
+    );
+
+    const exportedFunctions = query(
+      sourceFile,
+      `
+      FunctionDeclaration[name.text="${identifier}"][modifiers],
+      ExportDeclaration > FunctionDeclaration[name.text="${identifier}"],
+      VariableStatement[modifiers] VariableDeclaration[name.text="${identifier}"] ArrowFunction,
+      VariableStatement[modifiers] VariableDeclaration[name.text="${identifier}"] FunctionExpression,
+      ExportDeclaration > VariableStatement VariableDeclaration[name.text="${identifier}"] ArrowFunction,
+      ExportDeclaration > VariableStatement VariableDeclaration[name.text="${identifier}"] FunctionExpression,
+      ExportDeclaration ExportSpecifier[name.text="${identifier}"]
+    `
+    );
+
+    return exportedFunctions.length > 0;
+  } catch {
+    // ignore
+  }
+
+  // Fallback to require()
+  const m = /\.[cm]?ts$/.test(filePath)
+    ? loadTsFile(filePath)
+    : requireWithTsconfigFallback(filePath);
+  return identifier in m && typeof m[identifier] === 'function';
 }

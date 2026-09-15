@@ -1,5 +1,11 @@
 import { normalizeContent } from './feed-answer';
 
+jest.mock('@nx/nx-dev-ui-primitives', () => {
+  return {
+    cx: jest.fn(() => null),
+  };
+});
+
 describe('FeedAnswer', () => {
   describe('normalizeContent', () => {
     it('should normalize links to format expected by renderMarkdown', () => {

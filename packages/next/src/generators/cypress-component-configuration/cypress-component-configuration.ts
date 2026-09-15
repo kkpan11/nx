@@ -10,11 +10,13 @@ import {
   updateProjectConfiguration,
   visitNotIgnoredFiles,
 } from '@nx/devkit';
-import { isComponent } from '@nx/react/src/utils/ct-utils';
-import { CypressComponentConfigurationGeneratorSchema } from './schema';
-import { nxVersion } from '../../utils/versions';
+import { getProjectSourceRoot } from '@nx/js/internal';
 import { componentTestGenerator } from '@nx/react';
+import { isComponent } from '@nx/react/internal';
 import { relative } from 'path';
+import { nxVersion } from '../../utils/versions';
+import { assertSupportedNextVersion } from '../../utils/assert-supported-next-version';
+import { CypressComponentConfigurationGeneratorSchema } from './schema';
 
 export function cypressComponentConfiguration(
   tree: Tree,
@@ -30,6 +32,8 @@ export async function cypressComponentConfigurationInternal(
   tree: Tree,
   options: CypressComponentConfigurationGeneratorSchema
 ) {
+  assertSupportedNextVersion(tree);
+
   const tasks: GeneratorCallback[] = [];
 
   const { componentConfigurationGenerator: baseCyCtConfig } = ensurePackage<
@@ -55,9 +59,9 @@ export async function cypressComponentConfigurationInternal(
       addPlugin: options.addPlugin,
     })
   );
-  const { ensureDependencies } = await import(
-    '@nx/webpack/src/utils/ensure-dependencies'
-  );
+  const {
+    ensureDependencies,
+  }: typeof import('@nx/webpack/internal') = require('@nx/webpack/internal');
   tasks.push(
     ensureDependencies(tree, { compiler: 'swc', uiFramework: 'react' })
   );
@@ -88,9 +92,11 @@ async function addFiles(
   projectConfig: ProjectConfiguration,
   opts: CypressComponentConfigurationGeneratorSchema
 ) {
-  const { addMountDefinition, addDefaultCTConfig } = await import(
-    '@nx/cypress/src/utils/config'
-  );
+  const { addMountDefinition, addDefaultCTConfig } =
+    await import('@nx/cypress/internal');
+  const { getInstalledCypressMajorVersion } =
+    await import('@nx/cypress/internal');
+  const installedCypressMajorVersion = getInstalledCypressMajorVersion(tree);
 
   const ctFile = joinPathFragments(
     projectConfig.root,
@@ -102,17 +108,21 @@ async function addFiles(
   const updatedCommandFile = await addMountDefinition(
     tree.read(ctFile, 'utf-8')
   );
+  const moduleSpecifier =
+    installedCypressMajorVersion >= 14 ? 'cypress/react' : 'cypress/react18';
   tree.write(
     ctFile,
-    `import { mount } from 'cypress/react18';\nimport './styles.ct.css';\n${updatedCommandFile}`
+    `import { mount } from '${moduleSpecifier}';\nimport './styles.ct.css';\n${updatedCommandFile}`
   );
 
   const cyFile = joinPathFragments(projectConfig.root, 'cypress.config.ts');
-  const updatedCyConfig = await addDefaultCTConfig(tree.read(cyFile, 'utf-8'));
-  tree.write(
-    cyFile,
-    `import { nxComponentTestingPreset } from '@nx/next/plugins/component-testing';\n${updatedCyConfig}`
+  const updatedCyConfig = await addDefaultCTConfig(
+    tree.read(cyFile, 'utf-8'),
+    undefined,
+    '@nx/next/plugins/component-testing',
+    installedCypressMajorVersion
   );
+  tree.write(cyFile, updatedCyConfig);
 
   const isUsingTailwind = ['js', 'cjs'].some((ext) =>
     tree.exists(joinPathFragments(projectConfig.root, `tailwind.config.${ext}`))
@@ -138,7 +148,8 @@ ${
 
   if (opts.generateTests) {
     const filePaths = [];
-    visitNotIgnoredFiles(tree, projectConfig.sourceRoot, (filePath) => {
+    const sourceRoot = getProjectSourceRoot(projectConfig, tree);
+    visitNotIgnoredFiles(tree, sourceRoot, (filePath) => {
       const fromProjectRootPath = relative(projectConfig.root, filePath);
       // we don't generate tests for pages/server-side/appDir components
       if (

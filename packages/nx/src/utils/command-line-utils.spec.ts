@@ -1,23 +1,43 @@
+import type { Mock } from 'vitest';
+import { execFileSync, execSync } from 'child_process';
 import { splitArgsIntoNxArgsAndOverrides } from './command-line-utils';
 import { withEnvironmentVariables as withEnvironment } from '../internal-testing-utils/with-environment';
 
-jest.mock('../project-graph/file-utils');
+vi.mock('../project-graph/file-utils');
+vi.mock('child_process');
 
 describe('splitArgs', () => {
-  let originalBase: string;
-  let originalHead: string;
+  const blockedEnvVars = [
+    'NX_BASE',
+    'NX_HEAD',
+    'NX_PARALLEL',
+    'NX_SKIP_NX_CACHE',
+    'NX_DISABLE_NX_CACHE',
+    'NX_SKIP_REMOTE_CACHE',
+    'NX_DISABLE_REMOTE_CACHE',
+  ];
+  let envVarsToRestore: Record<string, string | undefined> = {};
+
+  function blockParentEnvVar(key: string) {
+    envVarsToRestore[key] = process.env[key];
+    delete process.env[key];
+  }
 
   beforeEach(() => {
-    originalBase = process.env.NX_BASE;
-    originalHead = process.env.NX_HEAD;
-
-    delete process.env.NX_BASE;
-    delete process.env.NX_HEAD;
+    envVarsToRestore = {};
+    for (const key of blockedEnvVars) {
+      blockParentEnvVar(key);
+    }
   });
 
   afterEach(() => {
-    process.env.NX_BASE = originalBase;
-    process.env.NX_HEAD = originalHead;
+    for (const [key, value] of Object.entries(envVarsToRestore)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   });
 
   it('should split nx specific arguments into nxArgs', () => {
@@ -37,6 +57,7 @@ describe('splitArgs', () => {
       base: 'sha1',
       head: 'sha2',
       skipNxCache: false,
+      skipRemoteCache: false,
     });
   });
 
@@ -68,6 +89,7 @@ describe('splitArgs', () => {
     ).toEqual({
       base: 'main',
       skipNxCache: false,
+      skipRemoteCache: false,
     });
   });
 
@@ -85,6 +107,7 @@ describe('splitArgs', () => {
     ).toEqual({
       base: 'develop',
       skipNxCache: false,
+      skipRemoteCache: false,
     });
   });
 
@@ -102,6 +125,7 @@ describe('splitArgs', () => {
     ).toEqual({
       base: 'main',
       skipNxCache: false,
+      skipRemoteCache: false,
     });
   });
 
@@ -193,6 +217,7 @@ describe('splitArgs', () => {
     ).toEqual({
       projects: ['aaa', 'bbb'],
       skipNxCache: false,
+      skipRemoteCache: false,
     });
   });
 
@@ -217,6 +242,7 @@ describe('splitArgs', () => {
           base: 'envVarSha1',
           head: 'envVarSha2',
           skipNxCache: false,
+          skipRemoteCache: false,
         });
 
         expect(
@@ -234,6 +260,7 @@ describe('splitArgs', () => {
           base: 'envVarSha1',
           head: 'directlyOnCommandSha1',
           skipNxCache: false,
+          skipRemoteCache: false,
         });
 
         expect(
@@ -251,49 +278,13 @@ describe('splitArgs', () => {
           base: 'directlyOnCommandSha2',
           head: 'envVarSha2',
           skipNxCache: false,
+          skipRemoteCache: false,
         });
       }
     );
   });
 
   describe('--runner environment handling', () => {
-    it('should set runner based on environment NX_RUNNER, if it is not provided directly on the command', () => {
-      withEnvironment({ NX_RUNNER: 'some-env-runner-name' }, () => {
-        expect(
-          splitArgsIntoNxArgsAndOverrides(
-            {
-              __overrides_unparsed__: ['--notNxArg', 'true', '--override'],
-              $0: '',
-            },
-            'run-one',
-            {} as any,
-            {
-              tasksRunnerOptions: {
-                'some-env-runner-name': { runner: '' },
-              },
-            }
-          ).nxArgs.runner
-        ).toEqual('some-env-runner-name');
-
-        expect(
-          splitArgsIntoNxArgsAndOverrides(
-            {
-              __overrides_unparsed__: ['--notNxArg', 'true', '--override'],
-              $0: '',
-              runner: 'directlyOnCommand', // higher priority than $NX_RUNNER
-            },
-            'run-one',
-            {} as any,
-            {
-              tasksRunnerOptions: {
-                'some-env-runner-name': { runner: '' },
-              },
-            }
-          ).nxArgs.runner
-        ).toEqual('directlyOnCommand');
-      });
-    });
-
     it('should set runner based on environment NX_TASKS_RUNNER, if it is not provided directly on the command', () => {
       withEnvironment({ NX_TASKS_RUNNER: 'some-env-runner-name' }, () => {
         expect(
@@ -472,6 +463,160 @@ describe('splitArgs', () => {
       ).nxArgs.parallel;
 
       expect(parallel).toEqual(5);
+    });
+
+    it('should be able to be specified in the environment', () => {
+      const { nxArgs } = withEnvironment(
+        {
+          NX_PARALLEL: '5',
+        },
+        () =>
+          splitArgsIntoNxArgsAndOverrides(
+            {
+              $0: '',
+              __overrides_unparsed__: [],
+            },
+            'affected',
+            {} as any,
+            {} as any
+          )
+      );
+      expect(nxArgs.parallel).toEqual(5);
+    });
+
+    it('should be able to override NX_PARALLEL with the parallel flag', () => {
+      const { nxArgs } = withEnvironment(
+        {
+          NX_PARALLEL: '5',
+        },
+        () =>
+          splitArgsIntoNxArgsAndOverrides(
+            {
+              $0: '',
+              __overrides_unparsed__: [],
+              parallel: '3',
+            },
+            'affected',
+            {} as any,
+            {} as any
+          )
+      );
+      expect(nxArgs.parallel).toEqual(3);
+    });
+  });
+
+  describe('resolving the affected base against git', () => {
+    const execFileSyncMock = execFileSync as Mock;
+    const execSyncMock = execSync as Mock;
+
+    function splitAffectedArgs(args: Record<string, any>, nxJson = {}) {
+      return splitArgsIntoNxArgsAndOverrides(
+        { $0: '', __overrides_unparsed__: [], ...args },
+        'affected',
+        { printWarnings: false },
+        nxJson as any
+      );
+    }
+
+    beforeEach(() => {
+      execFileSyncMock.mockReturnValue(Buffer.from('a1b2c3d\n'));
+    });
+
+    afterEach(() => {
+      vi.resetAllMocks();
+    });
+
+    it('should resolve the merge base by passing revisions as arguments rather than through a shell', () => {
+      splitAffectedArgs({ base: 'main', head: 'HEAD' });
+
+      expect(execSyncMock).not.toHaveBeenCalled();
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'git',
+        ['merge-base', 'main', 'HEAD'],
+        expect.anything()
+      );
+    });
+
+    it('should treat a shell substitution in --base as an opaque revision instead of executing it', () => {
+      const { nxArgs } = splitAffectedArgs({ base: '$(touch /tmp/nx-pwned)' });
+
+      expect(execSyncMock).not.toHaveBeenCalled();
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'git',
+        ['merge-base', '$(touch /tmp/nx-pwned)', 'HEAD'],
+        expect.anything()
+      );
+      expect(nxArgs.base).toEqual('a1b2c3d');
+    });
+
+    it('should treat a shell substitution in nx.json defaultBase as an opaque revision', () => {
+      splitAffectedArgs({}, { defaultBase: '$(touch /tmp/nx-pwned)' });
+
+      expect(execSyncMock).not.toHaveBeenCalled();
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'git',
+        ['merge-base', '$(touch /tmp/nx-pwned)', 'HEAD'],
+        expect.anything()
+      );
+    });
+
+    it('should treat a shell substitution in NX_BASE as an opaque revision', () => {
+      withEnvironment({ NX_BASE: '$(touch /tmp/nx-pwned)' }, () =>
+        splitAffectedArgs({})
+      );
+
+      expect(execSyncMock).not.toHaveBeenCalled();
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'git',
+        ['merge-base', '$(touch /tmp/nx-pwned)', 'HEAD'],
+        expect.anything()
+      );
+    });
+
+    it('should reject an option-like base before invoking git', () => {
+      expect(() => splitAffectedArgs({ base: '--upload-pack=id' })).toThrow(
+        /Invalid git revision/
+      );
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    });
+
+    it('should reject an option-like head before invoking git', () => {
+      expect(() =>
+        splitAffectedArgs({ base: 'main', head: '--upload-pack=id' })
+      ).toThrow(/Invalid git revision/);
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    });
+
+    it('should reject an option-like defaultBase from nx.json before invoking git', () => {
+      expect(() =>
+        splitAffectedArgs({}, { defaultBase: '--upload-pack=id' })
+      ).toThrow(/Invalid git revision/);
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to the fork point without a shell when merge-base fails', () => {
+      execFileSyncMock.mockImplementationOnce(() => {
+        throw new Error('no merge base');
+      });
+
+      splitAffectedArgs({ base: 'main' });
+
+      expect(execSyncMock).not.toHaveBeenCalled();
+      expect(execFileSyncMock).toHaveBeenLastCalledWith(
+        'git',
+        ['merge-base', '--fork-point', 'main', 'HEAD'],
+        expect.anything()
+      );
+    });
+
+    it('should fall back to the given base when git cannot resolve it', () => {
+      execFileSyncMock.mockImplementation(() => {
+        throw new Error('unknown revision');
+      });
+
+      const { nxArgs } = splitAffectedArgs({ base: 'some-branch' });
+
+      expect(nxArgs.base).toEqual('some-branch');
     });
   });
 });

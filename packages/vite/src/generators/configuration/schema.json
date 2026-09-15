@@ -1,7 +1,7 @@
 {
   "cli": "nx",
-  "title": "Configure a project to use Vite.js.",
-  "description": "Configure a project to use Vite.js.",
+  "title": "Configure a project to use Vite.",
+  "description": "Configure a project to use Vite.",
   "$id": "configure-vite-project",
   "type": "object",
   "properties": {
@@ -55,6 +55,10 @@
       "type": "string",
       "enum": ["node", "jsdom", "happy-dom", "edge-runtime"],
       "default": "jsdom"
+    },
+    "port": {
+      "type": "number",
+      "description": "The port to use for the development server"
     }
   },
   "examplesFile": "../../../docs/configuration-examples.md"

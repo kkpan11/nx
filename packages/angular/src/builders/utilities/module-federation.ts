@@ -1,7 +1,7 @@
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
 import { logger, ProjectConfiguration } from '@nx/devkit';
-import { registerTsProject } from '@nx/js/src/internal';
+import { getProjectSourceRoot, loadTsFile } from '@nx/js/internal';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 export type DevRemoteDefinition =
   | string
@@ -93,17 +93,18 @@ function getModuleFederationConfig(
     'module-federation.config.ts'
   );
 
-  let moduleFederationConfigPath = moduleFederationConfigPathJS;
-
-  let cleanupTranspiler = () => {};
-  if (existsSync(moduleFederationConfigPathTS)) {
-    cleanupTranspiler = registerTsProject(join(workspaceRoot, tsconfigPath));
-    moduleFederationConfigPath = moduleFederationConfigPathTS;
-  }
+  const isTsConfig = existsSync(moduleFederationConfigPathTS);
+  const moduleFederationConfigPath = isTsConfig
+    ? moduleFederationConfigPathTS
+    : moduleFederationConfigPathJS;
 
   try {
-    const config = require(moduleFederationConfigPath);
-    cleanupTranspiler();
+    const config = isTsConfig
+      ? loadTsFile<any>(
+          moduleFederationConfigPath,
+          join(workspaceRoot, tsconfigPath)
+        )
+      : require(moduleFederationConfigPath);
 
     return {
       mfeConfig: config.default || config,
@@ -196,7 +197,7 @@ export function getDynamicMfManifestFile(
     join(workspaceRoot, project.root, 'public/module-federation.manifest.json'),
     join(
       workspaceRoot,
-      project.sourceRoot,
+      getProjectSourceRoot(project),
       'assets/module-federation.manifest.json'
     ),
   ].find((path) => existsSync(path));

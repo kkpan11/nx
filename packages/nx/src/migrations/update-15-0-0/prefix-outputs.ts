@@ -1,5 +1,5 @@
 import { Tree } from '../../generators/tree';
-import { formatChangedFilesWithPrettierIfAvailable } from '../../generators/internal-utils/format-changed-files-with-prettier-if-available';
+import { formatChangedFiles } from '../../generators/internal-utils/format-changed-files';
 import {
   getProjects,
   updateProjectConfiguration,
@@ -13,6 +13,7 @@ import {
 } from '../../tasks-runner/utils';
 import { updateJson } from '../../generators/utils/json';
 import { PackageJson } from '../../utils/package-json';
+import { targetDefaultConfigs } from '../utils/target-defaults';
 
 export default async function (tree: Tree) {
   // If the workspace doesn't have a nx.json, don't make any changes
@@ -28,11 +29,7 @@ export default async function (tree: Tree) {
         continue;
       }
 
-      try {
-        validateOutputs(target.outputs);
-      } catch (e) {
-        target.outputs = transformLegacyOutputs(project.root, e);
-      }
+      target.outputs = transformLegacyOutputs(project.root, target.outputs);
     }
     try {
       updateProjectConfiguration(tree, projectName, project);
@@ -44,11 +41,10 @@ export default async function (tree: Tree) {
           (json) => {
             for (const target of Object.values(json.nx?.targets ?? {})) {
               if (target.outputs) {
-                try {
-                  validateOutputs(target.outputs);
-                } catch (e) {
-                  target.outputs = transformLegacyOutputs(project.root, e);
-                }
+                target.outputs = transformLegacyOutputs(
+                  project.root,
+                  target.outputs
+                );
               }
             }
 
@@ -60,19 +56,22 @@ export default async function (tree: Tree) {
   }
 
   if (nxJson.targetDefaults) {
-    for (const [_, target] of Object.entries(nxJson.targetDefaults)) {
-      if (!target.outputs) {
-        continue;
-      }
-      try {
-        validateOutputs(target.outputs);
-      } catch (e: any) {
-        target.outputs = transformLegacyOutputs('{projectRoot}', e);
+    // `targetDefaultConfigs` yields the live config block(s) of both value
+    // forms (plain object and filtered array), so legacy outputs get prefixed
+    // regardless of shape; any `filter` on an array entry is left untouched.
+    for (const value of Object.values(nxJson.targetDefaults)) {
+      for (const config of targetDefaultConfigs(value)) {
+        if (config.outputs) {
+          config.outputs = transformLegacyOutputs(
+            '{projectRoot}',
+            config.outputs
+          );
+        }
       }
     }
 
     updateNxJson(tree, nxJson);
   }
 
-  await formatChangedFilesWithPrettierIfAvailable(tree);
+  await formatChangedFiles(tree);
 }

@@ -1,44 +1,31 @@
 {
   "generators": {
-    "update-16-0-0-add-nx-packages": {
+    "update-23-0-0-remove-use-legacy-typescript-plugin": {
       "cli": "nx",
-      "version": "16.0.0-beta.1",
-      "description": "Replace @nrwl/rollup with @nx/rollup",
-      "implementation": "./src/migrations/update-16-0-0-add-nx-packages/update-16-0-0-add-nx-packages"
+      "version": "23.0.0-beta.4",
+      "description": "Remove deprecated useLegacyTypescriptPlugin option from @nx/rollup:rollup",
+      "implementation": "./dist/src/migrations/update-23-0-0/remove-use-legacy-typescript-plugin",
+      "documentation": "./dist/src/migrations/update-23-0-0/remove-use-legacy-typescript-plugin.md"
     },
-    "update-16-3-3-add-babel-upward-root-mode-flag": {
-      "cli": "nx",
-      "version": "16.3.3-beta.0",
-      "description": "Add babelUpwardRootMode if not already defined",
-      "implementation": "./src/migrations/update-16-3-3-add-babel-upward-root-mode-flag/update-16-3-3-add-babel-upward-root-mode-flag"
+    "rewrite-rollup-internal-subpath-imports": {
+      "version": "23.0.0-beta.24",
+      "description": "Rewrites `@nx/rollup/src/*` subpath imports now that the `./src/*` subpath is no longer exposed by `@nx/rollup`'s exports map. Named imports/exports of public symbols are routed to `@nx/rollup` and the rest to the new `@nx/rollup/internal` entry; `require`, dynamic `import` and `jest.mock` calls reference the whole module and are routed to `@nx/rollup/internal`.",
+      "implementation": "./dist/src/migrations/update-23-0-0/rewrite-internal-subpath-imports"
     },
-    "explicitly-set-projects-to-update-buildable-deps": {
-      "cli": "nx",
-      "version": "16.6.0-beta.0",
-      "description": "Explicitly set 'updateBuildableProjectDepsInPackageJson' to 'true' in targets that rely on that value as the default.",
-      "factory": "./src/migrations/update-16-6-0/explicitly-set-projects-to-update-buildable-deps"
+    "update-23-0-0-migrate-create-nodes-v2-import": {
+      "version": "23.0.0-beta.24",
+      "description": "Rename imports of `createNodesV2` from `@nx/rollup/plugin` to the canonical `createNodes` export.",
+      "implementation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes",
+      "documentation": "./dist/src/migrations/update-23-0-0/migrate-create-nodes-v2-to-create-nodes.md"
     }
   },
   "packageJsonUpdates": {
-    "18.2.0": {
-      "version": "18.2.0-beta.1",
+    "23.0.0": {
+      "version": "23.0.0-beta.24",
       "packages": {
-        "core-js": {
-          "version": "3.36.1",
-          "alwaysAddToPackageJson": false
-        }
-      }
-    },
-    "19.0.0": {
-      "version": "19.0.0-beta.0",
-      "packages": {
-        "@rollup/plugin-url": {
-          "version": "^8.0.2",
-          "alwaysAddToPackageJson": false
-        },
-        "@svgr/rollup": {
-          "version": "^8.1.0",
-          "alwaysAddToPackageJson": false
+        "rollup": {
+          "version": "^4.14.0",
+          "alwaysAddToPackageJson": true
         }
       }
     }

@@ -1,7 +1,11 @@
-import { ApplicationConfig<% if (useEventCoalescing) { %>, provideZoneChangeDetection<% } %> } from '@angular/core';<% if (routing) { %>
+import { ApplicationConfig, provideBrowserGlobalErrorListeners<% if (!zoneless) { %>, provideZoneChangeDetection<% } %> } from '@angular/core';<% if (routing) { %>
 import { provideRouter } from '@angular/router';
 import { appRoutes } from './app.routes';<% } %>
 
 export const appConfig: ApplicationConfig = {
-  providers: [<% if (useEventCoalescing) { %>provideZoneChangeDetection({ eventCoalescing: true }), <% } %><% if (routing) { %>provideRouter(appRoutes) <% } %>]
+  providers: [
+    provideBrowserGlobalErrorListeners(),<% if (!zoneless) { %>
+    provideZoneChangeDetection({ eventCoalescing: true }),<% } %><% if (routing) { %>
+    provideRouter(appRoutes)<% } %>
+  ]
 };

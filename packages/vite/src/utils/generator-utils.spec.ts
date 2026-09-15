@@ -1,18 +1,23 @@
 import {
+  addProjectConfiguration,
   readProjectConfiguration,
   Tree,
+  updateJson,
   updateProjectConfiguration,
+  writeJson,
 } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import {
   findExistingJsBuildTargetInProject,
   getViteConfigPathForProject,
+  createOrEditViteConfig,
 } from './generator-utils';
 import {
   mockReactAppGenerator,
   mockViteReactAppGenerator,
   mockAngularAppGenerator,
 } from './test-utils';
+
 describe('generator utils', () => {
   let tree: Tree;
 
@@ -112,6 +117,233 @@ describe('generator utils', () => {
       expect(existingTargets).toMatchObject({
         unsupported: 'build',
       });
+    });
+  });
+
+  describe('createOrEditViteConfig', () => {
+    it('should generate formatted config', () => {
+      addProjectConfiguration(tree, 'myproj', {
+        name: 'myproj',
+        root: 'myproj',
+      });
+      createOrEditViteConfig(
+        tree,
+        {
+          project: 'myproj',
+          inSourceTests: true,
+          includeVitest: true,
+          includeLib: true,
+        },
+        false
+      );
+
+      expect(tree.read('myproj/vite.config.ts', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "/// <reference types='vitest' />
+        import { defineConfig } from 'vite';
+        import dts from 'vite-plugin-dts';
+        import * as path from 'path';
+        import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
+        import { nxCopyAssetsPlugin } from '@nx/vite/plugins/nx-copy-assets.plugin';
+
+        export default defineConfig(() => ({
+          root: import.meta.dirname,
+          cacheDir: '../node_modules/.vite/myproj',
+          plugins: [nxViteTsPaths(), nxCopyAssetsPlugin(['*.md']), dts({ entryRoot: 'src', tsconfigPath: path.join(import.meta.dirname, 'tsconfig.lib.json'), pathsToAliases: false })],
+          // Uncomment this if you are using workers.
+          // worker: {
+          //   plugins: () => [ nxViteTsPaths() ],
+          // },
+          // Configuration for building your library.
+          // See: https://vite.dev/guide/build.html#library-mode
+          build: {
+            outDir: '../dist/myproj',
+            emptyOutDir: true,
+            reportCompressedSize: true,
+            commonjsOptions: {
+              transformMixedEsModules: true,
+            },
+            lib: {
+              // Could also be a dictionary or array of multiple entry points.
+              entry: 'src/index.ts',
+              name: 'myproj',
+              fileName: 'index',
+              // Change this to the formats you want to support.
+              // Don't forget to update your package.json as well.
+              formats: ['es' as const]
+            },
+            rolldownOptions: {
+              // External packages that should not be bundled into your library.
+              external: []
+            },
+          },
+          define: {
+            'import.meta.vitest': undefined
+          },
+          test: {
+            name: 'myproj',
+            watch: false,
+            globals: true,
+            environment: 'jsdom',
+            include: ['{src,tests}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+            includeSource: ['src/**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+            reporters: ['default'],
+            coverage: {
+              reportsDirectory: '../coverage/myproj',
+              provider: 'v8' as const,
+            }
+          },
+        }));
+        "
+      `);
+    });
+
+    it('should generate formatted config without library and in-source tests', () => {
+      addProjectConfiguration(tree, 'myproj', {
+        name: 'myproj',
+        root: 'myproj',
+      });
+      createOrEditViteConfig(
+        tree,
+        {
+          project: 'myproj',
+          inSourceTests: false,
+          includeVitest: false,
+          includeLib: false,
+        },
+        false
+      );
+
+      expect(tree.read('myproj/vite.config.ts', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "/// <reference types='vitest' />
+        import { defineConfig } from 'vite';
+        import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
+        import { nxCopyAssetsPlugin } from '@nx/vite/plugins/nx-copy-assets.plugin';
+
+        export default defineConfig(() => ({
+          root: import.meta.dirname,
+          cacheDir: '../node_modules/.vite/myproj',
+          server:{
+            port: 4200,
+            host: 'localhost',
+          },
+          preview:{
+            port: 4300,
+            host: 'localhost',
+          },
+          plugins: [nxViteTsPaths(), nxCopyAssetsPlugin(['*.md'])],
+          // Uncomment this if you are using workers.
+          // worker: {
+          //   plugins: () => [ nxViteTsPaths() ],
+          // },
+          build: {
+            outDir: '../dist/myproj',
+            emptyOutDir: true,
+            reportCompressedSize: true,
+            commonjsOptions: {
+              transformMixedEsModules: true,
+            },
+          },
+        }));
+        "
+      `);
+    });
+
+    it('should generate correct config when using ts solution setup', () => {
+      updateJson(tree, '/package.json', (json) => {
+        json.workspaces = ['apps/*'];
+        return json;
+      });
+      // detectPackageManager() resolves to pnpm in the test env, so
+      // isWorkspacesEnabled requires pnpm-workspace.yaml to recognise this
+      // tree as using package-manager workspaces.
+      tree.write('pnpm-workspace.yaml', `packages:\n  - 'apps/*'\n`);
+      writeJson(tree, 'tsconfig.base.json', {
+        compilerOptions: {
+          composite: true,
+          declaration: true,
+          customConditions: ['@proj/source'],
+        },
+      });
+      writeJson(tree, 'tsconfig.json', {
+        extends: './tsconfig.base.json',
+        files: [],
+        references: [],
+      });
+      addProjectConfiguration(tree, 'myproj', {
+        name: 'myproj',
+        root: 'apps/myproj',
+      });
+
+      createOrEditViteConfig(
+        tree,
+        {
+          project: 'myproj',
+          inSourceTests: true,
+          includeVitest: true,
+          includeLib: true,
+        },
+        false
+      );
+
+      expect(tree.read('apps/myproj/vite.config.ts', 'utf-8'))
+        .toMatchInlineSnapshot(`
+        "/// <reference types='vitest' />
+        import { defineConfig } from 'vite';
+        import dts from 'vite-plugin-dts';
+        import * as path from 'path';
+
+        export default defineConfig(() => ({
+          root: import.meta.dirname,
+          cacheDir: '../../node_modules/.vite/apps/myproj',
+          plugins: [dts({ entryRoot: 'src', tsconfigPath: path.join(import.meta.dirname, 'tsconfig.lib.json') })],
+          // Uncomment this if you are using workers.
+          // worker: {
+          //  plugins: [],
+          // },
+          // Configuration for building your library.
+          // See: https://vite.dev/guide/build.html#library-mode
+          build: {
+            outDir: './dist',
+            emptyOutDir: true,
+            reportCompressedSize: true,
+            commonjsOptions: {
+              transformMixedEsModules: true,
+            },
+            lib: {
+              // Could also be a dictionary or array of multiple entry points.
+              entry: 'src/index.ts',
+              name: 'myproj',
+              fileName: 'index',
+              // Change this to the formats you want to support.
+              // Don't forget to update your package.json as well.
+              formats: ['es' as const]
+            },
+            rolldownOptions: {
+              // External packages that should not be bundled into your library.
+              external: []
+            },
+          },
+          define: {
+            'import.meta.vitest': undefined
+          },
+          test: {
+            name: 'myproj',
+            watch: false,
+            globals: true,
+            environment: 'jsdom',
+            include: ['{src,tests}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+            includeSource: ['src/**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+            reporters: ['default'],
+            coverage: {
+              reportsDirectory: './test-output/vitest/coverage',
+              provider: 'v8' as const,
+            }
+          },
+        }));
+        "
+      `);
     });
   });
 });

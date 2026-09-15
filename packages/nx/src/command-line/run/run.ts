@@ -1,9 +1,7 @@
 import { env as appendLocalEnv } from 'npm-run-path';
-import {
-  combineOptionsForExecutor,
-  handleErrors,
-  Schema,
-} from '../../utils/params';
+import { combineOptionsForExecutor, Schema } from '../../utils/params';
+import { handleErrors } from '../../utils/handle-errors';
+import { handleImport } from '../../utils/handle-import';
 import { printHelp } from '../../utils/print-help';
 import { NxJsonConfiguration } from '../../config/nx-json';
 import { relative } from 'path';
@@ -21,9 +19,9 @@ import {
   getLastValueFromAsyncIterableIterator,
   isAsyncIterator,
 } from '../../utils/async-iterator';
-import { getExecutorInformation } from './executor-utils';
+import { getExecutorInformation, parseExecutor } from './executor-utils';
 import {
-  getPseudoTerminal,
+  createPseudoTerminal,
   PseudoTerminal,
 } from '../../tasks-runner/pseudo-terminal';
 import { exec } from 'child_process';
@@ -70,19 +68,8 @@ async function* promiseToIterator<T extends { success: boolean }>(
 async function iteratorToProcessStatusCode(
   i: AsyncIterableIterator<{ success: boolean }>
 ): Promise<number> {
-  // This is a workaround to fix an issue that only happens with
-  // the @angular-devkit/build-angular:browser builder. Starting
-  // on version 12.0.1, a SASS compilation implementation was
-  // introduced making use of workers and it's unref()-ing the worker
-  // too early, causing the process to exit early in environments
-  // like CI or when running Docker builds.
-  const keepProcessAliveInterval = setInterval(() => {}, 1000);
-  try {
-    const { success } = await getLastValueFromAsyncIterableIterator(i);
-    return success ? 0 : 1;
-  } finally {
-    clearInterval(keepProcessAliveInterval);
-  }
+  const { success } = await getLastValueFromAsyncIterableIterator(i);
+  return success ? 0 : 1;
 }
 
 async function parseExecutorAndTarget(
@@ -97,7 +84,7 @@ async function parseExecutorAndTarget(
     throw new Error(`Cannot find target '${target}' for project '${project}'`);
   }
 
-  const [nodeModule, executor] = targetConfig.executor.split(':');
+  const [nodeModule, executor] = parseExecutor(targetConfig.executor);
   const { schema, implementationFactory } = getExecutorInformation(
     nodeModule,
     executor,
@@ -138,7 +125,7 @@ async function printTargetRunHelpInternal(
       ...localEnv,
     };
     if (PseudoTerminal.isSupported()) {
-      const terminal = getPseudoTerminal();
+      const terminal = createPseudoTerminal();
       await new Promise(() => {
         const cp = terminal.runCommand(helpCommand, { jsEnv: env });
         cp.onExit((code) => {
@@ -148,6 +135,7 @@ async function printTargetRunHelpInternal(
     } else {
       const cp = exec(helpCommand, {
         env,
+        windowsHide: true,
       });
       cp.on('exit', (code) => {
         process.exit(code);
@@ -203,7 +191,6 @@ async function runExecutorInternal<T extends { success: boolean }>(
       target: targetConfig,
       projectsConfigurations,
       nxJsonConfiguration,
-      workspace: { ...projectsConfigurations, ...nxJsonConfiguration },
       projectName: project,
       targetName: target,
       configurationName: configuration,
@@ -224,7 +211,7 @@ async function runExecutorInternal<T extends { success: boolean }>(
   } else {
     require('../../adapter/compat');
     const observable = await (
-      await import('../../adapter/ngcli-adapter')
+      await handleImport('../../adapter/ngcli-adapter.js', __dirname)
     ).scheduleTarget(
       root,
       {
@@ -234,9 +221,13 @@ async function runExecutorInternal<T extends { success: boolean }>(
         runOptions: combinedOptions,
         projects: projectsConfigurations.projects,
       },
-      isVerbose
+      isVerbose,
+      projectGraph
     );
-    const { eachValueFrom } = await import('../../adapter/rxjs-for-await');
+    const { eachValueFrom } = await handleImport(
+      '../../adapter/rxjs-for-await.js',
+      __dirname
+    );
     return eachValueFrom(observable as any);
   }
 }

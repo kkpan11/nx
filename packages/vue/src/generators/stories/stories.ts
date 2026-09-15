@@ -12,8 +12,9 @@ import {
 } from '@nx/devkit';
 import { basename, join } from 'path';
 import { nxVersion } from '../../utils/versions';
+import { assertSupportedVueVersion } from '../../utils/assert-supported-vue-version';
 import { createComponentStories } from './lib/component-story';
-import { minimatch } from 'minimatch';
+import picomatch = require('picomatch');
 
 export interface StorybookStoriesSchema {
   project: string;
@@ -21,8 +22,6 @@ export interface StorybookStoriesSchema {
   js?: boolean;
   ignorePaths?: string[];
   skipFormat?: boolean;
-  cypressProject?: string;
-  generateCypressSpecs?: boolean;
 }
 
 export async function createAllStories(
@@ -45,7 +44,7 @@ export async function createAllStories(
     visitNotIgnoredFiles(tree, p, (path) => {
       // Ignore private files starting with "_".
       if (basename(path).startsWith('_')) return;
-      if (ignorePaths?.some((pattern) => minimatch(path, pattern))) return;
+      if (ignorePaths?.some((pattern) => picomatch(pattern)(path))) return;
       if (path.endsWith('.vue')) {
         // Let's see if the .stories.* file exists
         const ext = path.slice(path.lastIndexOf('.'));
@@ -79,6 +78,8 @@ export async function storiesGenerator(
   host: Tree,
   schema: StorybookStoriesSchema
 ) {
+  assertSupportedVueVersion(host);
+
   const projects = getProjects(host);
   const projectConfiguration = projects.get(schema.project);
   schema.interactionTests = schema.interactionTests ?? true;
@@ -91,21 +92,9 @@ export async function storiesGenerator(
     schema.ignorePaths
   );
 
-  const tasks: GeneratorCallback[] = [];
-
-  if (schema.interactionTests) {
-    const { interactionTestsDependencies, addInteractionsInAddons } =
-      ensurePackage<typeof import('@nx/storybook')>('@nx/storybook', nxVersion);
-    tasks.push(
-      addDependenciesToPackageJson(host, {}, interactionTestsDependencies())
-    );
-    addInteractionsInAddons(host, projectConfiguration);
-  }
-
   if (!schema.skipFormat) {
     await formatFiles(host);
   }
-  return runTasksInSerial(...tasks);
 }
 
 export default storiesGenerator;

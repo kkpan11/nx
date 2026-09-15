@@ -1,20 +1,15 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 import type { UnitTestRunner } from '../../utils/test-runners';
 
 export interface Schema {
-  name: string;
-  addTailwind?: boolean;
+  directory: string;
+  name?: string;
   skipFormat?: boolean;
-  simpleName?: boolean;
   addModuleSpec?: boolean;
-  directory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   sourceDir?: string;
   buildable?: boolean;
   publishable?: boolean;
   importPath?: string;
-  standaloneConfig?: boolean;
   spec?: boolean;
   flat?: boolean;
   commonModule?: boolean;
@@ -24,9 +19,13 @@ export interface Schema {
   parent?: string;
   tags?: string;
   strict?: boolean;
-  linter?: Linter;
+  linter?: LinterType;
   unitTestRunner?: UnitTestRunner;
   compilationMode?: 'full' | 'partial';
+  enableTypedLinting?: boolean;
+  /**
+   * @deprecated Use `enableTypedLinting` instead. This option will be removed in Nx v24.
+   */
   setParserOptionsProject?: boolean;
   skipModule?: boolean;
   skipPackageJson?: boolean;
@@ -35,10 +34,11 @@ export interface Schema {
   inlineStyle?: boolean;
   inlineTemplate?: boolean;
   viewEncapsulation?: 'Emulated' | 'None' | 'ShadowDom';
-  changeDetection?: 'Default' | 'OnPush';
+  changeDetection?: 'Default' | 'Eager' | 'OnPush';
   style?: 'css' | 'scss' | 'sass' | 'less' | 'none';
   skipTests?: boolean;
   selector?: string;
   skipSelector?: boolean;
   addPlugin?: boolean;
+  skipTsConfig?: boolean;
 }

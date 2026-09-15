@@ -1,24 +1,44 @@
 import { exec } from 'child_process';
 import type { Compiler } from 'webpack';
-import { daemonClient, isDaemonEnabled } from 'nx/src/daemon/client/client';
-import { BatchFunctionRunner } from 'nx/src/command-line/watch/watch';
-import { output } from 'nx/src/utils/output';
+import { daemonClient, BatchFunctionRunner } from '@nx/devkit/internal';
+import { isDaemonEnabled, output } from '@nx/devkit';
+
+type PluginOptions = {
+  skipInitialBuild?: boolean;
+  skipWatchingDeps?: boolean;
+};
 
 export class WebpackNxBuildCoordinationPlugin {
   private currentlyRunning: 'none' | 'nx-build' | 'webpack-build' = 'none';
   private buildCmdProcess: ReturnType<typeof exec> | null = null;
 
-  constructor(private readonly buildCmd: string, skipInitialBuild?: boolean) {
-    if (!skipInitialBuild) {
+  constructor(buildCmd: string);
+  /**
+   * @deprecated Use the constructor with the `options` parameter instead.
+   */
+  constructor(buildCmd: string, skipInitialBuild?: boolean);
+  constructor(buildCmd: string, options?: PluginOptions);
+  constructor(
+    private readonly buildCmd: string,
+    skipInitialBuildOrOptions?: boolean | PluginOptions
+  ) {
+    const options =
+      typeof skipInitialBuildOrOptions === 'boolean'
+        ? { skipInitialBuild: skipInitialBuildOrOptions }
+        : skipInitialBuildOrOptions;
+
+    if (!options?.skipInitialBuild) {
       this.buildChangedProjects();
     }
-    if (isDaemonEnabled()) {
-      this.startWatchingBuildableLibs();
-    } else {
-      output.warn({
-        title:
-          'Nx Daemon is not enabled. Buildable libs will not be rebuilt on file changes.',
-      });
+    if (!options?.skipWatchingDeps) {
+      if (isDaemonEnabled()) {
+        this.startWatchingBuildableLibs();
+      } else {
+        output.warn({
+          title:
+            'Nx Daemon is not enabled. Buildable libs will not be rebuilt on file changes.',
+        });
+      }
     }
   }
 
@@ -52,7 +72,9 @@ export class WebpackNxBuildCoordinationPlugin {
     this.currentlyRunning = 'nx-build';
     try {
       return await new Promise<void>((res) => {
-        this.buildCmdProcess = exec(this.buildCmd);
+        this.buildCmdProcess = exec(this.buildCmd, {
+          windowsHide: true,
+        });
 
         this.buildCmdProcess.stdout.pipe(process.stdout);
         this.buildCmdProcess.stderr.pipe(process.stderr);
@@ -76,15 +98,21 @@ export class WebpackNxBuildCoordinationPlugin {
         watchProjects: 'all',
       },
       (err, { changedProjects, changedFiles }) => {
-        if (err === 'closed') {
+        if (err === 'reconnecting') {
+          // Silent - daemon restarts automatically on lockfile changes
+          return;
+        } else if (err === 'reconnected') {
+          // Silent - reconnection succeeded
+          return;
+        } else if (err === 'closed') {
           output.error({
-            title: 'Watch connection closed',
-            bodyLines: [
-              'The daemon has closed the connection to this watch process.',
-              'Please restart your watch command.',
-            ],
+            title: 'Failed to reconnect to daemon after multiple attempts',
           });
           process.exit(1);
+        } else if (err) {
+          output.error({
+            title: `Watch error: ${err?.message ?? 'Unknown'}`,
+          });
         }
 
         if (this.buildCmdProcess) {

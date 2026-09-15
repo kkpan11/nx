@@ -1,106 +1,184 @@
-import { workspaceDataDirectory } from 'nx/src/utils/cache-directory';
 import {
+  calculateHashesForCreateNodes,
+  getNamedInputs,
+  loadConfigFile,
+  PluginCache,
+  workspaceDataDirectory,
+  hashObject,
+} from '@nx/devkit/internal';
+import {
+  AggregateCreateNodesError,
   type CreateDependencies,
-  type CreateNodes,
   type CreateNodesContext,
+  createNodesFromFiles,
+  CreateNodesResultArray,
+  CreateNodes,
   detectPackageManager,
+  getPackageManagerCommand,
   joinPathFragments,
+  ProjectConfiguration,
   readJsonFile,
   type TargetConfiguration,
-  writeJsonFile,
 } from '@nx/devkit';
-import { calculateHashForCreateNodes } from '@nx/devkit/src/utils/calculate-hash-for-create-nodes';
-import { getNamedInputs } from '@nx/devkit/src/utils/get-named-inputs';
 import { getLockFileName } from '@nx/js';
 import { type AppConfig } from '@remix-run/dev';
 import { dirname, join } from 'path';
-import { existsSync, readdirSync } from 'fs';
-import { loadConfigFile } from '@nx/devkit/src/utils/config-utils';
-
-const cachePath = join(workspaceDataDirectory, 'remix.hash');
-const targetsCache = readTargetsCache();
-
-function readTargetsCache(): Record<
-  string,
-  Record<string, TargetConfiguration>
-> {
-  return existsSync(cachePath) ? readJsonFile(cachePath) : {};
-}
-
-function writeTargetsToCache() {
-  const oldCache = readTargetsCache();
-  writeJsonFile(cachePath, {
-    ...oldCache,
-    ...targetsCache,
-  });
-}
-
-export const createDependencies: CreateDependencies = () => {
-  writeTargetsToCache();
-  return [];
-};
-
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { loadViteDynamicImport } from '../utils/executor-utils';
+import {
+  addBuildAndWatchDepsTargets,
+  isUsingTsSolutionSetup as _isUsingTsSolutionSetup,
+} from '@nx/js/internal';
 export interface RemixPluginOptions {
   buildTargetName?: string;
   devTargetName?: string;
   startTargetName?: string;
   typecheckTargetName?: string;
-  staticServeTargetName?: string;
+  buildDepsTargetName?: string;
+  watchDepsTargetName?: string;
+  serveStaticTargetName?: string;
 }
 
+type RemixTargets = Pick<ProjectConfiguration, 'targets' | 'metadata'>;
+
+/**
+ * @deprecated The 'createDependencies' function is now a no-op. This functionality is included in 'createNodesV2'.
+ */
+export const createDependencies: CreateDependencies = () => {
+  return [];
+};
+
+const remixConfigGlob = '**/{remix,vite}.config.{js,cjs,mjs,ts,cts,mts}';
+
 export const createNodes: CreateNodes<RemixPluginOptions> = [
-  '**/remix.config.{js,cjs,mjs}',
-  async (configFilePath, options, context) => {
-    const projectRoot = dirname(configFilePath);
-    const fullyQualifiedProjectRoot = join(context.workspaceRoot, projectRoot);
-    // Do not create a project if package.json and project.json isn't there
-    const siblingFiles = readdirSync(fullyQualifiedProjectRoot);
-    if (
-      !siblingFiles.includes('package.json') &&
-      !siblingFiles.includes('project.json') &&
-      !siblingFiles.includes('vite.config.ts') &&
-      !siblingFiles.includes('vite.config.js')
-    ) {
-      return {};
+  remixConfigGlob,
+  async (configFilePaths, options, context) => {
+    const optionsHash = hashObject(options);
+    const cachePath = join(workspaceDataDirectory, `remix-${optionsHash}.hash`);
+    const targetsCache = new PluginCache<RemixTargets>(cachePath);
+    const packageManager = detectPackageManager(context.workspaceRoot);
+    const pmc = getPackageManagerCommand(packageManager);
+    const lockFileName = getLockFileName(packageManager);
+    const isUsingTsSolutionSetup = _isUsingTsSolutionSetup();
+    const normalizedOptions = normalizeOptions(options);
+
+    try {
+      const { entries, preErrors } = await filterRemixConfigs(
+        configFilePaths,
+        context
+      );
+
+      const projectHashes = await calculateHashesForCreateNodes(
+        entries.map((e) => e.projectRoot),
+        { ...normalizedOptions, isUsingTsSolutionSetup },
+        context,
+        entries.map(() => [lockFileName])
+      );
+
+      let results: CreateNodesResultArray = [];
+      let nodeErrors: Array<[string | null, Error]> = [];
+      try {
+        results = await createNodesFromFiles(
+          (configFile, _, ctx, idx) =>
+            createNodesInternal(
+              configFile,
+              normalizedOptions,
+              ctx,
+              targetsCache,
+              isUsingTsSolutionSetup,
+              pmc,
+              entries[idx].siblingFiles,
+              entries[idx].remixCompiler,
+              projectHashes[idx] + configFile
+            ),
+          entries.map((e) => e.configFile),
+          options,
+          context
+        );
+      } catch (e) {
+        if (e instanceof AggregateCreateNodesError) {
+          results = e.partialResults ?? [];
+          nodeErrors = e.errors;
+        } else {
+          throw e;
+        }
+      }
+
+      const allErrors = [...preErrors, ...nodeErrors];
+      if (allErrors.length > 0) {
+        throw new AggregateCreateNodesError(allErrors, results);
+      }
+      return results;
+    } finally {
+      targetsCache.writeToDisk();
     }
-
-    options = normalizeOptions(options);
-
-    const hash = await calculateHashForCreateNodes(
-      projectRoot,
-      options,
-      context,
-      [getLockFileName(detectPackageManager(context.workspaceRoot))]
-    );
-    targetsCache[hash] ??= await buildRemixTargets(
-      configFilePath,
-      projectRoot,
-      options,
-      context,
-      siblingFiles
-    );
-
-    return {
-      projects: {
-        [projectRoot]: {
-          root: projectRoot,
-          targets: targetsCache[hash],
-        },
-      },
-    };
   },
 ];
+
+export const createNodesV2 = createNodes;
+
+async function createNodesInternal(
+  configFilePath: string,
+  options: RemixPluginOptions,
+  context: CreateNodesContext,
+  targetsCache: PluginCache<RemixTargets>,
+  isUsingTsSolutionSetup: boolean,
+  pmc: ReturnType<typeof getPackageManagerCommand>,
+  siblingFiles: string[],
+  remixCompiler: RemixCompiler,
+  hash: string
+) {
+  const projectRoot = dirname(configFilePath);
+
+  if (!targetsCache.has(hash)) {
+    targetsCache.set(
+      hash,
+      await buildRemixTargets(
+        configFilePath,
+        projectRoot,
+        options,
+        context,
+        siblingFiles,
+        remixCompiler,
+        isUsingTsSolutionSetup,
+        pmc
+      )
+    );
+  }
+
+  const { targets, metadata } = targetsCache.get(hash);
+
+  const project: ProjectConfiguration = {
+    root: projectRoot,
+    targets,
+    metadata,
+  };
+
+  return {
+    projects: {
+      [projectRoot]: project,
+    },
+  };
+}
 
 async function buildRemixTargets(
   configFilePath: string,
   projectRoot: string,
   options: RemixPluginOptions,
   context: CreateNodesContext,
-  siblingFiles: string[]
+  siblingFiles: string[],
+  remixCompiler: RemixCompiler,
+  isUsingTsSolutionSetup: boolean,
+  pmc: ReturnType<typeof getPackageManagerCommand>
 ) {
   const namedInputs = getNamedInputs(projectRoot, context);
   const { buildDirectory, assetsBuildDirectory, serverBuildPath } =
-    await getBuildPaths(configFilePath, context.workspaceRoot);
+    await getBuildPaths(
+      configFilePath,
+      projectRoot,
+      context.workspaceRoot,
+      remixCompiler
+    );
 
   const targets: Record<string, TargetConfiguration> = {};
   targets[options.buildTargetName] = buildTarget(
@@ -108,26 +186,51 @@ async function buildRemixTargets(
     projectRoot,
     buildDirectory,
     assetsBuildDirectory,
-    namedInputs
+    namedInputs,
+    remixCompiler,
+    isUsingTsSolutionSetup
   );
-  targets[options.devTargetName] = devTarget(serverBuildPath, projectRoot);
+  targets[options.devTargetName] = devTarget(
+    serverBuildPath,
+    projectRoot,
+    remixCompiler,
+    namedInputs,
+    isUsingTsSolutionSetup
+  );
   targets[options.startTargetName] = startTarget(
     projectRoot,
     serverBuildPath,
-    options.buildTargetName
+    options.buildTargetName,
+    remixCompiler,
+    namedInputs,
+    isUsingTsSolutionSetup
   );
-  targets[options.staticServeTargetName] = startTarget(
+  targets[options.serveStaticTargetName] = startTarget(
     projectRoot,
     serverBuildPath,
-    options.buildTargetName
+    options.buildTargetName,
+    remixCompiler,
+    namedInputs,
+    isUsingTsSolutionSetup
   );
   targets[options.typecheckTargetName] = typecheckTarget(
+    options.typecheckTargetName,
     projectRoot,
     namedInputs,
-    siblingFiles
+    siblingFiles,
+    isUsingTsSolutionSetup,
+    pmc
   );
 
-  return targets;
+  addBuildAndWatchDepsTargets(
+    context.workspaceRoot,
+    projectRoot,
+    targets,
+    options,
+    pmc
+  );
+
+  return { targets, metadata: {} };
 }
 
 function buildTarget(
@@ -135,7 +238,9 @@ function buildTarget(
   projectRoot: string,
   buildDirectory: string,
   assetsBuildDirectory: string,
-  namedInputs: { [inputName: string]: any[] }
+  namedInputs: { [inputName: string]: any[] },
+  remixCompiler: RemixCompiler,
+  isUsingTsSolutionSetup: boolean
 ): TargetConfiguration {
   const serverBuildOutputPath =
     projectRoot === '.'
@@ -147,56 +252,111 @@ function buildTarget(
       ? joinPathFragments(`{workspaceRoot}`, assetsBuildDirectory)
       : joinPathFragments(`{workspaceRoot}`, projectRoot, assetsBuildDirectory);
 
-  return {
+  const outputs =
+    remixCompiler === RemixCompiler.IsVte
+      ? [
+          projectRoot === '.'
+            ? joinPathFragments(`{workspaceRoot}`, buildDirectory)
+            : joinPathFragments(`{workspaceRoot}`, projectRoot, buildDirectory),
+        ]
+      : [serverBuildOutputPath, assetsBuildOutputPath];
+
+  const buildTarget: TargetConfiguration = {
     cache: true,
     dependsOn: [`^${buildTargetName}`],
-    inputs: [
-      ...('production' in namedInputs
-        ? ['production', '^production']
-        : ['default', '^default']),
-      { externalDependencies: ['@remix-run/dev'] },
-    ],
-    outputs: [serverBuildOutputPath, assetsBuildOutputPath],
-    command: 'remix build',
+    inputs: buildInputs(namedInputs),
+    outputs,
+    command:
+      remixCompiler === RemixCompiler.IsVte
+        ? 'remix vite:build'
+        : 'remix build',
     options: { cwd: projectRoot },
   };
+
+  if (isUsingTsSolutionSetup) {
+    buildTarget.syncGenerators = ['@nx/js:typescript-sync'];
+  }
+
+  return buildTarget;
+}
+
+function buildInputs(namedInputs: {
+  [inputName: string]: any[];
+}): TargetConfiguration['inputs'] {
+  return [
+    ...('production' in namedInputs
+      ? ['production', '^production']
+      : ['default', '^default']),
+    { externalDependencies: ['@remix-run/dev'] },
+  ];
 }
 
 function devTarget(
   serverBuildPath: string,
-  projectRoot: string
+  projectRoot: string,
+  remixCompiler: RemixCompiler,
+  namedInputs: { [inputName: string]: any[] },
+  isUsingTsSolutionSetup: boolean
 ): TargetConfiguration {
-  return {
-    command: 'remix dev --manual',
+  const devTarget: TargetConfiguration = {
+    continuous: true,
+    inputs: buildInputs(namedInputs),
+    command:
+      remixCompiler === RemixCompiler.IsVte
+        ? 'remix vite:dev'
+        : 'remix dev --manual',
     options: { cwd: projectRoot },
   };
+
+  if (isUsingTsSolutionSetup) {
+    devTarget.syncGenerators = ['@nx/js:typescript-sync'];
+  }
+
+  return devTarget;
 }
 
 function startTarget(
   projectRoot: string,
   serverBuildPath: string,
-  buildTargetName: string
+  buildTargetName: string,
+  remixCompiler: RemixCompiler,
+  namedInputs: { [inputName: string]: any[] },
+  isUsingTsSolutionSetup: boolean
 ): TargetConfiguration {
-  return {
+  let serverPath = serverBuildPath;
+  if (remixCompiler === RemixCompiler.IsVte) {
+    if (serverBuildPath === 'build') {
+      serverPath = `${serverBuildPath}/server/index.js`;
+    }
+  }
+
+  const startTarget: TargetConfiguration = {
     dependsOn: [buildTargetName],
-    command: `remix-serve ${serverBuildPath}`,
+    continuous: true,
+    inputs: buildInputs(namedInputs),
+    command: `remix-serve ${serverPath}`,
     options: {
       cwd: projectRoot,
     },
   };
+
+  if (isUsingTsSolutionSetup) {
+    startTarget.syncGenerators = ['@nx/js:typescript-sync'];
+  }
+
+  return startTarget;
 }
 
 function typecheckTarget(
+  typecheckTargetName: string,
   projectRoot: string,
   namedInputs: { [inputName: string]: any[] },
-  siblingFiles: string[]
+  siblingFiles: string[],
+  isUsingTsSolutionSetup: boolean,
+  pmc: ReturnType<typeof getPackageManagerCommand>
 ): TargetConfiguration {
   const hasTsConfigAppJson = siblingFiles.includes('tsconfig.app.json');
-  const command = `tsc${
-    hasTsConfigAppJson ? ` --project tsconfig.app.json` : ``
-  }`;
-  return {
-    command,
+  const typecheckTarget: TargetConfiguration = {
     cache: true,
     inputs: [
       ...('production' in namedInputs
@@ -204,27 +364,83 @@ function typecheckTarget(
         : ['default', '^default']),
       { externalDependencies: ['typescript'] },
     ],
+    command: isUsingTsSolutionSetup
+      ? `tsc --build --emitDeclarationOnly`
+      : `tsc${hasTsConfigAppJson ? ` -p tsconfig.app.json` : ``} --noEmit`,
     options: {
       cwd: projectRoot,
     },
+    metadata: {
+      description: `Runs type-checking for the project.`,
+      technologies: ['typescript'],
+      help: {
+        command: isUsingTsSolutionSetup
+          ? `${pmc.exec} tsc --build --help`
+          : `${pmc.exec} tsc${
+              hasTsConfigAppJson ? ` -p tsconfig.app.json` : ``
+            } --help`,
+        example: isUsingTsSolutionSetup
+          ? { args: ['--force'] }
+          : { options: { noEmit: true } },
+      },
+    },
   };
+
+  if (isUsingTsSolutionSetup) {
+    typecheckTarget.dependsOn = [`^${typecheckTargetName}`];
+    typecheckTarget.syncGenerators = ['@nx/js:typescript-sync'];
+  }
+
+  return typecheckTarget;
 }
 
 async function getBuildPaths(
   configFilePath: string,
-  workspaceRoot: string
+  projectRoot: string,
+  workspaceRoot: string,
+  remixCompiler: RemixCompiler
 ): Promise<{
   buildDirectory: string;
-  assetsBuildDirectory: string;
-  serverBuildPath: string;
+  assetsBuildDirectory?: string;
+  serverBuildPath?: string;
 }> {
   const configPath = join(workspaceRoot, configFilePath);
-  let appConfig = await loadConfigFile<AppConfig>(configPath);
-  return {
-    buildDirectory: 'build',
-    serverBuildPath: appConfig.serverBuildPath ?? 'build/index.js',
-    assetsBuildDirectory: appConfig.assetsBuildDirectory ?? 'public/build',
-  };
+  if (remixCompiler === RemixCompiler.IsClassic) {
+    let appConfig = await loadConfigFile<AppConfig>(configPath);
+    return {
+      buildDirectory: 'build',
+      serverBuildPath: appConfig.serverBuildPath ?? 'build/index.js',
+      assetsBuildDirectory: appConfig.assetsBuildDirectory ?? 'public/build',
+    };
+  } else {
+    // Workaround for the `build$3 is not a function` error that we sometimes see in agents.
+    // This should be removed later once we address the issue properly
+    try {
+      const importEsbuild = () => new Function('return import("esbuild")')();
+      await importEsbuild();
+    } catch {
+      // do nothing
+    }
+    const { resolveConfig } = await loadViteDynamicImport();
+    const viteBuildConfig = (await resolveConfig(
+      {
+        configFile: configPath,
+        mode: 'development',
+      },
+      'build'
+    )) as any;
+
+    return {
+      buildDirectory: viteBuildConfig.build?.outDir ?? 'build',
+      serverBuildPath: viteBuildConfig.build?.outDir
+        ? join(
+            dirname(viteBuildConfig.build?.outDir),
+            `server/${viteBuildConfig.__remixPluginContext?.remixConfig.serverBuildFile}`
+          )
+        : 'build',
+      assetsBuildDirectory: 'build/client',
+    };
+  }
 }
 
 function normalizeOptions(options: RemixPluginOptions) {
@@ -233,7 +449,84 @@ function normalizeOptions(options: RemixPluginOptions) {
   options.devTargetName ??= 'dev';
   options.startTargetName ??= 'start';
   options.typecheckTargetName ??= 'typecheck';
-  options.staticServeTargetName ??= 'static-serve';
+  options.serveStaticTargetName ??= 'serve-static';
 
   return options;
+}
+
+function determineIsRemixVite(configFilePath: string, workspaceRoot: string) {
+  if (configFilePath.includes('remix.config')) {
+    return RemixCompiler.IsClassic;
+  }
+
+  const VITE_PLUGIN_REGEX = /vitePlugin\(\s*(.|\n)*?\s*\)/;
+  const REMIX_PLUGIN_REGEX = /remix\(\s*(.|\n)*?\s*\)/;
+
+  const fileContents = readFileSync(
+    join(workspaceRoot, configFilePath),
+    'utf8'
+  );
+  if (
+    fileContents.includes('@remix-run/dev') &&
+    (VITE_PLUGIN_REGEX.test(fileContents) ||
+      REMIX_PLUGIN_REGEX.test(fileContents))
+  ) {
+    return RemixCompiler.IsVte;
+  } else {
+    return RemixCompiler.IsNotRemix;
+  }
+}
+
+enum RemixCompiler {
+  IsClassic = 1,
+  IsVte = 2,
+  IsNotRemix = 3,
+}
+
+interface RemixEntry {
+  configFile: string;
+  projectRoot: string;
+  siblingFiles: string[];
+  remixCompiler: RemixCompiler;
+}
+
+async function filterRemixConfigs(
+  configFilePaths: readonly string[],
+  context: CreateNodesContext
+): Promise<{
+  entries: RemixEntry[];
+  preErrors: Array<[string, Error]>;
+}> {
+  const preErrors: Array<[string, Error]> = [];
+  const candidates = await Promise.all(
+    configFilePaths.map(async (configFile): Promise<RemixEntry | null> => {
+      try {
+        const projectRoot = dirname(configFile);
+        const siblingFiles = readdirSync(
+          join(context.workspaceRoot, projectRoot)
+        );
+        if (
+          !siblingFiles.includes('package.json') &&
+          !siblingFiles.includes('project.json')
+        ) {
+          return null;
+        }
+        const remixCompiler = determineIsRemixVite(
+          configFile,
+          context.workspaceRoot
+        );
+        if (remixCompiler === RemixCompiler.IsNotRemix) {
+          return null;
+        }
+        return { configFile, projectRoot, siblingFiles, remixCompiler };
+      } catch (e) {
+        preErrors.push([configFile, e as Error]);
+        return null;
+      }
+    })
+  );
+  return {
+    entries: candidates.filter((c): c is RemixEntry => c !== null),
+    preErrors,
+  };
 }

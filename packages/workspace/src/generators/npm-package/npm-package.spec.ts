@@ -25,6 +25,7 @@ describe('@nx/workspace:npm-package', () => {
   it('should generate a minimal package', async () => {
     await npmPackageGenerator(tree, {
       name: 'my-package',
+      directory: 'packages/my-package',
     });
 
     const project = readProjectConfiguration(tree, 'my-package');
@@ -40,6 +41,7 @@ describe('@nx/workspace:npm-package', () => {
   it('should only generate package.json and index.js', async () => {
     await npmPackageGenerator(tree, {
       name: 'my-package',
+      directory: 'packages/my-package',
     });
 
     expect(tree.read('packages/my-package/package.json').toString())
@@ -47,6 +49,10 @@ describe('@nx/workspace:npm-package', () => {
       "{
         "name": "@proj/my-package",
         "version": "0.0.0",
+        "exports": {
+          ".": "./index.js",
+          "./package.json": "./package.json"
+        },
         "scripts": {
           "test": "node index.js"
         }
@@ -75,6 +81,7 @@ describe('@nx/workspace:npm-package', () => {
 
       await npmPackageGenerator(tree, {
         name: 'my-package',
+        directory: 'packages/my-package',
       });
 
       expect(readJson(tree, 'packages/my-package/package.json')).toEqual(

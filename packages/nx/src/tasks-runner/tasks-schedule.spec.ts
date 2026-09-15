@@ -2,10 +2,17 @@ import { TasksSchedule } from './tasks-schedule';
 import { removeTasksFromTaskGraph } from './utils';
 import { Task, TaskGraph } from '../config/task-graph';
 import { DependencyType, ProjectGraph } from '../config/project-graph';
+import { readProjectsConfigurationFromProjectGraph } from '../project-graph/project-graph';
 import * as nxJsonUtils from '../config/nx-json';
 import * as executorUtils from '../command-line/run/executor-utils';
+import * as taskHistoryUtils from '../utils/task-history';
+import type { LifeCycle } from './life-cycle';
 
-function createMockTask(id: string, parallelism: boolean = true): Task {
+function createMockTask(
+  id: string,
+  parallelism: boolean = true,
+  continuous: boolean = false
+): Task {
   const [project, target] = id.split(':');
   return {
     id,
@@ -16,18 +23,39 @@ function createMockTask(id: string, parallelism: boolean = true): Task {
     outputs: [],
     overrides: {},
     parallelism,
+    continuous,
   };
 }
 
 describe('TasksSchedule', () => {
+  let taskHistory: any;
+  let lifeCycle: LifeCycle;
+
+  beforeEach(() => {
+    lifeCycle = {
+      startTask: vi.fn(),
+      endTask: vi.fn(),
+      scheduleTask: vi.fn(),
+    };
+    taskHistory = {
+      getEstimatedTaskTimings: vi.fn(),
+      getFlakyTasks: vi.fn(),
+      recordTaskRuns: vi.fn(),
+    };
+    vi.spyOn(taskHistoryUtils, 'getTaskHistory').mockReturnValue(taskHistory);
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
   describe('dependent tasks', () => {
     let taskSchedule: TasksSchedule;
     let taskGraph: TaskGraph;
     let app1Build: Task;
     let app2Build: Task;
     let lib1Build: Task;
-    let lifeCycle: any;
-    beforeEach(() => {
+    beforeEach(async () => {
       app1Build = createMockTask('app1:build');
       app2Build = createMockTask('app2:build');
       lib1Build = createMockTask('lib1:build');
@@ -43,16 +71,21 @@ describe('TasksSchedule', () => {
           'app2:build': [],
           'lib1:build': [],
         },
+        continuousDependencies: {
+          'app1:build': [],
+          'app2:build': [],
+          'lib1:build': [],
+        },
         roots: ['lib1:build', 'app2:build'],
       };
-      jest.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
-      jest.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+      vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
         schema: {
           version: 2,
           properties: {},
         },
-        implementationFactory: jest.fn(),
-        batchImplementationFactory: jest.fn(),
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
         isNgCompat: true,
         isNxExecutor: true,
       });
@@ -115,15 +148,16 @@ describe('TasksSchedule', () => {
         externalNodes: {},
         version: '5',
       };
-
-      lifeCycle = {
-        startTask: jest.fn(),
-        endTask: jest.fn(),
-        scheduleTask: jest.fn(),
-      };
-      taskSchedule = new TasksSchedule(projectGraph, taskGraph, {
-        lifeCycle,
-      });
+      taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
     });
 
     describe('Without Batch Mode', () => {
@@ -205,10 +239,12 @@ describe('TasksSchedule', () => {
 
         expect(taskSchedule.nextBatch()).toEqual({
           executorName: 'awesome-executors:build',
+          id: 'awesome-executors:build 1',
           taskGraph: removeTasksFromTaskGraph(taskGraph, ['app2:build']),
         });
         expect(taskSchedule.nextBatch()).toEqual({
           executorName: 'awesome-executors:app2-build',
+          id: 'awesome-executors:app2-build 1',
           taskGraph: removeTasksFromTaskGraph(taskGraph, [
             'app1:build',
             'lib1:build',
@@ -231,34 +267,54 @@ describe('TasksSchedule', () => {
     let taskGraph: TaskGraph;
     let app1Test: Task;
     let app2Test: Task;
+    let app3Test: Task;
+    let app4Test: Task;
     let lib1Test: Task;
-    let lifeCycle: any;
-    beforeEach(() => {
+    beforeEach(async () => {
       app1Test = createMockTask('app1:test');
       app2Test = createMockTask('app2:test');
+      app3Test = createMockTask('app3:test');
+      app4Test = createMockTask('app4:test');
       lib1Test = createMockTask('lib1:test');
 
       taskGraph = {
         tasks: {
           'app1:test': app1Test,
           'app2:test': app2Test,
+          'app3:test': app3Test,
+          'app4:test': app4Test,
           'lib1:test': lib1Test,
         },
         dependencies: {
           'app1:test': [],
           'app2:test': [],
+          'app3:test': [],
+          'app4:test': [],
           'lib1:test': [],
         },
-        roots: ['app1:test', 'app2:test', 'lib1:test'],
+        continuousDependencies: {
+          'app1:test': [],
+          'app2:test': [],
+          'app3:test': [],
+          'app4:test': [],
+          'lib1:test': [],
+        },
+        roots: [
+          'app1:test',
+          'app2:test',
+          'lib1:test',
+          'app3:test',
+          'app4:test',
+        ],
       };
-      jest.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
-      jest.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+      vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
         schema: {
           version: 2,
           properties: {},
         },
-        implementationFactory: jest.fn(),
-        batchImplementationFactory: jest.fn(),
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
         isNgCompat: true,
         isNxExecutor: true,
       });
@@ -282,6 +338,30 @@ describe('TasksSchedule', () => {
             type: 'app',
             data: {
               root: 'app2',
+              targets: {
+                test: {
+                  executor: 'awesome-executors:app2-test',
+                },
+              },
+            },
+          },
+          app3: {
+            name: 'app3',
+            type: 'app',
+            data: {
+              root: 'app3',
+              targets: {
+                test: {
+                  executor: 'awesome-executors:app2-test',
+                },
+              },
+            },
+          },
+          app4: {
+            name: 'app4',
+            type: 'app',
+            data: {
+              root: 'app4',
               targets: {
                 test: {
                   executor: 'awesome-executors:app2-test',
@@ -321,15 +401,14 @@ describe('TasksSchedule', () => {
         externalNodes: {},
         version: '5',
       };
-
-      lifeCycle = {
-        startTask: jest.fn(),
-        endTask: jest.fn(),
-        scheduleTask: jest.fn(),
-      };
-      taskSchedule = new TasksSchedule(projectGraph, taskGraph, {
-        lifeCycle,
-      });
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          lifeCycle,
+        }
+      );
     });
 
     describe('Without Batch Mode', () => {
@@ -343,34 +422,93 @@ describe('TasksSchedule', () => {
         process.env['NX_BATCH_MODE'] = original;
       });
 
-      it('should begin with no scheduled tasks', () => {
-        expect(taskSchedule.nextBatch()).toBeNull();
-        expect(taskSchedule.nextTask()).toBeNull();
+      describe('when all tasks have same historical runtime', () => {
+        beforeEach(async () => {
+          taskHistory.getEstimatedTaskTimings.mockReturnValue({
+            'app1:test': 100,
+            'app2:test': 100,
+            'app3:test': 100,
+            'app4:test': 100,
+            'lib1:test': 100,
+          });
+          await taskSchedule.init();
+        });
+
+        it('should begin with no scheduled tasks', () => {
+          expect(taskSchedule.nextBatch()).toBeNull();
+          expect(taskSchedule.nextTask()).toBeNull();
+        });
+
+        it('should schedule root tasks in topological order', async () => {
+          await taskSchedule.scheduleNextTasks();
+          expect(taskSchedule.nextTask()).toEqual(lib1Test);
+          expect(taskSchedule.nextTask()).toEqual(app1Test);
+          expect(taskSchedule.nextTask()).toEqual(app2Test);
+          expect(taskSchedule.nextTask()).toEqual(app3Test);
+          expect(taskSchedule.nextTask()).toEqual(app4Test);
+        });
+
+        it('should run out of tasks when they are all complete', async () => {
+          await taskSchedule.scheduleNextTasks();
+          taskSchedule.nextTask();
+          taskSchedule.nextTask();
+          taskSchedule.nextTask();
+          taskSchedule.nextTask();
+          taskSchedule.nextTask();
+          taskSchedule.complete([
+            lib1Test.id,
+            app1Test.id,
+            app2Test.id,
+            app3Test.id,
+            app4Test.id,
+          ]);
+
+          expect(taskSchedule.hasTasks()).toEqual(false);
+        });
+
+        it('should not schedule batches', async () => {
+          await taskSchedule.scheduleNextTasks();
+
+          expect(taskSchedule.nextTask()).not.toBeNull();
+
+          expect(taskSchedule.nextBatch()).toBeNull();
+        });
       });
 
-      it('should schedule root tasks in topological order', async () => {
-        await taskSchedule.scheduleNextTasks();
-        expect(taskSchedule.nextTask()).toEqual(lib1Test);
-        expect(taskSchedule.nextTask()).toEqual(app1Test);
-        expect(taskSchedule.nextTask()).toEqual(app2Test);
-      });
+      describe('when all tasks have different historical runtime', () => {
+        it('should schedule task with longer runtime first', async () => {
+          taskHistory.getEstimatedTaskTimings.mockReturnValue({
+            'app1:test': 200,
+            'app2:test': 300,
+            'app3:test': 400,
+            'app4:test': 500,
+            'lib1:test': 100,
+          });
+          await taskSchedule.init();
 
-      it('should run out of tasks when they are all complete', async () => {
-        await taskSchedule.scheduleNextTasks();
-        taskSchedule.nextTask();
-        taskSchedule.nextTask();
-        taskSchedule.nextTask();
-        taskSchedule.complete([lib1Test.id, app1Test.id, app2Test.id]);
+          await taskSchedule.scheduleNextTasks();
+          expect(taskSchedule.nextTask()).toEqual(lib1Test); // lib1 should run first because app1 and app2 depend on it
+          expect(taskSchedule.nextTask()).toEqual(app4Test); // app4 should run first because it has the longest runtime
+          expect(taskSchedule.nextTask()).toEqual(app3Test);
+          expect(taskSchedule.nextTask()).toEqual(app2Test);
+          expect(taskSchedule.nextTask()).toEqual(app1Test);
+        });
 
-        expect(taskSchedule.hasTasks()).toEqual(false);
-      });
+        it('should schedule task with no historial runtime first', async () => {
+          taskHistory.getEstimatedTaskTimings.mockReturnValue({
+            'app1:test': 200,
+            'app4:test': 500,
+            'lib1:test': 100,
+          });
+          await taskSchedule.init();
 
-      it('should not schedule batches', async () => {
-        await taskSchedule.scheduleNextTasks();
-
-        expect(taskSchedule.nextTask()).not.toBeNull();
-
-        expect(taskSchedule.nextBatch()).toBeNull();
+          await taskSchedule.scheduleNextTasks();
+          expect(taskSchedule.nextTask()).toEqual(lib1Test); // lib1 should run first because app1 and app2 depend on it
+          expect(taskSchedule.nextTask()).toEqual(app2Test); // app2 should run because it has no historical runtime
+          expect(taskSchedule.nextTask()).toEqual(app3Test); // app3 should run because it has no historical runtime
+          expect(taskSchedule.nextTask()).toEqual(app4Test); // app4 should run because it has the longest runtime
+          expect(taskSchedule.nextTask()).toEqual(app1Test); // app1 should run last because it has the shortest runtime
+        });
       });
     });
 
@@ -392,10 +530,16 @@ describe('TasksSchedule', () => {
 
         expect(taskSchedule.nextBatch()).toEqual({
           executorName: 'awesome-executors:test',
-          taskGraph: removeTasksFromTaskGraph(taskGraph, ['app2:test']),
+          id: 'awesome-executors:test 1',
+          taskGraph: removeTasksFromTaskGraph(taskGraph, [
+            'app2:test',
+            'app3:test',
+            'app4:test',
+          ]),
         });
         expect(taskSchedule.nextBatch()).toEqual({
           executorName: 'awesome-executors:app2-test',
+          id: 'awesome-executors:app2-test 1',
           taskGraph: removeTasksFromTaskGraph(taskGraph, [
             'app1:test',
             'lib1:test',
@@ -420,8 +564,7 @@ describe('TasksSchedule', () => {
       let app1Build: Task;
       let app2Build: Task;
       let lib1Build: Task;
-      let lifeCycle: any;
-      beforeEach(() => {
+      beforeEach(async () => {
         // app1 depends on lib1
         // app2 does not depend on anything
         // lib1 does not depend on anything
@@ -441,16 +584,21 @@ describe('TasksSchedule', () => {
             'app2:build': [],
             'lib1:build': [],
           },
+          continuousDependencies: {
+            'app1:build': [],
+            'app2:build': [],
+            'lib1:build': [],
+          },
           roots: ['lib1:build', 'app2:build'],
         };
-        jest.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
-        jest.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+        vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
           schema: {
             version: 2,
             properties: {},
           },
-          implementationFactory: jest.fn(),
-          batchImplementationFactory: jest.fn(),
+          implementationFactory: vi.fn(),
+          batchImplementationFactory: vi.fn(),
           isNgCompat: true,
           isNxExecutor: true,
         });
@@ -513,15 +661,16 @@ describe('TasksSchedule', () => {
           externalNodes: {},
           version: '5',
         };
-
-        lifeCycle = {
-          startTask: jest.fn(),
-          endTask: jest.fn(),
-          scheduleTask: jest.fn(),
-        };
-        taskSchedule = new TasksSchedule(projectGraph, taskGraph, {
-          lifeCycle,
-        });
+        taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+        taskSchedule = new TasksSchedule(
+          projectGraph,
+          readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+          taskGraph,
+          {
+            lifeCycle,
+          }
+        );
+        await taskSchedule.init();
       });
 
       describe('Without Batch Mode', () => {
@@ -594,8 +743,7 @@ describe('TasksSchedule', () => {
       let app1Test: Task;
       let app2Test: Task;
       let lib1Test: Task;
-      let lifeCycle: any;
-      beforeEach(() => {
+      beforeEach(async () => {
         // app1, app2, and lib1 do not depend on each other
         // all tasks have parallelism set to false
         app1Test = createMockTask('app1:test', false);
@@ -613,16 +761,21 @@ describe('TasksSchedule', () => {
             'app2:test': [],
             'lib1:test': [],
           },
+          continuousDependencies: {
+            'app1:test': [],
+            'app2:test': [],
+            'lib1:test': [],
+          },
           roots: ['app1:test', 'app2:test', 'lib1:test'],
         };
-        jest.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
-        jest.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+        vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
           schema: {
             version: 2,
             properties: {},
           },
-          implementationFactory: jest.fn(),
-          batchImplementationFactory: jest.fn(),
+          implementationFactory: vi.fn(),
+          batchImplementationFactory: vi.fn(),
           isNgCompat: true,
           isNxExecutor: true,
         });
@@ -687,15 +840,16 @@ describe('TasksSchedule', () => {
           externalNodes: {},
           version: '5',
         };
-
-        lifeCycle = {
-          startTask: jest.fn(),
-          endTask: jest.fn(),
-          scheduleTask: jest.fn(),
-        };
-        taskSchedule = new TasksSchedule(projectGraph, taskGraph, {
-          lifeCycle,
-        });
+        taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+        taskSchedule = new TasksSchedule(
+          projectGraph,
+          readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+          taskGraph,
+          {
+            lifeCycle,
+          }
+        );
+        await taskSchedule.init();
       });
 
       describe('Without Batch Mode', () => {
@@ -773,6 +927,496 @@ describe('TasksSchedule', () => {
           expect(taskSchedule.nextBatch()).toBeNull();
         });
       });
+    });
+  });
+
+  describe('preferBatch', () => {
+    let taskSchedule: TasksSchedule;
+    let taskGraph: TaskGraph;
+    let app1Build: Task;
+    let lib1Build: Task;
+    let projectGraph: ProjectGraph;
+    let originalBatchMode: string | undefined;
+
+    beforeEach(async () => {
+      originalBatchMode = process.env['NX_BATCH_MODE'];
+      delete process.env['NX_BATCH_MODE'];
+      app1Build = createMockTask('app1:build');
+      lib1Build = createMockTask('lib1:build');
+
+      taskGraph = {
+        tasks: {
+          'app1:build': app1Build,
+          'lib1:build': lib1Build,
+        },
+        dependencies: {
+          'app1:build': ['lib1:build'],
+          'lib1:build': [],
+        },
+        continuousDependencies: {
+          'app1:build': [],
+          'lib1:build': [],
+        },
+        roots: ['lib1:build'],
+      };
+
+      projectGraph = {
+        nodes: {
+          app1: {
+            data: {
+              root: 'app1',
+              targets: {
+                build: {
+                  executor: 'awesome-executors:build',
+                },
+              },
+            },
+            name: 'app1',
+            type: 'app',
+          },
+          lib1: {
+            name: 'lib1',
+            type: 'lib',
+            data: {
+              root: 'lib1',
+              targets: {
+                build: {
+                  executor: 'awesome-executors:build',
+                },
+              },
+            },
+          },
+        } as any,
+        dependencies: {
+          app1: [
+            {
+              source: 'app1',
+              target: 'lib1',
+              type: DependencyType.static,
+            },
+          ],
+        },
+        externalNodes: {},
+        version: '5',
+      };
+
+      vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+      taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+    });
+
+    afterEach(() => {
+      process.env['NX_BATCH_MODE'] = originalBatchMode;
+    });
+
+    it('should batch tasks when executor has preferBatch: true and --batch not specified', async () => {
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        preferBatch: true,
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      // Create schedule with batch: undefined (not specified)
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          batch: undefined,
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+      await taskSchedule.scheduleNextTasks();
+
+      const batch = taskSchedule.nextBatch();
+      expect(batch).not.toBeNull();
+      expect(batch.executorName).toBe('awesome-executors:build');
+    });
+
+    it('should NOT batch when --batch=false even if preferBatch is true', async () => {
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        preferBatch: true,
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      // Create schedule with batch: false (explicit opt-out)
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          batch: false,
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+      await taskSchedule.scheduleNextTasks();
+
+      expect(taskSchedule.nextBatch()).toBeNull();
+      expect(taskSchedule.nextTask()).not.toBeNull();
+    });
+
+    it('should batch when --batch=true even without preferBatch', async () => {
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        // preferBatch not set (undefined)
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      // Create schedule with batch: true (explicit opt-in)
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          batch: true,
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+      await taskSchedule.scheduleNextTasks();
+
+      const batch = taskSchedule.nextBatch();
+      expect(batch).not.toBeNull();
+      expect(batch.executorName).toBe('awesome-executors:build');
+    });
+
+    it('should NOT batch when --batch not specified and preferBatch not set', async () => {
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        // preferBatch not set (undefined)
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      // Create schedule with batch: undefined (not specified)
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          batch: undefined,
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+      await taskSchedule.scheduleNextTasks();
+
+      expect(taskSchedule.nextBatch()).toBeNull();
+      expect(taskSchedule.nextTask()).not.toBeNull();
+    });
+
+    it('should NOT batch when preferBatch is explicitly false', async () => {
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        preferBatch: false,
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      // Create schedule with batch: undefined (not specified)
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          batch: undefined,
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+      await taskSchedule.scheduleNextTasks();
+
+      expect(taskSchedule.nextBatch()).toBeNull();
+      expect(taskSchedule.nextTask()).not.toBeNull();
+    });
+  });
+
+  describe('batch scheduling with prematurely completed tasks', () => {
+    let taskSchedule: TasksSchedule;
+    let taskGraph: TaskGraph;
+    let lib1Build: Task;
+    let app1Build: Task;
+    let originalBatchMode: string | undefined;
+
+    beforeEach(async () => {
+      originalBatchMode = process.env['NX_BATCH_MODE'];
+      process.env['NX_BATCH_MODE'] = 'true';
+
+      lib1Build = createMockTask('lib1:build');
+      app1Build = createMockTask('app1:build');
+      const app2Build = createMockTask('app2:build');
+
+      taskGraph = {
+        tasks: {
+          'lib1:build': lib1Build,
+          'app1:build': app1Build,
+          'app2:build': app2Build,
+        },
+        dependencies: {
+          'lib1:build': [],
+          'app1:build': ['lib1:build'],
+          'app2:build': ['lib1:build'],
+        },
+        continuousDependencies: {
+          'lib1:build': [],
+          'app1:build': [],
+          'app2:build': [],
+        },
+        roots: ['lib1:build'],
+      };
+
+      vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: {
+          version: 2,
+          properties: {},
+        },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      const projectGraph: ProjectGraph = {
+        nodes: {
+          lib1: {
+            name: 'lib1',
+            type: 'lib',
+            data: {
+              root: 'lib1',
+              targets: {
+                build: {
+                  executor: 'awesome-executors:build',
+                },
+              },
+            },
+          },
+          app1: {
+            name: 'app1',
+            type: 'app',
+            data: {
+              root: 'app1',
+              targets: {
+                build: {
+                  executor: 'awesome-executors:build',
+                },
+              },
+            },
+          },
+          app2: {
+            name: 'app2',
+            type: 'app',
+            data: {
+              root: 'app2',
+              targets: {
+                build: {
+                  executor: 'awesome-executors:build',
+                },
+              },
+            },
+          },
+        } as any,
+        dependencies: {
+          lib1: [],
+          app1: [
+            {
+              source: 'app1',
+              target: 'lib1',
+              type: DependencyType.static,
+            },
+          ],
+          app2: [
+            {
+              source: 'app2',
+              target: 'lib1',
+              type: DependencyType.static,
+            },
+          ],
+        },
+        externalNodes: {},
+        version: '5',
+      };
+
+      taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+    });
+
+    afterEach(() => {
+      process.env['NX_BATCH_MODE'] = originalBatchMode;
+    });
+
+    it('should not crash when a dependent task was prematurely completed before batch scheduling', async () => {
+      // Simulate a premature task failure: app1:build is completed
+      // before it or its dependency lib1:build are scheduled.
+      // This removes app1 from notScheduledTaskGraph.
+      taskSchedule.complete(['app1:build']);
+
+      await taskSchedule.scheduleNextTasks();
+
+      const batch = taskSchedule.nextBatch();
+      expect(batch).not.toBeNull();
+      expect(batch.taskGraph.tasks).not.toHaveProperty('app1:build');
+      expect(batch.taskGraph.tasks).toHaveProperty('lib1:build');
+      expect(batch.taskGraph.tasks).toHaveProperty('app2:build');
+    });
+  });
+
+  describe('nextTask with filter', () => {
+    let taskSchedule: TasksSchedule;
+    let discreteTask: Task;
+    let continuousTask1: Task;
+    let continuousTask2: Task;
+
+    beforeEach(async () => {
+      discreteTask = createMockTask('app1:build', true, false);
+      continuousTask1 = createMockTask('app2:serve', true, true);
+      continuousTask2 = createMockTask('app3:serve', true, true);
+
+      const taskGraph: TaskGraph = {
+        tasks: {
+          'app1:build': discreteTask,
+          'app2:serve': continuousTask1,
+          'app3:serve': continuousTask2,
+        },
+        dependencies: {
+          'app1:build': [],
+          'app2:serve': [],
+          'app3:serve': [],
+        },
+        continuousDependencies: {
+          'app1:build': [],
+          'app2:serve': [],
+          'app3:serve': [],
+        },
+        roots: ['app1:build', 'app2:serve', 'app3:serve'],
+      };
+
+      vi.spyOn(nxJsonUtils, 'readNxJson').mockReturnValue({});
+      vi.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+        schema: { version: 2, properties: {} },
+        implementationFactory: vi.fn(),
+        batchImplementationFactory: vi.fn(),
+        isNgCompat: true,
+        isNxExecutor: true,
+      });
+
+      const projectGraph: ProjectGraph = {
+        nodes: {
+          app1: {
+            data: {
+              root: 'app1',
+              targets: {
+                build: { executor: 'awesome-executors:build' },
+              },
+            },
+            name: 'app1',
+            type: 'app',
+          },
+          app2: {
+            data: {
+              root: 'app2',
+              targets: {
+                serve: { executor: 'awesome-executors:serve' },
+              },
+            },
+            name: 'app2',
+            type: 'app',
+          },
+          app3: {
+            data: {
+              root: 'app3',
+              targets: {
+                serve: { executor: 'awesome-executors:serve' },
+              },
+            },
+            name: 'app3',
+            type: 'app',
+          },
+        } as any,
+        dependencies: {},
+        externalNodes: {},
+        version: '5',
+      };
+
+      taskHistory.getEstimatedTaskTimings.mockReturnValue({});
+      taskSchedule = new TasksSchedule(
+        projectGraph,
+        readProjectsConfigurationFromProjectGraph(projectGraph).projects,
+        taskGraph,
+        {
+          lifeCycle,
+        }
+      );
+      await taskSchedule.init();
+
+      process.env['NX_BATCH_MODE'] = 'false';
+      await taskSchedule.scheduleNextTasks();
+    });
+
+    afterEach(() => {
+      delete process.env['NX_BATCH_MODE'];
+    });
+
+    it('should return first matching task when filter is provided', () => {
+      const task = taskSchedule.nextTask((t) => t.continuous);
+      expect(task).toBeDefined();
+      expect(task.continuous).toBe(true);
+    });
+
+    it('should skip non-matching tasks', () => {
+      const task = taskSchedule.nextTask((t) => !t.continuous);
+      expect(task).toEqual(discreteTask);
+    });
+
+    it('should return null when no tasks match filter', () => {
+      // Consume the discrete task
+      taskSchedule.nextTask((t) => !t.continuous);
+      // No more discrete tasks
+      const task = taskSchedule.nextTask((t) => !t.continuous);
+      expect(task).toBeNull();
+    });
+
+    it('should return first task when no filter is provided', () => {
+      const task = taskSchedule.nextTask();
+      expect(task).toBeDefined();
     });
   });
 });

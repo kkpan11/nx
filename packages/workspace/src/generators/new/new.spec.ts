@@ -1,7 +1,6 @@
 import { readJson, Tree, writeJson } from '@nx/devkit';
 import * as devkit from '@nx/devkit';
 import { createTree } from '@nx/devkit/testing';
-import { Linter } from '../../utils/lint';
 import {
   angularCliVersion,
   nxVersion,
@@ -20,7 +19,7 @@ const defaultOptions: Omit<
 > = {
   preset: Preset.Apps,
   skipInstall: false,
-  linter: Linter.EsLint,
+  linter: 'eslint',
   defaultBase: 'main',
 };
 
@@ -96,6 +95,56 @@ describe('new', () => {
       expect(readJson(tree, 'my-workspace/package.json')).toMatchSnapshot();
     });
 
+    it('should not add typescript for presets that scaffold nothing', async () => {
+      for (const preset of [Preset.Apps, Preset.NPM]) {
+        tree = createTree();
+        tree.root = process.cwd();
+
+        await newGenerator(tree, {
+          ...defaultOptions,
+          name: 'my-workspace',
+          directory: 'my-workspace',
+          appName: 'app',
+          preset,
+        });
+
+        const { devDependencies } = readJson(tree, 'my-workspace/package.json');
+        expect(devDependencies).not.toHaveProperty('typescript');
+      }
+    });
+
+    it('should generate necessary npm dependencies for ts preset', async () => {
+      await newGenerator(tree, {
+        ...defaultOptions,
+        name: 'my-workspace',
+        directory: 'my-workspace',
+        appName: 'app',
+        preset: Preset.TS,
+      });
+
+      const { devDependencies } = readJson(tree, 'my-workspace/package.json');
+      expect(devDependencies).toStrictEqual({
+        '@nx/js': nxVersion,
+        '@nx/workspace': nxVersion,
+        nx: nxVersion,
+        typescript: typescriptVersion,
+      });
+    });
+
+    it('should not add typescript for ts-standalone preset when using js', async () => {
+      await newGenerator(tree, {
+        ...defaultOptions,
+        name: 'my-workspace',
+        directory: 'my-workspace',
+        appName: 'app',
+        preset: Preset.TsStandalone,
+        js: true,
+      });
+
+      const { devDependencies } = readJson(tree, 'my-workspace/package.json');
+      expect(devDependencies).not.toHaveProperty('typescript');
+    });
+
     it('should generate necessary npm dependencies for react preset', async () => {
       await newGenerator(tree, {
         ...defaultOptions,
@@ -109,10 +158,10 @@ describe('new', () => {
       const { devDependencies } = readJson(tree, 'my-workspace/package.json');
       expect(devDependencies).toStrictEqual({
         '@nx/react': nxVersion,
-        '@nx/cypress': nxVersion,
         '@nx/vite': nxVersion,
         '@nx/workspace': nxVersion,
         nx: nxVersion,
+        typescript: typescriptVersion,
       });
     });
 
@@ -133,6 +182,7 @@ describe('new', () => {
         '@nx/vite': nxVersion,
         '@nx/workspace': nxVersion,
         nx: nxVersion,
+        typescript: typescriptVersion,
       });
     });
 
@@ -152,6 +202,7 @@ describe('new', () => {
         '@nx/cypress': nxVersion,
         '@nx/workspace': nxVersion,
         nx: nxVersion,
+        typescript: typescriptVersion,
       });
     });
 
@@ -168,9 +219,9 @@ describe('new', () => {
         tree,
         'my-workspace/package.json'
       );
-      expect(dependencies).toStrictEqual({ '@nx/angular': nxVersion });
       expect(devDependencies).toStrictEqual({
         '@angular-devkit/core': angularCliVersion,
+        '@nx/angular': nxVersion,
         '@nx/workspace': nxVersion,
         nx: nxVersion,
         typescript: typescriptVersion,
@@ -269,5 +320,19 @@ describe('new', () => {
       });
       fail('Generating into a non-empty directory should error.');
     } catch (e) {}
+  });
+
+  it('should not throw for a non-empty directory when skipEmptyDirCheck is set', async () => {
+    tree.write('my-workspace/README.md', '# repo');
+
+    await expect(
+      newGenerator(tree, {
+        ...defaultOptions,
+        name: 'my-workspace',
+        directory: 'my-workspace',
+        appName: 'app',
+        skipEmptyDirCheck: true,
+      })
+    ).resolves.toBeDefined();
   });
 });

@@ -1,8 +1,12 @@
 import { execSync } from 'child_process';
 import { join } from 'path';
+import { gte } from 'semver';
 
-import { NxJsonConfiguration } from '../../../config/nx-json';
-import { runNxSync } from '../../../utils/child-process';
+import {
+  NxJsonConfiguration,
+  TargetDefaultEntry,
+  TargetDefaults,
+} from '../../../config/nx-json';
 import {
   fileExists,
   readJsonFile,
@@ -11,12 +15,20 @@ import {
 import { output } from '../../../utils/output';
 import { PackageJson } from '../../../utils/package-json';
 import {
+  detectPackageManager,
   getPackageManagerCommand,
+  getPackageManagerVersion,
+  PackageManager,
   PackageManagerCommands,
 } from '../../../utils/package-manager';
+import { acknowledgeBuildScripts } from '../../../utils/acknowledge-build-scripts';
 import { joinPathFragments } from '../../../utils/path';
 import { nxVersion } from '../../../utils/versions';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { recordInitWrite } from './format';
+import { printSuccessMessage } from '../../../nx-cloud/generators/connect-to-nx-cloud/connect-to-nx-cloud';
+import { connectWorkspaceToCloud } from '../../nx-cloud/connect/connect-to-nx-cloud';
+import { deduceDefaultBase } from './deduce-default-base';
 
 export function createNxJsonFile(
   repoRoot: string,
@@ -28,74 +40,214 @@ export function createNxJsonFile(
   let nxJson = {} as Partial<NxJsonConfiguration> & { $schema: string };
   try {
     nxJson = readJsonFile(nxJsonPath);
-    // eslint-disable-next-line no-empty
   } catch {}
 
   nxJson.$schema = './node_modules/nx/schemas/nx-schema.json';
-  nxJson.targetDefaults ??= {};
+  const targetDefaults: TargetDefaults = { ...(nxJson.targetDefaults ?? {}) };
 
   if (topologicalTargets.length > 0) {
     for (const scriptName of topologicalTargets) {
-      nxJson.targetDefaults[scriptName] ??= {};
-      nxJson.targetDefaults[scriptName] = { dependsOn: [`^${scriptName}`] };
+      upsertTargetDefaultEntry(targetDefaults, scriptName, {
+        dependsOn: [`^${scriptName}`],
+      });
     }
   }
   for (const [scriptName, output] of Object.entries(scriptOutputs)) {
     if (!output) {
-      // eslint-disable-next-line no-continue
       continue;
     }
-    nxJson.targetDefaults[scriptName] ??= {};
-    nxJson.targetDefaults[scriptName].outputs = [`{projectRoot}/${output}`];
+    upsertTargetDefaultEntry(targetDefaults, scriptName, {
+      outputs: [`{projectRoot}/${output}`],
+    });
   }
 
   for (const target of cacheableOperations) {
-    nxJson.targetDefaults[target] ??= {};
-    nxJson.targetDefaults[target].cache ??= true;
-  }
-
-  if (Object.keys(nxJson.targetDefaults).length === 0) {
-    delete nxJson.targetDefaults;
-  }
-
-  nxJson.defaultBase ??= deduceDefaultBase();
-  writeJsonFile(nxJsonPath, nxJson);
-}
-
-function deduceDefaultBase() {
-  try {
-    execSync(`git rev-parse --verify main`, {
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    return 'main';
-  } catch {
-    try {
-      execSync(`git rev-parse --verify dev`, {
-        stdio: ['ignore', 'ignore', 'ignore'],
-      });
-      return 'dev';
-    } catch {
-      try {
-        execSync(`git rev-parse --verify develop`, {
-          stdio: ['ignore', 'ignore', 'ignore'],
-        });
-        return 'develop';
-      } catch {
-        try {
-          execSync(`git rev-parse --verify next`, {
-            stdio: ['ignore', 'ignore', 'ignore'],
-          });
-          return 'next';
-        } catch {
-          return 'master';
-        }
-      }
+    const existing = readUnfilteredTargetDefault(targetDefaults, target);
+    if (existing.cache === undefined) {
+      upsertTargetDefaultEntry(targetDefaults, target, { cache: true });
     }
   }
+
+  if (Object.keys(targetDefaults).length === 0) {
+    delete nxJson.targetDefaults;
+  } else {
+    nxJson.targetDefaults = targetDefaults;
+  }
+
+  const defaultBase = deduceDefaultBase();
+  // Do not add defaultBase if it is inferred to be the Nx default value of main
+  if (defaultBase !== 'main') {
+    nxJson.defaultBase ??= defaultBase;
+  }
+  writeJsonFile(nxJsonPath, nxJson);
+  recordInitWrite(nxJsonPath);
+}
+
+/**
+ * Locate-by-target upsert against an in-memory `targetDefaults` map. Merges
+ * `patch`'s config into the unfiltered (catch-all) default for `target`,
+ * promoting through the array form when one already exists. Used by `nx init`
+ * code paths that operate on raw JSON before a Tree exists — generators
+ * should use `upsertTargetDefault` from devkit instead.
+ */
+export function upsertTargetDefaultEntry(
+  targetDefaults: TargetDefaults,
+  target: string,
+  patch: Partial<TargetDefaultEntry>
+): void {
+  // Drop locator fields — the key is `target` and `nx init` only writes
+  // unfiltered defaults.
+  const {
+    target: _t,
+    executor: _e,
+    projects: _p,
+    plugin: _pl,
+    ...config
+  } = patch;
+  const existing = targetDefaults[target];
+  if (Array.isArray(existing)) {
+    const idx = existing.findIndex((e) => e.filter === undefined);
+    if (idx >= 0) {
+      const { filter, ...rest } = existing[idx];
+      existing[idx] = { ...rest, ...config };
+    } else {
+      existing.push({ ...config });
+    }
+  } else {
+    targetDefaults[target] = { ...(existing ?? {}), ...config };
+  }
+}
+
+/**
+ * Read the unfiltered (catch-all) config for `target` from a `targetDefaults`
+ * map — the object value, or the filter-less entry of an array value.
+ */
+function readUnfilteredTargetDefault(
+  targetDefaults: TargetDefaults,
+  target: string
+): Partial<TargetDefaultEntry> {
+  const existing = targetDefaults[target];
+  if (existing === undefined) return {};
+  if (!Array.isArray(existing)) return existing;
+  return existing.find((e) => e.filter === undefined) ?? {};
+}
+
+export function createNxJsonFromTurboJson(
+  turboJson: Record<string, any>
+): NxJsonConfiguration {
+  const nxJson: NxJsonConfiguration = {
+    $schema: './node_modules/nx/schemas/nx-schema.json',
+  };
+
+  // Handle global dependencies
+  if (turboJson.globalDependencies?.length > 0) {
+    nxJson.namedInputs = {
+      sharedGlobals: turboJson.globalDependencies.map(
+        (dep) => `{workspaceRoot}/${dep}`
+      ),
+      default: ['{projectRoot}/**/*', 'sharedGlobals'],
+    };
+  }
+
+  // Handle global env vars
+  if (turboJson.globalEnv?.length > 0) {
+    nxJson.namedInputs = nxJson.namedInputs || {};
+    nxJson.namedInputs.sharedGlobals = nxJson.namedInputs.sharedGlobals || [];
+    nxJson.namedInputs.sharedGlobals.push(
+      ...turboJson.globalEnv.map((env) => ({ env }))
+    );
+    nxJson.namedInputs.default = nxJson.namedInputs.default || [];
+    if (!nxJson.namedInputs.default.includes('{projectRoot}/**/*')) {
+      nxJson.namedInputs.default.push('{projectRoot}/**/*');
+    }
+    if (!nxJson.namedInputs.default.includes('sharedGlobals')) {
+      nxJson.namedInputs.default.push('sharedGlobals');
+    }
+  }
+
+  // Handle task configurations
+  if (turboJson.tasks) {
+    const targetDefaults: TargetDefaults = {};
+
+    for (const [taskName, taskConfig] of Object.entries(turboJson.tasks)) {
+      // Skip project-specific tasks (containing #)
+      if (taskName.includes('#')) continue;
+
+      const config = taskConfig as any;
+      const entry: TargetDefaultEntry = { target: taskName };
+
+      // Handle dependsOn
+      if (config.dependsOn?.length > 0) {
+        entry.dependsOn = config.dependsOn;
+      }
+
+      // Handle inputs
+      if (config.inputs?.length > 0) {
+        entry.inputs = config.inputs
+          .map((input) => {
+            if (input === '$TURBO_DEFAULT$') {
+              return '{projectRoot}/**/*';
+            }
+            // Don't add projectRoot if it's already there or if it's an env var
+            if (
+              input.startsWith('{projectRoot}/') ||
+              input.startsWith('{env.') ||
+              input.startsWith('$')
+            )
+              return input;
+            return `{projectRoot}/${input}`;
+          })
+          .map((input) => {
+            // Don't add projectRoot if it's already there or if it's an env var
+            if (
+              input.startsWith('{projectRoot}/') ||
+              input.startsWith('{env.') ||
+              input.startsWith('$')
+            )
+              return input;
+            return `{projectRoot}/${input}`;
+          });
+      }
+
+      // Handle outputs
+      if (config.outputs?.length > 0) {
+        entry.outputs = config.outputs.map((output) => {
+          // Don't add projectRoot if it's already there
+          if (output.startsWith('{projectRoot}/')) return output;
+          // Handle negated patterns by adding projectRoot after the !
+          if (output.startsWith('!')) {
+            return `!{projectRoot}/${output.slice(1)}`;
+          }
+          return `{projectRoot}/${output}`;
+        });
+      }
+
+      // Handle cache setting - true by default in Turbo
+      entry.cache = config.cache !== false;
+
+      // Each turbo task maps to a unique key, written as the plain object
+      // (unfiltered) value form.
+      const { target, ...taskDefault } = entry;
+      targetDefaults[target] = taskDefault;
+    }
+
+    if (Object.keys(targetDefaults).length > 0) {
+      nxJson.targetDefaults = targetDefaults;
+    }
+  }
+
+  const defaultBase = deduceDefaultBase();
+  // Do not add defaultBase if it is inferred to be the Nx default value of main
+  if (defaultBase !== 'main') {
+    nxJson.defaultBase ??= defaultBase;
+  }
+
+  return nxJson;
 }
 
 export function addDepsToPackageJson(
   repoRoot: string,
+  packageManager: PackageManager,
   additionalPackages?: string[]
 ) {
   const path = joinPathFragments(repoRoot, `package.json`);
@@ -108,6 +260,10 @@ export function addDepsToPackageJson(
     }
   }
   writeJsonFile(path, json);
+  recordInitWrite(path);
+  // nx has a postinstall script, which pnpm 11+ refuses to install
+  // unacknowledged.
+  acknowledgeBuildScripts(repoRoot, packageManager, { nx: true });
 }
 
 export function updateGitIgnore(root: string) {
@@ -130,33 +286,119 @@ export function updateGitIgnore(root: string) {
       }
       lines.push('.nx/workspace-data');
     }
+    if (!contents.includes('.nx/migrate-runs')) {
+      if (!sepIncluded) {
+        lines.push('\n');
+        sepIncluded = true;
+      }
+      lines.push('.nx/migrate-runs');
+    }
+
     writeFileSync(ignorePath, lines.join('\n'), 'utf-8');
   } catch {}
 }
 
 export function runInstall(
   repoRoot: string,
-  pmc: PackageManagerCommands = getPackageManagerCommand()
+  packageManager: PackageManager = detectPackageManager(repoRoot),
+  pmc: PackageManagerCommands = getPackageManagerCommand(packageManager)
 ) {
-  execSync(pmc.install, { stdio: [0, 1, 2], cwd: repoRoot });
+  let command = pmc.install;
+  // Plugins added during init can pull build-script deps whose allowBuilds
+  // entries are only recorded by their init generators after this install;
+  // warn and skip for this one install, like pnpm 10 did.
+  if (packageManager === 'pnpm') {
+    try {
+      if (gte(getPackageManagerVersion('pnpm', repoRoot), '11.0.0')) {
+        command += ' --config.strictDepBuilds=false';
+      }
+    } catch {
+      // The version cannot be probed; run the install unmodified.
+    }
+  }
+  try {
+    execSync(command, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      encoding: 'utf8',
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+  } catch (e) {
+    if ((e as any)?.stderr) process.stderr.write((e as any).stderr);
+    throw e;
+  }
 }
 
-export function initCloud(
-  repoRoot: string,
+/**
+ * Coerce any thrown value into a non-empty telemetry string. The naive
+ * `error.message || String(error)` yields "" for bare `new Error()`.
+ */
+export function toErrorString(error: unknown): string {
+  if (error == null) return 'Unknown error';
+  if (error instanceof Error) {
+    if (error.message) return error.message;
+    if (error.name && error.name !== 'Error') return error.name;
+    // Drop `stack` — large and contains absolute paths (PII).
+    const keys = Object.getOwnPropertyNames(error).filter((k) => k !== 'stack');
+    const serialized = safeJsonStringify(error, keys);
+    if (serialized && serialized !== '{}') return serialized;
+    return error.name || 'Error';
+  }
+  if (typeof error === 'object') {
+    const serialized = safeJsonStringify(error);
+    if (serialized && serialized !== '{}') return serialized;
+    return Object.prototype.toString.call(error);
+  }
+  return String(error);
+}
+
+export function readErrorStderr(error: unknown): string {
+  const raw = (error as any)?.stderr;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof (raw as Buffer).toString === 'function') {
+    return (raw as Buffer).toString('utf8');
+  }
+  return '';
+}
+
+export function extractErrorName(error: unknown, stderr: string): string {
+  const nodeCode = (error as any)?.code;
+  if (typeof nodeCode === 'string') return nodeCode;
+  const m = stderr.match(/\b(E[A-Z0-9_]{2,}|ERR_[A-Z0-9_]+)\b/);
+  if (m) return m[1];
+  if (error instanceof Error) return error.name;
+  return typeof error;
+}
+
+function safeJsonStringify(value: unknown, replacer?: string[]): string {
+  try {
+    return JSON.stringify(value, replacer);
+  } catch {
+    return '';
+  }
+}
+
+export async function initCloud(
   installationSource:
+    | 'nx-init'
     | 'nx-init-angular'
-    | 'nx-init-cra'
     | 'nx-init-monorepo'
     | 'nx-init-nest'
     | 'nx-init-npm-repo'
+    | 'nx-init-turborepo'
 ) {
-  runNxSync(
-    `g nx:connect-to-nx-cloud --installationSource=${installationSource} --quiet --no-interactive`,
-    {
-      stdio: [0, 1, 2],
-      cwd: repoRoot,
-    }
-  );
+  const token = await connectWorkspaceToCloud({
+    installationSource,
+  });
+  await printSuccessMessage(token, installationSource);
+}
+
+export function setNeverConnectToCloud(repoRoot: string): void {
+  const nxJsonPath = join(repoRoot, 'nx.json');
+  const nxJson = readJsonFile(nxJsonPath);
+  nxJson.neverConnectToCloud = true;
+  writeJsonFile(nxJsonPath, nxJson);
+  recordInitWrite(nxJsonPath);
 }
 
 export function addVsCodeRecommendedExtensions(
@@ -176,8 +418,10 @@ export function addVsCodeRecommendedExtensions(
     });
 
     writeJsonFile(vsCodeExtensionsPath, vsCodeExtensionsJson);
+    recordInitWrite(vsCodeExtensionsPath);
   } else {
     writeJsonFile(vsCodeExtensionsPath, { recommendations: extensions });
+    recordInitWrite(vsCodeExtensionsPath);
   }
 }
 
@@ -205,6 +449,7 @@ export function markRootPackageJsonAsNxProjectLegacy(
     }
   }
   writeJsonFile(`package.json`, json);
+  recordInitWrite('package.json');
 }
 
 export function markPackageJsonAsNxProject(packageJsonPath: string) {
@@ -215,21 +460,23 @@ export function markPackageJsonAsNxProject(packageJsonPath: string) {
 
   json.nx = {};
   writeJsonFile(packageJsonPath, json);
+  recordInitWrite(packageJsonPath);
 }
 
 export function printFinalMessage({
   learnMoreLink,
+  appendLines,
 }: {
   learnMoreLink?: string;
+  appendLines?: string[];
 }): void {
-  const pmc = getPackageManagerCommand();
-
   output.success({
     title: '🎉 Done!',
     bodyLines: [
-      `- Run "${pmc.exec} nx run-many -t build" to run the build target for every project in the workspace. Run it again to replay the cached computation. https://nx.dev/features/cache-task-results`,
-      `- Run "${pmc.exec} nx graph" to see the graph of projects and tasks in your workspace. https://nx.dev/core-features/explore-graph`,
-      learnMoreLink ? `- Learn more at ${learnMoreLink}.` : undefined,
+      `- Learn more about what to do next at ${
+        learnMoreLink ?? 'https://nx.dev/getting-started/adding-to-existing'
+      }`,
+      ...(appendLines ?? []),
     ].filter(Boolean),
   });
 }
@@ -237,8 +484,15 @@ export function printFinalMessage({
 export function isMonorepo(packageJson: PackageJson) {
   if (!!packageJson.workspaces) return true;
 
-  if (existsSync('pnpm-workspace.yaml') || existsSync('pnpm-workspace.yml'))
-    return true;
+  try {
+    const content = readFileSync('pnpm-workspace.yaml', 'utf-8');
+    const { load } = require('@zkochan/js-yaml');
+    const { packages } = load(content) ?? {};
+
+    if (packages) {
+      return true;
+    }
+  } catch {}
 
   if (existsSync('lerna.json')) return true;
 

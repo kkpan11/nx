@@ -10,7 +10,7 @@ import {
   tmpProjPath,
   uniq,
   updateFile,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { writeFileSync } from 'fs';
 import { createFileSync } from 'fs-extra';
 
@@ -19,11 +19,10 @@ describe('Storybook generators and executors for monorepos', () => {
   let proj;
   beforeAll(async () => {
     proj = newProject({
-      packages: ['@nx/react'],
-      unsetProjectNameAndRootFormat: false,
+      packages: ['@nx/react', '@nx/webpack'],
     });
     runCLI(
-      `generate @nx/react:app ${reactStorybookApp} --bundler=webpack --project-name-and-root-format=as-provided --no-interactive`
+      `generate @nx/react:app ${reactStorybookApp} --bundler=webpack --no-interactive`
     );
     runCLI(
       `generate @nx/react:storybook-configuration ${reactStorybookApp} --generateStories --no-interactive --bundler=webpack`
@@ -42,7 +41,7 @@ describe('Storybook generators and executors for monorepos', () => {
       const p = await runCommandUntil(
         `run ${reactStorybookApp}:storybook`,
         (output) => {
-          return /Storybook.*started/gi.test(output);
+          return /Storybook.*(started|ready)/gi.test(output);
         }
       );
       p.kill();
@@ -59,7 +58,7 @@ describe('Storybook generators and executors for monorepos', () => {
     // This test makes sure path resolution works
     it('should build a React based storybook that references another lib and uses rollup', () => {
       runCLI(
-        `generate @nx/react:lib my-lib --bundler=rollup --unitTestRunner=none --project-name-and-root-format=as-provided --no-interactive`
+        `generate @nx/react:lib my-lib --bundler=rollup --unitTestRunner=none --no-interactive`
       );
 
       // create a component in the first lib to reference the cmp from the 2nd lib
@@ -90,7 +89,7 @@ describe('Storybook generators and executors for monorepos', () => {
       writeFileSync(
         tmpProjPath(`${reactStorybookApp}/src/app/test-button.stories.tsx`),
         `
-              import type { Meta } from '@storybook/react';
+              import type { Meta } from '@storybook/react-webpack5';
               import { TestButton } from './test-button';
       
               const Story: Meta<typeof TestButton> = {
@@ -120,8 +119,8 @@ describe('Storybook generators and executors for monorepos', () => {
       );
       runCLI(`run ${reactStorybookApp}:build-storybook --verbose`, {
         env: {
-          NX_CLOUD_ENCRYPTION_KEY: 'MY SECRET',
-          NX_CLOUD_ACCESS_TOKEN: 'MY SECRET',
+          NX_SOME_SECRET: 'MY SECRET',
+          NX_SOME_TOKEN: 'MY SECRET',
         },
       });
 
@@ -131,8 +130,8 @@ describe('Storybook generators and executors for monorepos', () => {
       for (const file of files) {
         if (!file.endsWith('.js')) continue;
         const content = readFile(`${outDir}/${file}`);
-        expect(content).not.toMatch(/NX_CLOUD_ENCRYPTION_KEY/);
-        expect(content).not.toMatch(/NX_CLOUD_ACCESS_TOKEN/);
+        expect(content).not.toMatch(/NX_SOME_SECRET/);
+        expect(content).not.toMatch(/NX_SOME_TOKEN/);
         expect(content).not.toMatch(/MY SECRET/);
       }
     }, 300_000);

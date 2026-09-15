@@ -1,6 +1,5 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
 import type { Tree } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { componentGenerator } from '../component/component';
@@ -9,24 +8,14 @@ import { generateTestApplication } from '../utils/testing';
 import { angularStoriesGenerator } from './stories';
 import { stripIndents } from '@nx/devkit';
 
-// need to mock cypress otherwise it'll use the nx installed version from package.json
-//  which is v9 while we are testing for the new v10 version
-jest.mock('@nx/cypress/src/utils/cypress-version');
-
-// TODO(katerina): Nx 19 -> remove Cypress
-
 describe('angularStories generator: applications', () => {
   let tree: Tree;
   const appName = 'test-app';
-  let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
 
   beforeEach(async () => {
-    mockedInstalledCypressVersion.mockReturnValue(10);
     tree = createTreeWithEmptyWorkspace({ layout: 'apps-libs' });
     await generateTestApplication(tree, {
-      name: appName,
+      directory: appName,
       skipFormat: true,
     });
   });
@@ -35,28 +24,28 @@ describe('angularStories generator: applications', () => {
     await angularStoriesGenerator(tree, { name: appName });
 
     expect(
-      tree.read(`${appName}/src/app/app.component.stories.ts`, 'utf-8')
+      tree.read(`${appName}/src/app/app.stories.ts`, 'utf-8')
     ).toMatchSnapshot();
   });
 
   it('should generate stories file for scam component', async () => {
     await scamGenerator(tree, {
       name: 'my-scam',
-      project: appName,
+      path: `${appName}/src/app/my-scam/my-scam`,
       skipFormat: true,
     });
 
     await angularStoriesGenerator(tree, { name: appName });
 
     expect(
-      tree.exists(`${appName}/src/app/my-scam/my-scam.component.stories.ts`)
+      tree.exists(`${appName}/src/app/my-scam/my-scam.stories.ts`)
     ).toBeTruthy();
   });
 
   it('should ignore paths', async () => {
     await scamGenerator(tree, {
       name: 'my-scam',
-      project: appName,
+      path: `${appName}/src/app/my-scam/my-scam`,
       skipFormat: true,
     });
 
@@ -74,7 +63,7 @@ describe('angularStories generator: applications', () => {
   it('should ignore paths when full path to component is provided', async () => {
     await scamGenerator(tree, {
       name: 'my-scam',
-      project: appName,
+      path: `${appName}/src/app/my-scam/my-scam`,
       skipFormat: true,
     });
 
@@ -92,31 +81,29 @@ describe('angularStories generator: applications', () => {
   it('should ignore a path that has a nested component, but still generate nested component stories', async () => {
     await componentGenerator(tree, {
       name: 'component-a',
-      project: appName,
+      path: `${appName}/src/app/component-a/component-a`,
       skipFormat: true,
     });
     await componentGenerator(tree, {
-      name: 'component-a/component-b',
-      project: appName,
+      name: 'component-b',
+      path: `${appName}/src/app/component-a/component-b/component-b`,
       skipFormat: true,
     });
 
     await angularStoriesGenerator(tree, {
       name: appName,
-      ignorePaths: [`${appName}/src/app/component-a/component-a.component.ts`],
+      ignorePaths: [`${appName}/src/app/component-a/component-a.ts`],
       skipFormat: true,
     });
 
     expect(
       tree.read(
-        `${appName}/src/app/component-a/component-b/component-b.component.stories.ts`,
+        `${appName}/src/app/component-a/component-b/component-b.stories.ts`,
         'utf-8'
       )
     ).toMatchSnapshot();
     expect(
-      tree.exists(
-        `${appName}/src/app/component-a/component-a.component.stories.ts`
-      )
+      tree.exists(`${appName}/src/app/component-a/component-a.component.ts`)
     ).toBeFalsy();
   });
 
@@ -146,33 +133,27 @@ describe('angularStories generator: applications', () => {
       `
     );
     await componentGenerator(tree, {
-      name: 'component/component',
-      project: appName,
-      flat: true,
+      name: 'component',
+      path: `${appName}/src/app/component/component`,
       skipFormat: true,
     });
 
     await angularStoriesGenerator(tree, {
       name: appName,
-      ignorePaths: [`${appName}/src/app/app.component.ts`],
+      ignorePaths: [`${appName}/src/app/app.ts`],
       skipFormat: true,
     });
 
     expect(
-      tree.read(
-        `${appName}/src/app/component/component.component.stories.ts`,
-        'utf-8'
-      )
+      tree.read(`${appName}/src/app/component/component.stories.ts`, 'utf-8')
     ).toMatchSnapshot();
-    expect(
-      tree.exists(`${appName}/src/app/app.component.stories.ts`)
-    ).toBeFalsy();
+    expect(tree.exists(`${appName}/src/app/app.stories.ts`)).toBeFalsy();
   });
 
   it('should generate stories file for inline scam component', async () => {
     await scamGenerator(tree, {
       name: 'my-scam',
-      project: appName,
+      path: `${appName}/src/app/my-scam/my-scam`,
       inlineScam: true,
       skipFormat: true,
     });
@@ -180,10 +161,7 @@ describe('angularStories generator: applications', () => {
     await angularStoriesGenerator(tree, { name: appName, skipFormat: true });
 
     expect(
-      tree.read(
-        `${appName}/src/app/my-scam/my-scam.component.stories.ts`,
-        'utf-8'
-      )
+      tree.read(`${appName}/src/app/my-scam/my-scam.stories.ts`, 'utf-8')
     ).toMatchSnapshot();
   });
 });

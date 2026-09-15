@@ -1,15 +1,15 @@
-import { Tree } from 'nx/src/generators/tree';
 import {
   addDependenciesToPackageJson,
   ensurePackage,
   GeneratorCallback,
   joinPathFragments,
+  logger,
   offsetFromRoot,
   readNxJson,
   readProjectConfiguration,
   runTasksInSerial,
-  stripIndents,
   updateProjectConfiguration,
+  Tree,
 } from '@nx/devkit';
 
 import { maybeJs } from '../../../utils/maybe-js';
@@ -22,7 +22,8 @@ import { NormalizedSchema } from '../schema';
 
 export async function addRollupBuildTarget(
   host: Tree,
-  options: NormalizedSchema
+  options: NormalizedSchema & { format?: Array<'esm' | 'cjs'> },
+  external: Set<String> = new Set(['react', 'react-dom'])
 ) {
   const tasks: GeneratorCallback[] = [];
 
@@ -47,18 +48,14 @@ export async function addRollupBuildTarget(
         {
           '@rollup/plugin-url': rollupPluginUrlVersion,
           '@svgr/rollup': svgrRollupVersion,
-        }
+        },
+        undefined,
+        true
       )
     );
   }
 
-  const external: string[] = ['react', 'react-dom'];
-
-  if (options.style === '@emotion/styled') {
-    external.push('@emotion/react/jsx-runtime');
-  } else {
-    external.push('react/jsx-runtime');
-  }
+  external.add('react/jsx-runtime');
 
   const nxJson = readNxJson(host);
   const hasRollupPlugin = !!nxJson.plugins?.some((p) =>
@@ -69,41 +66,54 @@ export async function addRollupBuildTarget(
   if (hasRollupPlugin) {
     // New behavior, using rollup config file and inferred target.
     host.write(
-      joinPathFragments(options.projectRoot, 'rollup.config.js'),
-      stripIndents`
-      const { withNx } = require('@nx/rollup/with-nx');
-      const url = require('@rollup/plugin-url');
-      const svg = require('@svgr/rollup');
-      
-      module.exports = withNx({
-        main: '${maybeJs(options, './src/index.ts')}',
-        outputPath: '${joinPathFragments(
-          offsetFromRoot(options.projectRoot),
-          'dist',
-          options.projectRoot
-        )}',
-        tsConfig: './tsconfig.lib.json',
-        compiler: '${options.compiler ?? 'babel'}',
-        external: ${JSON.stringify(external)},
-        format: ['esm'],
-        assets:[{ input: '.', output: '.', glob: 'README.md'}],
-      }, {
-        // Provide additional rollup configuration here. See: https://rollupjs.org/configuration-options
-        plugins: [
-          svg({
-            svgo: false,
-            titleProp: true,
-            ref: true,
-          }),
-          url({
-            limit: 10000, // 10kB
-          }),
-        ],
-      });
-    `
+      joinPathFragments(options.projectRoot, 'rollup.config.cjs'),
+      `const { withNx } = require('@nx/rollup/with-nx');
+const url = require('@rollup/plugin-url');
+const svg = require('@svgr/rollup');
+
+module.exports = withNx(
+  {
+    main: '${maybeJs(options, './src/index.ts')}',
+    outputPath: '${
+      options.isUsingTsSolutionConfig
+        ? './dist'
+        : joinPathFragments(
+            offsetFromRoot(options.projectRoot),
+            'dist',
+            options.projectRoot
+          )
+    }',
+    tsConfig: './tsconfig.lib.json',
+    compiler: '${options.compiler ?? 'babel'}',
+    external: ${JSON.stringify(Array.from(external))},
+    format: ${JSON.stringify(options.format ?? ['esm'])},
+    assets:[{ input: '.', output: '.', glob: 'README.md'}],
+  }, {
+    // Provide additional rollup configuration here. See: https://rollupjs.org/configuration-options
+    plugins: [
+      svg({
+        svgo: false,
+        titleProp: true,
+        ref: true,
+      }),
+      url({
+        limit: 10000, // 10kB
+      }),
+    ],
+  }
+);
+`
     );
   } else {
     // Legacy behavior, there is a target in project.json using rollup executor.
+    // Mirrors warnRollupExecutorGenerating from @nx/rollup/src/utils/deprecation.
+    // Inlined to avoid a cross-package deep import; @nx/rollup's package
+    // exports field doesn't expose internal `src/...` paths, so the import
+    // works at compile time (via tsconfig project refs) but fails at runtime
+    // in published packages.
+    logger.warn(
+      'The `@nx/rollup:rollup` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/rollup:convert-to-inferred` to migrate to the `@nx/rollup/plugin` inferred targets. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.'
+    );
     const { targets } = readProjectConfiguration(host, options.name);
     targets.build = {
       executor: '@nx/rollup:rollup',
@@ -113,7 +123,7 @@ export async function addRollupBuildTarget(
         tsConfig: `${options.projectRoot}/tsconfig.lib.json`,
         project: `${options.projectRoot}/package.json`,
         entryFile: maybeJs(options, `${options.projectRoot}/src/index.ts`),
-        external,
+        external: Array.from(external),
         rollupConfig: `@nx/react/plugins/bundle-rollup`,
         compiler: options.compiler ?? 'babel',
         assets: [

@@ -1,11 +1,11 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 import { Tree, readJson, updateJson } from '@nx/devkit';
 
 import generator from './generator';
 import { SetupVerdaccioGeneratorSchema } from './schema';
-import { PackageJson } from 'nx/src/utils/package-json';
+import { PackageJson } from '@nx/devkit/internal';
 
 describe('setup-verdaccio generator', () => {
   let tree: Tree;
@@ -13,6 +13,12 @@ describe('setup-verdaccio generator', () => {
 
   beforeEach(() => {
     tree = createTreeWithEmptyWorkspace();
+  });
+
+  it('should create .verdaccio/config.yml with the correct registry', async () => {
+    await generator(tree, options);
+    const config = tree.read('.verdaccio/config.yml', 'utf-8');
+    expect(config).toContain('https://registry.npmjs.org');
   });
 
   it('should create project.json if it does not exist', async () => {
@@ -136,7 +142,7 @@ describe('setup-verdaccio generator', () => {
     await generator(tree, options);
     const packageJson: PackageJson = readJson(tree, 'package.json');
     expect(packageJson.devDependencies).toEqual({
-      verdaccio: '^5.0.4',
+      verdaccio: '^6.3.2',
     });
   });
 });

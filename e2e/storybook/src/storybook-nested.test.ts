@@ -4,12 +4,13 @@ import {
   getSelectedPackageManager,
   killPorts,
   readJson,
+  reservePort,
   runCLI,
   runCommandUntil,
   runCreateWorkspace,
   tmpProjPath,
   uniq,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 import { writeFileSync } from 'fs';
 import { createFileSync } from 'fs-extra';
 
@@ -46,21 +47,18 @@ describe('Storybook generators and executors for standalone workspaces - using R
         'tsconfig.storybook.json'
       );
     });
-
-    it('should edit root tsconfig.json', () => {
-      const tsconfig = readJson(`tsconfig.json`);
-      expect(tsconfig['ts-node']?.compilerOptions?.module).toEqual('commonjs');
-    });
   });
 
   describe('serve storybook', () => {
-    afterEach(() => killPorts(4400));
+    let storybookPort: number;
+    afterEach(() => storybookPort && killPorts(storybookPort));
 
     it('should serve a React based Storybook setup that uses Vite', async () => {
+      storybookPort = await reservePort();
       const p = await runCommandUntil(
-        `run ${appName}:storybook --port 4400`,
+        `run ${appName}:storybook --port ${storybookPort}`,
         (output) => {
-          return /Storybook.*started/gi.test(output);
+          return /Storybook.*(started|ready)/gi.test(output);
         }
       );
       p.kill();
@@ -75,7 +73,7 @@ describe('Storybook generators and executors for standalone workspaces - using R
 
     it('should build a React based storybook that references another lib and uses Vite', () => {
       runCLI(
-        `generate @nx/react:lib my-lib --bundler=vite --unitTestRunner=none --project-name-and-root-format=as-provided --no-interactive`
+        `generate @nx/react:lib my-lib --bundler=vite --unitTestRunner=none --no-interactive`
       );
 
       // create a component and a story in the first lib to reference the cmp from the 2nd lib
@@ -102,7 +100,7 @@ describe('Storybook generators and executors for standalone workspaces - using R
       writeFileSync(
         tmpProjPath(`src/app/test-button.stories.tsx`),
         `
-        import type { Meta } from '@storybook/react';
+        import type { Meta } from '@storybook/react-webpack5';
         import { TestButton } from './test-button';
 
         const Story: Meta<typeof TestButton> = {

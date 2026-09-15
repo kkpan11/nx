@@ -1,18 +1,12 @@
-import { dirname, join } from 'node:path';
 import { DependencyType } from '../../../../config/project-graph';
-import {
-  ProjectConfiguration,
-  ProjectsConfigurations,
-} from '../../../../config/workspace-json-project-json';
 import { defaultFileRead } from '../../../../project-graph/file-utils';
-import { CreateDependenciesContext } from '../../../../project-graph/plugins';
+import type { CreateDependenciesContext } from '../../../../project-graph/plugins';
 import {
-  RawProjectGraphDependency,
+  type RawProjectGraphDependency,
   validateDependency,
 } from '../../../../project-graph/project-graph-builder';
 import { parseJson } from '../../../../utils/json';
-import { PackageJson } from '../../../../utils/package-json';
-import { joinPathFragments } from '../../../../utils/path';
+import type { PackageJson } from '../../../../utils/package-json';
 import { TargetProjectLocator } from './target-project-locator';
 
 export function buildExplicitPackageJsonDependencies(
@@ -20,95 +14,82 @@ export function buildExplicitPackageJsonDependencies(
   targetProjectLocator: TargetProjectLocator
 ): RawProjectGraphDependency[] {
   const res: RawProjectGraphDependency[] = [];
-  let packageNameMap = undefined;
-  const nodes = Object.values(ctx.projects);
+  const roots = {};
+  Object.values(ctx.projects).forEach((project) => {
+    roots[project.root] = true;
+  });
+
   Object.keys(ctx.filesToProcess.projectFileMap).forEach((source) => {
     Object.values(ctx.filesToProcess.projectFileMap[source]).forEach((f) => {
-      if (isPackageJsonAtProjectRoot(nodes, f.file)) {
-        // we only create the package name map once and only if a package.json file changes
-        packageNameMap = packageNameMap || createPackageNameMap(ctx.projects);
-        processPackageJson(
-          source,
-          f.file,
-          ctx,
-          targetProjectLocator,
-          res,
-          packageNameMap
-        );
+      if (isPackageJsonAtProjectRoot(roots, f.file)) {
+        processPackageJson(source, f.file, ctx, targetProjectLocator, res);
       }
     });
   });
   return res;
 }
 
-function createPackageNameMap(projects: ProjectsConfigurations['projects']) {
-  const res = {};
-  for (let projectName of Object.keys(projects)) {
-    try {
-      const packageJson = parseJson(
-        defaultFileRead(join(projects[projectName].root, 'package.json'))
-      );
-      res[packageJson.name ?? projectName] = projectName;
-    } catch (e) {}
-  }
-  return res;
-}
-
 function isPackageJsonAtProjectRoot(
-  nodes: ProjectConfiguration[],
+  roots: Record<string, boolean>,
   fileName: string
 ) {
-  return (
-    fileName.endsWith('package.json') &&
-    nodes.find(
-      (projectNode) =>
-        joinPathFragments(projectNode.root, 'package.json') === fileName
-    )
-  );
+  if (!fileName.endsWith('package.json')) {
+    return false;
+  }
+  // A root-level package.json has no directory prefix, so its project root is '.';
+  // every other manifest sits at '<root>/package.json'.
+  const filePath = fileName === 'package.json' ? '.' : fileName.slice(0, -13);
+  return !!roots[filePath];
 }
 
 function processPackageJson(
   sourceProject: string,
-  fileName: string,
+  packageJsonPath: string,
   ctx: CreateDependenciesContext,
   targetProjectLocator: TargetProjectLocator,
-  collectedDeps: RawProjectGraphDependency[],
-  packageNameMap: { [packageName: string]: string }
+  collectedDeps: RawProjectGraphDependency[]
 ) {
   try {
-    const deps = readDeps(parseJson(defaultFileRead(fileName)));
+    const deps = readDeps(parseJson(defaultFileRead(packageJsonPath)));
 
-    for (const d of Object.keys(deps)) {
-      // package.json refers to another project in the monorepo
-      if (packageNameMap[d]) {
+    Object.keys(deps).forEach((packageName) => {
+      const packageVersion = deps[packageName];
+      const localProject =
+        targetProjectLocator.findDependencyInWorkspaceProjects(
+          packageJsonPath,
+          packageName,
+          packageVersion
+        );
+      if (localProject) {
+        // package.json refers to another project in the monorepo
         const dependency: RawProjectGraphDependency = {
           source: sourceProject,
-          target: packageNameMap[d],
-          sourceFile: fileName,
+          target: localProject,
+          sourceFile: packageJsonPath,
           type: DependencyType.static,
         };
         validateDependency(dependency, ctx);
         collectedDeps.push(dependency);
-        continue;
+        return;
       }
 
       const externalNodeName = targetProjectLocator.findNpmProjectFromImport(
-        d,
-        fileName
+        packageName,
+        packageJsonPath
       );
       if (!externalNodeName) {
-        continue;
+        return;
       }
 
       const dependency: RawProjectGraphDependency = {
         source: sourceProject,
         target: externalNodeName,
-        sourceFile: fileName,
+        sourceFile: packageJsonPath,
         type: DependencyType.static,
       };
       validateDependency(dependency, ctx);
       collectedDeps.push(dependency);
-    }
+    });
   } catch (e) {
     if (process.env.NX_VERBOSE_LOGGING === 'true') {
       console.error(e);
@@ -131,11 +112,9 @@ function readDeps(packageJson: PackageJson) {
   ] as const;
 
   for (const type of depType) {
-    for (const [depName, depVersion] of Object.entries(
-      packageJson[type] || {}
-    )) {
-      deps[depName] = depVersion;
-    }
+    Object.keys(packageJson[type] || {}).forEach((depName) => {
+      deps[depName] = packageJson[type][depName];
+    });
   }
 
   return deps;

@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'fs';
 import { PackageJson } from '../../../../utils/package-json';
 import { workspaceRoot } from '../../../../utils/workspace-root';
+import { readJsonFile } from '../../../../utils/fileutils';
 
 /**
  * Get version of hoisted package if available
@@ -8,11 +8,11 @@ import { workspaceRoot } from '../../../../utils/workspace-root';
 export function getHoistedPackageVersion(packageName: string): string {
   const fullPath = `${workspaceRoot}/node_modules/${packageName}/package.json`;
 
-  if (existsSync(fullPath)) {
-    const content = readFileSync(fullPath, 'utf-8');
-    return JSON.parse(content)?.version;
+  try {
+    return readJsonFile(fullPath)?.version;
+  } catch (e) {
+    return;
   }
-  return;
 }
 
 export type NormalizedPackageJson = Pick<
@@ -25,6 +25,10 @@ export type NormalizedPackageJson = Pick<
   | 'peerDependencies'
   | 'peerDependenciesMeta'
   | 'optionalDependencies'
+  | 'packageManager'
+  | 'resolutions'
+  | 'overrides'
+  | 'pnpm'
 >;
 
 /**
@@ -42,6 +46,10 @@ export function normalizePackageJson(
     peerDependencies,
     peerDependenciesMeta,
     optionalDependencies,
+    packageManager,
+    resolutions,
+    overrides,
+    pnpm,
   } = packageJson;
 
   return {
@@ -53,5 +61,9 @@ export function normalizePackageJson(
     peerDependencies,
     peerDependenciesMeta,
     optionalDependencies,
+    packageManager,
+    resolutions,
+    overrides,
+    pnpm,
   };
 }

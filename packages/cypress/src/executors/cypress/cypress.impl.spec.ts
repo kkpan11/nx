@@ -1,16 +1,28 @@
-import { getTempTailwindPath } from '../../utils/ct-helpers';
-import { ExecutorContext, stripIndents } from '@nx/devkit';
-import * as executorUtils from 'nx/src/command-line/run/executor-utils';
+// Mock detect-port as a callable function that also works with `import * as`
+jest.mock('detect-port', () => {
+  const fn = jest.fn();
+  return Object.assign(fn, { __esModule: true, default: fn });
+});
+
+import { ExecutorContext } from '@nx/devkit';
+
+// Get reference to the mocked function
+const mockDetectPortFn = jest.requireMock('detect-port') as jest.Mock;
+import { getExecutorInformation } from '@nx/devkit/internal';
 import * as path from 'path';
-import { installedCypressVersion } from '../../utils/cypress-version';
+import { getInstalledCypressMajorVersion } from '../../utils/versions';
 import cypressExecutor, { CypressExecutorOptions } from './cypress.impl';
 
 jest.mock('@nx/devkit');
 let devkit = require('@nx/devkit');
-jest.mock('detect-port', () => jest.fn().mockResolvedValue(4200));
-import * as detectPort from 'detect-port';
-jest.mock('../../utils/cypress-version');
-jest.mock('../../utils/ct-helpers');
+jest.mock('nx/src/command-line/run/executor-utils', () => ({
+  ...jest.requireActual('nx/src/command-line/run/executor-utils'),
+  getExecutorInformation: jest.fn(),
+}));
+jest.mock('../../utils/versions', () => ({
+  ...jest.requireActual('../../utils/versions'),
+  getInstalledCypressMajorVersion: jest.fn(),
+}));
 const Cypress = require('cypress');
 
 describe('Cypress builder', () => {
@@ -19,7 +31,6 @@ describe('Cypress builder', () => {
   const cypressOptions: CypressExecutorOptions = {
     cypressConfig: 'apps/my-app-e2e/cypress.json',
     parallel: false,
-    tsConfig: 'apps/my-app-e2e/tsconfig.json',
     devServerTarget: 'my-app:serve',
     exit: true,
     record: false,
@@ -28,9 +39,9 @@ describe('Cypress builder', () => {
     skipServe: false,
   };
   let mockContext: ExecutorContext;
-  let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as any;
+  let mockedInstalledCypressMajorVersion: jest.Mock<
+    ReturnType<typeof getInstalledCypressMajorVersion>
+  > = getInstalledCypressMajorVersion as any;
   mockContext = {
     root: '/root',
     workspace: { projects: {} },
@@ -47,7 +58,7 @@ describe('Cypress builder', () => {
   jest.spyOn(devkit, 'readTargetOptions').mockReturnValue({
     watch: true,
   });
-  jest.spyOn(executorUtils, 'getExecutorInformation').mockReturnValue({
+  (getExecutorInformation as jest.Mock).mockReturnValue({
     schema: { properties: {} },
     hasherFactory: jest.fn(),
     implementationFactory: jest.fn(),
@@ -56,10 +67,8 @@ describe('Cypress builder', () => {
     isNxExecutor: true,
   });
   let runExecutor: any;
-  let mockGetTailwindPath: jest.Mock<ReturnType<typeof getTempTailwindPath>> =
-    getTempTailwindPath as any;
-
   beforeEach(async () => {
+    mockedInstalledCypressMajorVersion.mockReturnValue(15);
     runExecutor = (devkit as any).runExecutor = jest.fn().mockReturnValue([
       {
         success: true,
@@ -96,7 +105,7 @@ describe('Cypress builder', () => {
 
     expect(cypressRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        config: { baseUrl: 'http://localhost:4200' },
+        config: expect.objectContaining({ baseUrl: 'http://localhost:4200' }),
         project: path.dirname(cypressOptions.cypressConfig),
       })
     );
@@ -112,7 +121,7 @@ describe('Cypress builder', () => {
 
     expect(cypressOpen).toHaveBeenCalledWith(
       expect.objectContaining({
-        config: { baseUrl: 'http://localhost:4200' },
+        config: expect.objectContaining({ baseUrl: 'http://localhost:4200' }),
         project: path.dirname(cypressOptions.cypressConfig),
       })
     );
@@ -131,65 +140,6 @@ describe('Cypress builder', () => {
     } catch (e) {}
   });
 
-  it('should show warnings if using unsupported browsers v3', async () => {
-    mockedInstalledCypressVersion.mockReturnValue(3);
-    await cypressExecutor(
-      {
-        ...cypressOptions,
-        browser: 'edge',
-      },
-      mockContext
-    );
-
-    expect(devkit.logger.warn).toHaveBeenCalled();
-  });
-
-  it('should show warnings if using unsupported browsers v4', async () => {
-    mockedInstalledCypressVersion.mockReturnValue(4);
-    await cypressExecutor(
-      {
-        ...cypressOptions,
-        browser: 'canary',
-      },
-      mockContext
-    );
-
-    expect(devkit.logger.warn).toHaveBeenCalled();
-  });
-
-  it('should show warnings if using v8 deprecated headless flag', async () => {
-    mockedInstalledCypressVersion.mockReturnValue(8);
-    await cypressExecutor(
-      {
-        ...cypressOptions,
-        headless: true,
-      },
-      mockContext
-    );
-
-    expect(devkit.logger.warn).toHaveBeenCalled();
-  });
-
-  it('should skip warnings if using headless flag used on v7 and lower', async () => {
-    mockedInstalledCypressVersion.mockReturnValue(7);
-    await cypressExecutor(
-      {
-        ...cypressOptions,
-        headless: true,
-      },
-      mockContext
-    );
-    const deprecatedMessage = stripIndents`
-NOTE:
-Support for Cypress versions < 10 is deprecated. Please upgrade to at least Cypress version 10.
-A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v10-migration-guide
-`;
-
-    // expect the warning about the using < v10 but should not also warn about headless
-    expect(devkit.logger.warn).toHaveBeenCalledTimes(1);
-    expect(devkit.logger.warn).toHaveBeenCalledWith(deprecatedMessage);
-  });
-
   it('should call `Cypress.run` with provided baseUrl', async () => {
     const { success } = await cypressExecutor(
       {
@@ -202,9 +152,9 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     expect(success).toEqual(true);
     expect(cypressRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        config: {
+        config: expect.objectContaining({
           baseUrl: 'http://my-distant-host.com',
-        },
+        }),
         project: path.dirname(cypressOptions.cypressConfig),
       })
     );
@@ -267,7 +217,6 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     const { success } = await cypressExecutor(
       {
         cypressConfig: 'apps/my-app-e2e/cypress.json',
-        tsConfig: 'apps/my-app-e2e/tsconfig.json',
         devServerTarget: undefined,
         headless: true,
         exit: true,
@@ -298,7 +247,11 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     expect(success).toEqual(true);
     expect(cypressRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        ignoreTestFiles: '/some/path/to/a/file.js',
+        config: expect.objectContaining({
+          e2e: expect.objectContaining({
+            excludeSpecPattern: '/some/path/to/a/file.js',
+          }),
+        }),
       })
     );
   });
@@ -365,9 +318,9 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     expect(success).toEqual(true);
     expect(cypressRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        config: {
+        config: expect.objectContaining({
           baseUrl: 'test-url-from-options',
-        },
+        }),
       })
     );
   });
@@ -377,9 +330,9 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     expect(success).toEqual(true);
     expect(cypressRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        config: {
+        config: expect.objectContaining({
           baseUrl: 'http://localhost:4200',
-        },
+        }),
       })
     );
   });
@@ -397,9 +350,9 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     expect(runExecutor).not.toHaveBeenCalled();
     expect(cypressRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        config: {
+        config: expect.objectContaining({
           baseUrl: 'http://my-distant-host.com',
-        },
+        }),
       })
     );
   });
@@ -424,13 +377,14 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
     (devkit as any).readTargetOptions = jest
       .fn()
       .mockReturnValue({ port: 4200 });
+    mockDetectPortFn.mockResolvedValue(4200);
 
     const { success } = await cypressExecutor(
       { ...cypressOptions, port: 'cypress-auto' },
       mockContext
     );
     expect(success).toEqual(true);
-    expect(detectPort).toHaveBeenCalledWith(4200);
+    expect(mockDetectPortFn).toHaveBeenCalledWith(4200);
   });
 
   it('should forward watch option to devServerTarget when supported', async () => {
@@ -468,9 +422,6 @@ A generator to migrate from v8 to v10 is provided. See https://nx.dev/cypress/v1
   });
 
   describe('Component Testing', () => {
-    beforeEach(() => {
-      mockGetTailwindPath.mockReturnValue(undefined);
-    });
     it('should forward testingType', async () => {
       const { success } = await cypressExecutor(
         {

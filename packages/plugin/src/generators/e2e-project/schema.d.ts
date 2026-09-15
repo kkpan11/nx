@@ -1,15 +1,15 @@
-import type { ProjectNameAndRootFormat } from '@nx/devkit/src/generators/project-name-and-root-utils';
-import type { Linter } from '@nx/eslint';
+import type { LinterType } from '@nx/js';
 
 export interface Schema {
   pluginName: string;
   npmPackageName: string;
   projectDirectory?: string;
-  projectNameAndRootFormat?: ProjectNameAndRootFormat;
   pluginOutputPath?: string;
   jestConfig?: string;
-  linter?: Linter;
+  testRunner?: 'jest' | 'vitest';
+  linter?: LinterType;
   skipFormat?: boolean;
   rootProject?: boolean;
+  useProjectJson?: boolean;
   addPlugin?: boolean;
 }

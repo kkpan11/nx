@@ -16,8 +16,13 @@ import {
   createAppJsx,
   createStyleRules,
 } from './create-application-files.helpers';
+import { isUsingTsSolutionSetup } from '@nx/js/internal';
+import { isNext16 } from '../../../utils/version-utils';
 
-export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
+export async function createApplicationFiles(
+  host: Tree,
+  options: NormalizedSchema
+) {
   const offsetFromRoot = _offsetFromRoot(options.appProjectRoot);
   const layoutTypeSrcPath = joinPathFragments(
     offsetFromRoot,
@@ -30,20 +35,22 @@ export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
     '.next/types/**/*.ts'
   );
 
-  // scope tsconfig to the project directory so that it doesn't include other projects/libs
-  const rootPath = options.rootProject
-    ? options.src
-      ? 'src/'
-      : options.appDir
-      ? 'app/'
-      : 'pages/'
-    : '';
+  const rootPath =
+    options.rootProject || isUsingTsSolutionSetup(host)
+      ? options.src
+        ? 'src/'
+        : options.appDir
+          ? 'app/'
+          : 'pages/'
+      : '';
+
   const templateVariables = {
-    ...names(options.name),
+    ...names(options.projectSimpleName),
     ...options,
     dot: '.',
     tmpl: '',
     offsetFromRoot,
+    appDirType: options.appDir ? 'app' : 'pages',
     layoutTypeSrcPath,
     rootPath,
     layoutTypeDistPath,
@@ -54,8 +61,9 @@ export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
     appContent: createAppJsx(options.projectName),
     styleContent: createStyleRules(),
     pageStyleContent: `.page {}`,
-
-    stylesExt: options.style === 'less' ? options.style : 'css',
+    stylesExt: 'css',
+    isUsingTsSolutionSetup: isUsingTsSolutionSetup(host),
+    isNext16: await isNext16(host),
   };
 
   const generatedAppFilePath = options.src
@@ -87,28 +95,12 @@ export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
       );
     }
 
-    if (options.style === 'styled-components') {
-      generateFiles(
-        host,
-        join(__dirname, '../files/app-styled-components'),
-        join(generatedAppFilePath, 'app'),
-        templateVariables
-      );
-    } else if (options.style === 'styled-jsx') {
-      generateFiles(
-        host,
-        join(__dirname, '../files/app-styled-jsx'),
-        join(generatedAppFilePath, 'app'),
-        templateVariables
-      );
-    } else {
-      generateFiles(
-        host,
-        join(__dirname, '../files/app-default-layout'),
-        join(generatedAppFilePath, 'app'),
-        templateVariables
-      );
-    }
+    generateFiles(
+      host,
+      join(__dirname, '../files/app-default-layout'),
+      join(generatedAppFilePath, 'app'),
+      templateVariables
+    );
   } else {
     generateFiles(
       host,
@@ -129,7 +121,7 @@ export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
       delete json.compilerOptions.paths;
 
       updatedJson = {
-        ...updateJson,
+        ...updatedJson,
         compilerOptions: {
           ...updatedJson.compilerOptions,
           ...appJSON.compilerOptions,
@@ -162,20 +154,6 @@ export function createApplicationFiles(host: Tree, options: NormalizedSchema) {
   // Check for `!== false` because `create-nx-workspace` is not passing default values.
   if (options.swc !== false) {
     host.delete(`${options.appProjectRoot}/.babelrc`);
-  }
-
-  if (options.styledModule || options.style === 'tailwind') {
-    if (options.appDir) {
-      host.delete(`${generatedAppFilePath}/app/page.module.${options.style}`);
-    } else {
-      host.delete(
-        `${generatedAppFilePath}/pages/${options.fileName}.module.${options.style}`
-      );
-    }
-  }
-
-  if (options.style !== 'styled-components') {
-    host.delete(`${generatedAppFilePath}/pages/_document.tsx`);
   }
 
   if (options.js) {

@@ -2,29 +2,30 @@ import {
   addDependenciesToPackageJson,
   formatFiles,
   generateFiles,
+  GeneratorCallback,
   joinPathFragments,
   offsetFromRoot,
   ProjectConfiguration,
+  readJson,
   readNxJson,
   readProjectConfiguration,
+  runTasksInSerial,
   Tree,
   updateJson,
-  updateProjectConfiguration,
   updateNxJson,
-  runTasksInSerial,
-  GeneratorCallback,
+  updateProjectConfiguration,
 } from '@nx/devkit';
-import { installedCypressVersion } from '../../utils/cypress-version';
-
+import { findTargetDefault, upsertTargetDefault } from '@nx/devkit/internal';
+import { assertNotUsingTsSolutionSetup } from '@nx/js/internal';
+import { assertSupportedCypressVersion } from '../../utils/assert-supported-cypress-version';
+import { warnCypressExecutorGenerating } from '../../utils/deprecation';
 import {
-  cypressVersion,
-  cypressViteDevServerVersion,
-  cypressWebpackVersion,
-  htmlWebpackPluginVersion,
+  getInstalledCypressMajorVersion,
+  versions,
 } from '../../utils/versions';
-import { CypressComponentConfigurationSchema } from './schema';
 import { addBaseCypressSetup } from '../base-setup/base-setup';
 import init from '../init/init';
+import { CypressComponentConfigurationSchema } from './schema';
 
 type NormalizeCTOptions = ReturnType<typeof normalizeOptions>;
 
@@ -42,15 +43,21 @@ export async function componentConfigurationGeneratorInternal(
   tree: Tree,
   options: CypressComponentConfigurationSchema
 ) {
+  assertSupportedCypressVersion(tree);
+
+  assertNotUsingTsSolutionSetup(tree, 'cypress', 'component-configuration');
+
   const tasks: GeneratorCallback[] = [];
   const opts = normalizeOptions(tree, options);
 
-  tasks.push(
-    await init(tree, {
-      ...opts,
-      skipFormat: true,
-    })
-  );
+  if (!getInstalledCypressMajorVersion(tree)) {
+    tasks.push(
+      await init(tree, {
+        ...opts,
+        skipFormat: true,
+      })
+    );
+  }
 
   const nxJson = readNxJson(tree);
   const hasPlugin = nxJson.plugins?.some((p) =>
@@ -61,10 +68,13 @@ export async function componentConfigurationGeneratorInternal(
 
   const projectConfig = readProjectConfiguration(tree, opts.project);
 
-  tasks.push(updateDeps(tree, opts));
+  if (!opts.skipPackageJson) {
+    tasks.push(updateDeps(tree, opts));
+  }
 
   addProjectFiles(tree, projectConfig, opts);
   if (!hasPlugin || opts.addExplicitTargets) {
+    warnCypressExecutorGenerating();
     addTargetToProject(tree, projectConfig, opts);
   }
   updateNxJsonConfiguration(tree, hasPlugin);
@@ -82,13 +92,6 @@ function normalizeOptions(
   tree: Tree,
   options: CypressComponentConfigurationSchema
 ) {
-  const cyVersion = installedCypressVersion();
-  if (cyVersion && cyVersion < 10) {
-    throw new Error(
-      'Cypress version of 10 or higher is required to use component testing. See the migration guide to upgrade. https://nx.dev/cypress/v11-migration-guide'
-    );
-  }
-
   const nxJson = readNxJson(tree);
   const addPlugin =
     process.env.NX_ADD_PLUGINS !== 'false' &&
@@ -103,18 +106,21 @@ function normalizeOptions(
 }
 
 function updateDeps(tree: Tree, opts: NormalizeCTOptions) {
+  const pkgVersions = versions(tree);
+
   const devDeps = {
-    cypress: cypressVersion,
+    cypress: pkgVersions.cypressVersion,
   };
 
   if (opts.bundler === 'vite') {
-    devDeps['@cypress/vite-dev-server'] = cypressViteDevServerVersion;
+    devDeps['@cypress/vite-dev-server'] =
+      pkgVersions.cypressViteDevServerVersion;
   } else {
-    devDeps['@cypress/webpack-dev-server'] = cypressWebpackVersion;
-    devDeps['html-webpack-plugin'] = htmlWebpackPluginVersion;
+    devDeps['@cypress/webpack-dev-server'] = pkgVersions.cypressWebpackVersion;
+    devDeps['html-webpack-plugin'] = pkgVersions.htmlWebpackPluginVersion;
   }
 
-  return addDependenciesToPackageJson(tree, {}, devDeps);
+  return addDependenciesToPackageJson(tree, {}, devDeps, undefined, true);
 }
 
 function addProjectFiles(
@@ -136,6 +142,7 @@ function addProjectFiles(
       ...opts,
       projectRoot: projectConfig.root,
       offsetFromRoot: offsetFromRoot(projectConfig.root),
+      linter: isEslintInstalled(tree) ? 'eslint' : 'none',
       ext: '',
     }
   );
@@ -180,15 +187,24 @@ function updateNxJsonConfiguration(tree: Tree, hasPlugin: boolean) {
     ) {
       cacheableOperations.push('component-test');
     }
-    nxJson.targetDefaults ??= {};
-    nxJson.targetDefaults['component-test'] ??= {};
-    nxJson.targetDefaults['component-test'].cache ??= true;
-
-    nxJson.targetDefaults['component-test'] ??= {};
-    nxJson.targetDefaults['component-test'].inputs ??= [
-      'default',
-      productionFileSet ? '^production' : '^default',
-    ];
+    // Either a `target: 'component-test'` default or a default keyed on
+    // the executor we're scaffolding will apply to the new target — pick
+    // the more specific (target-keyed) when both are present.
+    const existingForTarget = findTargetDefault(nxJson.targetDefaults, {
+      target: 'component-test',
+    });
+    const existingForExecutor = findTargetDefault(nxJson.targetDefaults, {
+      executor: '@nx/cypress:cypress',
+    });
+    const existing = existingForTarget ?? existingForExecutor;
+    upsertTargetDefault(tree, nxJson, {
+      target: 'component-test',
+      cache: existing?.cache ?? true,
+      inputs: existing?.inputs ?? [
+        'default',
+        productionFileSet ? '^production' : '^default',
+      ],
+    });
   }
   updateNxJson(tree, nxJson);
 }
@@ -197,14 +213,13 @@ export function updateTsConfigForComponentTesting(
   tree: Tree,
   projectConfig: ProjectConfiguration
 ) {
-  const tsConfigPath = joinPathFragments(
-    projectConfig.root,
-    projectConfig.projectType === 'library'
-      ? 'tsconfig.lib.json'
-      : 'tsconfig.app.json'
-  );
+  let tsConfigPath: string | null = null;
+  for (const candidate of ['tsconfig.lib.json', 'tsconfig.app.json']) {
+    const p = joinPathFragments(projectConfig.root, candidate);
+    if (tree.exists(p)) tsConfigPath = p;
+  }
 
-  if (tree.exists(tsConfigPath)) {
+  if (tsConfigPath !== null) {
     updateJson(tree, tsConfigPath, (json) => {
       const excluded = new Set([
         ...(json.exclude || []),
@@ -250,6 +265,11 @@ export function updateTsConfigForComponentTesting(
       return json;
     });
   }
+}
+
+function isEslintInstalled(tree: Tree): boolean {
+  const { dependencies, devDependencies } = readJson(tree, 'package.json');
+  return !!(dependencies?.eslint || devDependencies?.eslint);
 }
 
 export default componentConfigurationGenerator;

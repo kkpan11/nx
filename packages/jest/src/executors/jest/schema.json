@@ -5,6 +5,7 @@
   "description": "Jest target options for Build Facade.",
   "cli": "nx",
   "type": "object",
+  "x-deprecated": "The `@nx/jest:jest` executor is deprecated and will be removed in Nx v24. Run `nx g @nx/jest:convert-to-inferred` to migrate to the `@nx/jest/plugin` inferred plugin. See https://nx.dev/docs/guides/tasks--caching/convert-to-inferred for details.",
   "presets": [
     {
       "name": "Pass Without Tests",
@@ -53,17 +54,17 @@
     },
     "testFile": {
       "description": "The name of the file to test.",
-      "type": "string"
+      "type": "string",
+      "$default": {
+        "$source": "argv",
+        "index": 0
+      }
     },
     "tsConfig": {
-      "description": "The name of the Typescript configuration file.",
+      "description": "The path to the TypeScript configuration file, relative to the workspace root. Note this is only metadata used by Angular migrations. This executor does not use it.",
       "type": "string",
-      "x-deprecated": "Use the ts-jest configuration options in the jest config file instead."
-    },
-    "setupFile": {
-      "description": "The name of a setup file used by Jest.",
-      "type": "string",
-      "x-deprecated": "Use the setupFilesAfterEnv option in the jest config file. https://jestjs.io/docs/en/configuration#setupfilesafterenv-array"
+      "x-completion-type": "file",
+      "x-completion-glob": "tsconfig.*.json"
     },
     "bail": {
       "alias": "b",
@@ -124,7 +125,7 @@
       "type": "string"
     },
     "passWithNoTests": {
-      "description": "Will not fail if no tests are found (for example while using `--testPathPattern`.) (https://jestjs.io/docs/cli#--passwithnotests)",
+      "description": "Will not fail if no tests are found (for example while using `--testPathPatterns`.) (https://jestjs.io/docs/cli#--passwithnotests)",
       "type": "boolean"
     },
     "randomize": {
@@ -156,8 +157,8 @@
         "type": "string"
       }
     },
-    "testPathPattern": {
-      "description": "An array of regexp pattern strings that is matched against all tests paths before executing the test. (https://jestjs.io/docs/cli#--testpathpatternregex)",
+    "testPathPatterns": {
+      "description": "An array of regexp pattern strings that is matched against all tests paths before executing the test. (https://jestjs.io/docs/cli#--testpathpatternsregex)",
       "type": "array",
       "items": {
         "type": "string"

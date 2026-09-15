@@ -1,6 +1,6 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
+import { getInstalledCypressMajorVersion } from '@nx/cypress/internal';
 import {
   logger,
   readJson,
@@ -14,14 +14,17 @@ import { componentGenerator } from './component';
 
 // need to mock cypress otherwise it'll use the nx installed version from package.json
 //  which is v9 while we are testing for the new v10 version
-jest.mock('@nx/cypress/src/utils/cypress-version');
+jest.mock('@nx/cypress/internal', () => ({
+  ...jest.requireActual('@nx/cypress/internal'),
+  getInstalledCypressMajorVersion: jest.fn(),
+}));
 
 describe('component', () => {
   let appTree: Tree;
   let projectName: string;
   let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
+    ReturnType<typeof getInstalledCypressMajorVersion>
+  > = getInstalledCypressMajorVersion as never;
 
   beforeEach(async () => {
     mockedInstalledCypressVersion.mockReturnValue(10);
@@ -41,7 +44,7 @@ describe('component', () => {
     await componentGenerator(appTree, {
       name: 'hello',
       style: 'css',
-      project: projectName,
+      path: `${projectName}/src/lib/hello/hello`,
     });
 
     expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
@@ -57,11 +60,43 @@ describe('component', () => {
     );
   });
 
+  it('should handle path with file extension', async () => {
+    await componentGenerator(appTree, {
+      name: 'hello',
+      style: 'css',
+      path: `${projectName}/src/lib/hello/hello.tsx`,
+    });
+
+    expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
+    expect(appTree.exists('my-lib/src/lib/hello/hello.spec.tsx')).toBeTruthy();
+    expect(
+      appTree.exists('my-lib/src/lib/hello/hello.module.css')
+    ).toBeTruthy();
+    expect(appTree.read('my-lib/src/lib/hello/hello.tsx').toString()).toMatch(
+      /import styles from '.\/hello.module.css'/
+    );
+    expect(appTree.read('my-lib/src/lib/hello/hello.tsx').toString()).toMatch(
+      /<div className={styles\['container']}>/
+    );
+  });
+
+  it('should generate jsx when path has .jsx extension', async () => {
+    await componentGenerator(appTree, {
+      name: 'hello',
+      style: 'css',
+      path: `${projectName}/src/lib/hello/hello.jsx`,
+    });
+
+    expect(appTree.exists('my-lib/src/lib/hello/hello.jsx')).toBeTruthy();
+    expect(appTree.exists('my-lib/src/lib/hello/hello.spec.jsx')).toBeTruthy();
+    expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeFalsy();
+  });
+
   it('should generate files with global CSS', async () => {
     await componentGenerator(appTree, {
       name: 'hello',
       style: 'css',
-      project: projectName,
+      path: `${projectName}/src/lib/hello/hello`,
       globalCss: true,
     });
 
@@ -81,7 +116,7 @@ describe('component', () => {
     await componentGenerator(appTree, {
       name: 'hello',
       style: 'css',
-      project: 'my-app',
+      path: 'my-app/src/app/hello/hello',
     });
 
     expect(appTree.exists('my-app/src/app/hello/hello.tsx')).toBeTruthy();
@@ -95,7 +130,7 @@ describe('component', () => {
     await componentGenerator(appTree, {
       name: 'hello',
       style: 'css',
-      project: 'my-app',
+      path: 'my-app/src/app/hello/hello',
       globalCss: true,
     });
 
@@ -110,7 +145,7 @@ describe('component', () => {
       await componentGenerator(appTree, {
         name: 'hello',
         style: 'css',
-        project: projectName,
+        path: `${projectName}/src/lib/hello/hello`,
         classComponent: true,
       });
 
@@ -127,7 +162,7 @@ describe('component', () => {
       await componentGenerator(appTree, {
         name: 'hello',
         style: 'css',
-        project: projectName,
+        path: `${projectName}/src/lib/hello`,
         export: true,
       });
 
@@ -140,7 +175,7 @@ describe('component', () => {
       await componentGenerator(appTree, {
         name: 'hello',
         style: 'css',
-        project: 'my-app',
+        path: 'my-lib/src/app/hello',
         export: true,
       });
 
@@ -155,53 +190,14 @@ describe('component', () => {
       updateProjectConfiguration(appTree, 'my-lib', projectConfig);
 
       await componentGenerator(appTree, {
-        name: 'my-lib/src/lib/hello',
+        path: 'my-lib/src/lib/hello',
         style: 'css',
         export: true,
       });
 
       const indexContent = appTree.read('my-lib/src/index.ts', 'utf-8');
 
-      expect(indexContent).not.toMatch(/lib\/hello/);
-    });
-  });
-
-  describe('--pascalCaseFiles', () => {
-    it('should generate component files with upper case names', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        style: 'css',
-        project: projectName,
-        pascalCaseFiles: true,
-      });
-      expect(appTree.exists('my-lib/src/lib/hello/Hello.tsx')).toBeTruthy();
-      expect(
-        appTree.exists('my-lib/src/lib/hello/Hello.spec.tsx')
-      ).toBeTruthy();
-      expect(
-        appTree.exists('my-lib/src/lib/hello/Hello.module.css')
-      ).toBeTruthy();
-    });
-  });
-
-  describe('--pascalCaseDirectory', () => {
-    it('should generate component files with pascal case directories', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello-world',
-        style: 'css',
-        project: projectName,
-        pascalCaseFiles: true,
-        pascalCaseDirectory: true,
-      });
-      expect(
-        appTree.exists('my-lib/src/lib/HelloWorld/HelloWorld.tsx')
-      ).toBeTruthy();
-      expect(
-        appTree.exists('my-lib/src/lib/HelloWorld/HelloWorld.spec.tsx')
-      ).toBeTruthy();
-      expect(
-        appTree.exists('my-lib/src/lib/HelloWorld/HelloWorld.module.css')
-      ).toBeTruthy();
+      expect(indexContent).toMatch(/lib\/hello/);
     });
   });
 
@@ -209,7 +205,7 @@ describe('component', () => {
     it('should generate component files without styles', async () => {
       await componentGenerator(appTree, {
         name: 'hello',
-        project: projectName,
+        path: `${projectName}/src/lib/hello/hello`,
         style: 'none',
       });
       expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
@@ -236,97 +232,7 @@ describe('component', () => {
       expect(content).not.toContain('hello.scss');
       expect(content).not.toContain('hello.module.css');
       expect(content).not.toContain('hello.module.scss');
-    });
-  });
-
-  describe('--style styled-components', () => {
-    it('should use styled-components as the styled API library', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: 'styled-components',
-      });
-
-      expect(
-        appTree.exists('my-lib/src/lib/hello/hello.styled-components')
-      ).toBeFalsy();
-      expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
-
-      const content = appTree.read('my-lib/src/lib/hello/hello.tsx').toString();
-      expect(content).toContain('styled-components');
-      expect(content).toContain('<StyledHello>');
-    });
-
-    it('should add dependencies to package.json', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: 'styled-components',
-      });
-
-      const packageJSON = readJson(appTree, 'package.json');
-      expect(packageJSON.dependencies['styled-components']).toBeDefined();
-    });
-  });
-
-  describe('--style @emotion/styled', () => {
-    it('should use @emotion/styled as the styled API library', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: '@emotion/styled',
-      });
-
-      expect(
-        appTree.exists('my-lib/src/lib/hello/hello.@emotion/styled')
-      ).toBeFalsy();
-      expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
-
-      const content = appTree.read('my-lib/src/lib/hello/hello.tsx').toString();
-      expect(content).toContain('@emotion/styled');
-      expect(content).toContain('<StyledHello>');
-    });
-
-    it('should add dependencies to package.json', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: '@emotion/styled',
-      });
-
-      const packageJSON = readJson(appTree, 'package.json');
-      expect(packageJSON.dependencies['@emotion/styled']).toBeDefined();
-      expect(packageJSON.dependencies['@emotion/react']).toBeDefined();
-    });
-  });
-
-  describe('--style styled-jsx', () => {
-    it('should use styled-jsx as the styled API library', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: 'styled-jsx',
-      });
-
-      expect(
-        appTree.exists('my-lib/src/lib/hello/hello.styled-jsx')
-      ).toBeFalsy();
-      expect(appTree.exists('my-lib/src/lib/hello/hello.tsx')).toBeTruthy();
-
-      const content = appTree.read('my-lib/src/lib/hello/hello.tsx').toString();
-      expect(content).toContain('<style jsx>');
-      expect(content).not.toContain("styles['container']");
-    });
-
-    it('should add dependencies to package.json', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        project: projectName,
-        style: 'styled-jsx',
-      });
-
-      const packageJSON = readJson(appTree, 'package.json');
-      expect(packageJSON.dependencies['styled-jsx']).toBeDefined();
+      expect(content).toMatchSnapshot();
     });
   });
 
@@ -335,7 +241,7 @@ describe('component', () => {
       await componentGenerator(appTree, {
         name: 'hello',
         style: 'css',
-        project: projectName,
+        path: `${projectName}/src/lib/hello/hello`,
         routing: true,
       });
 
@@ -349,13 +255,12 @@ describe('component', () => {
     });
   });
 
-  describe('--directory', () => {
-    it('should create component under the directory', async () => {
+  describe('--path', () => {
+    it('should create component under the path', async () => {
       await componentGenerator(appTree, {
         name: 'hello',
         style: 'css',
-        project: projectName,
-        directory: 'components',
+        path: `${projectName}/src/components/hello`,
       });
 
       expect(appTree.exists('/my-lib/src/components/hello/hello.tsx'));
@@ -365,46 +270,19 @@ describe('component', () => {
       await componentGenerator(appTree, {
         name: 'helloWorld',
         style: 'css',
-        project: projectName,
-        directory: 'lib/foo',
+        path: `${projectName}/src/lib/foo/hello-world`,
       });
 
-      expect(appTree.exists('/my-lib/src/lib/foo/hello-world/hello-world.tsx'));
+      expect(appTree.exists('/my-lib/src/lib/foo/hello-world/helloWorld.tsx'));
     });
 
-    it('should create directory when the path is provided as the component name', async () => {
+    it('should create directory when the path is provided', async () => {
       await componentGenerator(appTree, {
-        name: `my-lib/src/btn/btn`,
-        project: projectName,
+        path: `my-lib/src/btn/btn`,
         style: 'css',
-        nameAndDirectoryFormat: 'as-provided',
       });
 
       expect(appTree.exists('my-lib/src/btn/btn.tsx')).toBeTruthy();
-    });
-  });
-
-  describe('--flat', () => {
-    it('should create in project directory rather than in its own folder', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        style: 'css',
-        project: projectName,
-        flat: true,
-      });
-
-      expect(appTree.exists('/my-lib/src/lib/hello.tsx'));
-    });
-    it('should work with custom directory path', async () => {
-      await componentGenerator(appTree, {
-        name: 'hello',
-        style: 'css',
-        project: projectName,
-        flat: true,
-        directory: 'components',
-      });
-
-      expect(appTree.exists('/my-lib/src/components/hello.tsx'));
     });
   });
 });

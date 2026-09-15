@@ -2,11 +2,25 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "../scripts/tools-out",
-    "module": "commonjs",
-    "types": ["node"]
+    "types": ["node"],
+    "rootDir": "."
   },
   "include": ["**/*.ts"],
-  "ts-node": {
-    "require": ["tsconfig-paths/register"]
-  }
+  "references": [
+    {
+      "path": "../packages/devkit/tsconfig.lib.json"
+    },
+    {
+      "path": "../packages/nx/tsconfig.lib.json"
+    },
+    {
+      "path": "../nx-dev/models-package/tsconfig.lib.json"
+    },
+    {
+      "path": "../nx-dev/models-document/tsconfig.lib.json"
+    },
+    {
+      "path": "../nx-dev/data-access-documents/tsconfig.lib.json"
+    }
+  ]
 }

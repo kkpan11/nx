@@ -2,7 +2,7 @@ import { updateJson } from '../../generators/utils/json';
 import { Tree } from '../../generators/tree';
 import { NxJsonConfiguration } from '../../config/nx-json';
 import { PackageJson } from '../../utils/package-json';
-import { formatChangedFilesWithPrettierIfAvailable } from '../../generators/internal-utils/format-changed-files-with-prettier-if-available';
+import { formatChangedFiles } from '../../generators/internal-utils/format-changed-files';
 import { readNxJson } from '../../generators/utils/nx-json';
 import {
   NxCloudEnterpriseOutdatedError,
@@ -10,6 +10,7 @@ import {
 } from '../../nx-cloud/update-manager';
 import { getRunnerOptions } from '../../tasks-runner/run-command';
 import { output } from '../../utils/output';
+import { ensureCatchAllTargetDefaultConfig } from '../utils/target-defaults';
 
 export default async function migrate(tree: Tree) {
   if (!tree.exists('nx.json')) {
@@ -25,7 +26,19 @@ export default async function migrate(tree: Tree) {
 
   const nxCloudClientSupported = await isNxCloudClientSupported(nxJson);
   updateJson<NxJsonConfiguration>(tree, 'nx.json', (nxJson) => {
-    const { runner, options } = nxJson.tasksRunnerOptions.default;
+    const { runner, options } = nxJson.tasksRunnerOptions.default as {
+      runner: string;
+      options: {
+        useDaemonProcess?: boolean;
+        accessToken?: string;
+        url?: string;
+        useLightClient?: boolean;
+        encryptionKey?: string;
+        parallel?: number;
+        cacheDirectory?: string;
+        cacheableOperations?: string[];
+      };
+    };
 
     // This property shouldn't ever be part of tasks runner options.
     if (options.useDaemonProcess !== undefined) {
@@ -71,8 +84,13 @@ export default async function migrate(tree: Tree) {
     if (Array.isArray(options.cacheableOperations)) {
       nxJson.targetDefaults ??= {};
       for (const target of options.cacheableOperations) {
-        nxJson.targetDefaults[target] ??= {};
-        nxJson.targetDefaults[target].cache ??= true;
+        // Set the workspace-wide `cache: true` baseline on the unfiltered
+        // catch-all entry, handling both the object and filtered array forms.
+        const { config, value } = ensureCatchAllTargetDefaultConfig(
+          nxJson.targetDefaults[target]
+        );
+        config.cache ??= true;
+        nxJson.targetDefaults[target] = value;
       }
       delete options.cacheableOperations;
     }
@@ -89,7 +107,7 @@ export default async function migrate(tree: Tree) {
     return nxJson;
   });
 
-  await formatChangedFilesWithPrettierIfAvailable(tree);
+  await formatChangedFiles(tree);
 }
 
 async function isNxCloudClientSupported(nxJson: NxJsonConfiguration) {

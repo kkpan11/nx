@@ -1,25 +1,44 @@
-import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+// child_process's ESM namespace is frozen; spy mode wraps the real spawn so
+// the --color tests can observe env without changing behavior.
+vi.mock('child_process', { spy: true });
+
+import { readFileSync, writeFileSync } from 'fs';
+import { env } from 'npm-run-path';
 import { relative } from 'path';
 import { dirSync, fileSync } from 'tmp';
-import runCommands, {
-  interpolateArgsIntoCommand,
-  LARGE_BUFFER,
-} from './run-commands.impl';
-import { env } from 'npm-run-path';
+import runCommands, { interpolateArgsIntoCommand } from './run-commands.impl';
 
 function normalize(p: string) {
   return p.startsWith('/private') ? p.substring(8) : p;
 }
 
-function readFile(f: string) {
-  return readFileSync(f).toString().replace(/\s/g, '');
+function readFile(
+  f: string,
+  { preserveWhitespace }: { preserveWhitespace: boolean } = {
+    preserveWhitespace: false,
+  }
+) {
+  const fileContents = readFileSync(f).toString();
+  return preserveWhitespace ? fileContents : fileContents.replace(/\s/g, '');
 }
 
 describe('Run Commands', () => {
   const context = {} as any;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it('should handle empty commands array', async () => {
+    const result = await runCommands(
+      {
+        commands: [],
+        __unparsed__: [],
+      },
+      context
+    );
+    expect(result.success).toEqual(true);
+    expect(result.terminalOutput).toEqual('');
   });
 
   it('should interpolate provided --args', async () => {
@@ -210,6 +229,21 @@ describe('Run Commands', () => {
     }
   );
 
+  it('should interpolate {args} to contain all provided args', async () => {
+    const f = fileSync().name;
+    const result = await runCommands(
+      {
+        command: `echo {args} >> ${f}`,
+        __unparsed__: [`--publish 8080:80`, `--expose 80`],
+      },
+      context
+    );
+    expect(result).toEqual(expect.objectContaining({ success: true }));
+    expect(readFile(f, { preserveWhitespace: true }).trim()).toEqual(
+      `--publish 8080:80 --expose 80`
+    );
+  });
+
   it('should run commands serially', async () => {
     const f = fileSync().name;
     let result = await runCommands(
@@ -318,7 +352,7 @@ describe('Run Commands', () => {
         const f = fileSync().name;
         const result = await runCommands(
           {
-            commands: [`echo READY && sleep 0.1 && echo 1 >> ${f}`, `echo foo`],
+            commands: [`echo READY && sleep 5 && echo 1 >> ${f}`, `echo foo`],
             parallel: true,
             readyWhen: 'READY',
             __unparsed__: [],
@@ -328,10 +362,6 @@ describe('Run Commands', () => {
         );
         expect(result).toEqual(expect.objectContaining({ success: true }));
         expect(readFile(f)).toEqual('');
-
-        setTimeout(() => {
-          expect(readFile(f)).toEqual('1');
-        }, 150);
       });
     });
 
@@ -340,7 +370,7 @@ describe('Run Commands', () => {
         const f = fileSync().name;
         const result = await runCommands(
           {
-            commands: [`echo READY && sleep 0.1 && echo 1 >> ${f}`, `echo foo`],
+            commands: [`echo READY && sleep 5 && echo 1 >> ${f}`, `echo foo`],
             parallel: true,
             readyWhen: ['READY', 'foo'],
             __unparsed__: [],
@@ -350,13 +380,9 @@ describe('Run Commands', () => {
         );
         expect(result).toEqual(expect.objectContaining({ success: true }));
         expect(readFile(f)).toEqual('');
-
-        setTimeout(() => {
-          expect(readFile(f)).toEqual('1');
-        }, 150);
       });
 
-      it('should keep waiting when not all strings specified as ready condition were found', (done) => {
+      it('should keep waiting when not all strings specified as ready condition were found', async () => {
         const f = fileSync().name;
         let result: { success: boolean } | null = null;
 
@@ -373,11 +399,9 @@ describe('Run Commands', () => {
           result = res;
         });
 
-        setTimeout(() => {
-          expect(readFile(f)).toEqual('1');
-          expect(result).toBeNull();
-          done();
-        }, 150);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(readFile(f)).toEqual('1');
+        expect(result).toBeNull();
       });
     });
   });
@@ -551,11 +575,108 @@ describe('Run Commands', () => {
         )
       ).toEqual(`echo --hello="test 123" "hello world" "random config" 456`); // should wrap aroound __unparsed__ args with key value
     });
+
+    it.each([
+      ['pipe (|)', '--grep=@tag1|@tag2', 'echo --grep="@tag1|@tag2"'],
+      ['ampersand (&)', '--flag=a&b', 'echo --flag="a&b"'],
+      ['dollar sign ($)', '--path=$HOME/dir', 'echo --path="$HOME/dir"'],
+      ['semicolon (;)', '--cmd=echo;ls', 'echo --cmd="echo;ls"'],
+      ['parentheses', '--expr=(a+b)', 'echo --expr="(a+b)"'],
+      ['asterisk (*)', '--pattern=*.txt', 'echo --pattern="*.txt"'],
+      ['backtick (`)', '--cmd=`pwd`', 'echo --cmd="`pwd`"'],
+      ['angle brackets (>)', '--compare=a>b', 'echo --compare="a>b"'],
+      [
+        'question mark (?)',
+        '--pattern=file?.txt',
+        'echo --pattern="file?.txt"',
+      ],
+      [
+        'square brackets ([])',
+        '--pattern=[abc].txt',
+        'echo --pattern="[abc].txt"',
+      ],
+      ['hash (#)', '--tag=#important', 'echo --tag="#important"'],
+      ['tilde (~)', '--path=~/documents', 'echo --path="~/documents"'],
+      ['newline', '--msg=hello\nworld', 'echo --msg="hello\nworld"'],
+      ['tab', '--msg=hello\tworld', 'echo --msg="hello\tworld"'],
+    ])('should wrap shell metacharacter %s in quotes', (_, input, expected) => {
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          { __unparsed__: [input] } as any,
+          true
+        )
+      ).toEqual(expected);
+    });
+
+    it('should handle positional args with shell metacharacters', () => {
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          { __unparsed__: ['tag1|tag2', 'a&b', '$HOME'] } as any,
+          true
+        )
+      ).toEqual('echo "tag1|tag2" "a&b" "$HOME"');
+    });
+
+    it('should not double-wrap already quoted values with shell metacharacters', () => {
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          { __unparsed__: ['"@tag1|@tag2"', "'a&b'"] } as any,
+          true
+        )
+      ).toEqual('echo "@tag1|@tag2" \'a&b\'');
+    });
+
+    it('should escape existing double quotes when wrapping', () => {
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          { __unparsed__: ['--msg=hello "world"'] } as any,
+          true
+        )
+      ).toEqual('echo --msg="hello \\"world\\""');
+    });
+
+    it('should handle values containing equals signs', () => {
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          { __unparsed__: ['--define=FOO=bar|baz'] } as any,
+          true
+        )
+      ).toEqual('echo --define="FOO=bar|baz"');
+    });
+
+    it('should not re-quote word-split fragments of a single-quoted JSON value', () => {
+      // Simulates what happens when the shell word-splits:
+      //   --config \'{"env":{"cliArg":"i am from the cli args"}}\'
+      // The shell produces these separate argv entries because \" makes "
+      // literal but doesn't prevent word splitting:
+      expect(
+        interpolateArgsIntoCommand(
+          'echo',
+          {
+            __unparsed__: [
+              '--config',
+              '\'{"env":{"cliArg":"i',
+              'am',
+              'from',
+              'the',
+              'cli',
+              'args"}}\'',
+            ],
+          } as any,
+          true
+        )
+      ).toEqual(`echo --config '{"env":{"cliArg":"i am from the cli args"}}'`);
+    });
   });
 
   describe('--color', () => {
     it('should not set FORCE_COLOR=true', async () => {
-      const exec = jest.spyOn(require('child_process'), 'exec');
+      const spawnSpy = vi.mocked(require('child_process').spawn);
       await runCommands(
         {
           commands: [`echo 'Hello World'`, `echo 'Hello Universe'`],
@@ -565,25 +686,31 @@ describe('Run Commands', () => {
         context
       );
 
-      expect(exec).toHaveBeenCalledTimes(2);
-      expect(exec).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenCalledTimes(2);
+      expect(spawnSpy).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: {
           ...process.env,
           ...env(),
         },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
-      expect(exec).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: {
           ...process.env,
           ...env(),
         },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
     });
 
     it('should not set FORCE_COLOR=true when --no-color is passed', async () => {
-      const exec = jest.spyOn(require('child_process'), 'exec');
+      const spawnSpy = vi.mocked(require('child_process').spawn);
       await runCommands(
         {
           commands: [`echo 'Hello World'`, `echo 'Hello Universe'`],
@@ -594,25 +721,31 @@ describe('Run Commands', () => {
         context
       );
 
-      expect(exec).toHaveBeenCalledTimes(2);
-      expect(exec).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenCalledTimes(2);
+      expect(spawnSpy).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: {
           ...process.env,
           ...env(),
         },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
-      expect(exec).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: {
           ...process.env,
           ...env(),
         },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
     });
 
     it('should set FORCE_COLOR=true when running with --color', async () => {
-      const exec = jest.spyOn(require('child_process'), 'exec');
+      const spawnSpy = vi.mocked(require('child_process').spawn);
       await runCommands(
         {
           commands: [`echo 'Hello World'`, `echo 'Hello Universe'`],
@@ -623,14 +756,20 @@ describe('Run Commands', () => {
         context
       );
 
-      expect(exec).toHaveBeenCalledTimes(2);
-      expect(exec).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenCalledTimes(2);
+      expect(spawnSpy).toHaveBeenNthCalledWith(1, `echo 'Hello World'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: { ...process.env, FORCE_COLOR: `true`, ...env() },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
-      expect(exec).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, {
-        maxBuffer: LARGE_BUFFER,
+      expect(spawnSpy).toHaveBeenNthCalledWith(2, `echo 'Hello Universe'`, [], {
+        shell: true,
+        detached: process.platform !== 'win32',
         env: { ...process.env, FORCE_COLOR: `true`, ...env() },
+        windowsHide: true,
+        stdio: ['inherit', 'pipe', 'pipe'],
       });
     });
   });
@@ -676,7 +815,7 @@ describe('Run Commands', () => {
       );
 
       expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(normalize(readFile(f))).toBe(root);
+      expect(normalize(readFile(f))).toBe(normalize(root));
     });
 
     it('should run the task in the specified cwd relative to the workspace root when cwd is not an absolute path', async () => {
@@ -700,7 +839,7 @@ describe('Run Commands', () => {
       );
 
       expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(normalize(readFile(f))).toBe(childFolder);
+      expect(normalize(readFile(f))).toBe(normalize(childFolder));
     });
 
     it('should terminate properly with an error if the cwd is not valid', async () => {
@@ -744,7 +883,7 @@ describe('Run Commands', () => {
       );
 
       expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(normalize(readFile(f))).toBe(childFolder);
+      expect(normalize(readFile(f))).toBe(normalize(childFolder));
     });
 
     it('should add node_modules/.bins to the env for the cwd', async () => {
@@ -768,20 +907,41 @@ describe('Run Commands', () => {
 
       expect(result).toEqual(expect.objectContaining({ success: true }));
       expect(normalize(readFile(f))).toContain(
-        `${childFolder}/node_modules/.bin`
+        normalize(`${childFolder}/node_modules/.bin`)
       );
-      expect(normalize(readFile(f))).toContain(`${root}/node_modules/.bin`);
+      expect(normalize(readFile(f))).toContain(
+        normalize(`${root}/node_modules/.bin`)
+      );
     });
   });
 
   describe('env', () => {
     afterAll(() => {
       delete process.env.MY_ENV_VAR;
-      unlinkSync('.env');
+    });
+
+    it('should use value from process.env', async () => {
+      const f = fileSync().name;
+      process.env.MY_ENV_VAR = 'from-env';
+      const result = await runCommands(
+        {
+          commands: [
+            {
+              command: `echo "$MY_ENV_VAR" >> ${f}`,
+            },
+          ],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toEqual(true);
+      expect(readFile(f)).toContain('from-env');
     });
 
     it('should add the env to the command', async () => {
-      const root = dirSync().name;
+      process.env.MY_ENV_VAR = 'from-env';
       const f = fileSync().name;
       const result = await runCommands(
         {
@@ -796,15 +956,15 @@ describe('Run Commands', () => {
           parallel: true,
           __unparsed__: [],
         },
-        { root } as any
+        context
       );
 
-      expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(readFile(f)).toEqual('my-value');
+      expect(result.success).toEqual(true);
+      expect(readFile(f)).toContain('my-value');
     });
-    it('should prioritize env setting over local dotenv files', async () => {
-      writeFileSync('.env', 'MY_ENV_VAR=from-dotenv');
-      const root = dirSync().name;
+
+    it('should prioritize env setting over local process.env', async () => {
+      process.env.MY_ENV_VAR = 'from-env';
       const f = fileSync().name;
       const result = await runCommands(
         {
@@ -819,91 +979,71 @@ describe('Run Commands', () => {
           parallel: true,
           __unparsed__: [],
         },
-        { root } as any
+        context
       );
 
-      expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(readFile(f)).toEqual('from-options');
-    });
-  });
-
-  describe('dotenv', () => {
-    beforeAll(() => {
-      writeFileSync('.env', 'NRWL_SITE=https://nrwl.io/');
+      expect(result.success).toEqual(true);
+      expect(readFile(f)).toContain('from-options');
     });
 
-    beforeEach(() => {
-      delete process.env.NRWL_SITE;
-      delete process.env.NX_SITE;
-    });
-
-    afterAll(() => {
-      unlinkSync('.env');
-    });
-
-    it('should load the root .env file by default if there is one', async () => {
+    it('should prioritize process.env over envFile option', async () => {
+      process.env.MY_ENV_VAR = 'from-env';
+      const devEnv = fileSync().name;
+      writeFileSync(devEnv, 'MY_ENV_VAR=from-dotenv');
       const f = fileSync().name;
       const result = await runCommands(
         {
           commands: [
             {
-              command: `echo $NRWL_SITE >> ${f}`,
+              command: `echo "$MY_ENV_VAR" >> ${f}`,
             },
           ],
+          env: {
+            envFile: devEnv,
+          },
+          parallel: true,
           __unparsed__: [],
         },
         context
       );
 
-      expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(readFile(f)).toEqual('https://nrwl.io/');
+      expect(result.success).toEqual(true);
+      expect(readFile(f)).toContain('from-env');
     });
 
-    it('should load the specified .env file instead of the root one', async () => {
+    it('should prioritize env setting over dotenv file from envFile option', async () => {
+      process.env.MY_ENV_VAR = 'from-env';
       const devEnv = fileSync().name;
-      writeFileSync(devEnv, 'NX_SITE=https://nx.dev/');
+      writeFileSync(devEnv, 'MY_ENV_VAR=from-dotenv');
       const f = fileSync().name;
-      let result = await runCommands(
+      const result = await runCommands(
         {
           commands: [
             {
-              command: `echo $NX_SITE >> ${f} && echo $NRWL_SITE >> ${f}`,
+              command: `echo "$MY_ENV_VAR" >> ${f}`,
             },
           ],
-          envFile: devEnv,
+          env: {
+            MY_ENV_VAR: 'from-options',
+            envFile: devEnv,
+          },
+          parallel: true,
           __unparsed__: [],
         },
         context
       );
 
-      expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(readFile(f)).toContain('https://nx.dev/');
-
-      appendFileSync(devEnv, 'NX_TEST=$NX_SITE');
-      await runCommands(
-        {
-          commands: [
-            {
-              command: `echo $NX_TEST >> ${f}`,
-            },
-          ],
-          envFile: devEnv,
-          __unparsed__: [],
-        },
-        context
-      );
-      expect(result).toEqual(expect.objectContaining({ success: true }));
-      expect(readFile(f)).toContain('https://nx.dev/');
+      expect(result.success).toEqual(true);
+      expect(readFile(f)).toContain('from-options');
     });
 
     it('should error if the specified .env file does not exist', async () => {
-      const f = fileSync().name;
       try {
         await runCommands(
           {
             commands: [
               {
-                command: `echo $NX_SITE >> ${f} && echo $NRWL_SITE >> ${f}`,
+                command: `echo $MY_ENV_VAR`,
               },
             ],
             envFile: '/somePath/.fakeEnv',
@@ -918,6 +1058,104 @@ describe('Run Commands', () => {
           `no such file or directory, open '/somePath/.fakeEnv'`
         );
       }
+    });
+  });
+
+  describe('fail-fast behavior in parallel execution', () => {
+    it('should exit immediately when one parallel command fails', async () => {
+      const startTime = Date.now();
+
+      const result = await runCommands(
+        {
+          commands: [
+            `echo "command1" && exit 1`, // Fails immediately
+            `echo "command2" && sleep 2`, // Would take 2 seconds if not terminated
+          ],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toBe(false);
+      const duration = Date.now() - startTime;
+      // Should complete quickly (fail-fast), not wait for 2 seconds. The
+      // margin leaves room for CPU contention in a full parallel suite run.
+      expect(duration).toBeLessThan(1500);
+    });
+
+    it('should handle multiple simultaneous failures in parallel commands', async () => {
+      const result = await runCommands(
+        {
+          commands: [
+            `echo "fail1" && exit 1`,
+            `echo "fail2" && exit 2`,
+            `echo "fail3" && exit 3`,
+          ],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should succeed when all parallel commands succeed', async () => {
+      const result = await runCommands(
+        {
+          commands: [`echo "success1"`, `echo "success2"`, `echo "success3"`],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should terminate remaining processes when one fails in parallel', async () => {
+      const f = fileSync().name;
+      const flagFile = fileSync().name;
+
+      const result = await runCommands(
+        {
+          commands: [
+            `echo "quick" >> ${f} && exit 1`, // Fails immediately
+            `sleep 5 && echo "should_not_appear" >> ${flagFile}`, // Should be terminated
+          ],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toBe(false);
+      expect(readFile(flagFile)).toBe(''); // didn't write should_not_appear
+    });
+
+    it('should handle process cleanup correctly on failure', async () => {
+      const startTime = Date.now();
+
+      const result = await runCommands(
+        {
+          commands: [
+            'exit 1', // Fail immediately
+            'sleep 2', // Long-running process
+            'sleep 2', // Another long-running process
+            'sleep 2', // Yet another long-running process
+          ],
+          parallel: true,
+          __unparsed__: [],
+        },
+        context
+      );
+
+      expect(result.success).toBe(false);
+      const duration = Date.now() - startTime;
+      // Should complete quickly after failure and cleanup. The margin leaves
+      // room for CPU contention in a full parallel suite run.
+      expect(duration).toBeLessThan(1500);
     });
   });
 });

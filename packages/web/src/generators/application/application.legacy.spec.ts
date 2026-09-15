@@ -1,24 +1,21 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
-import { installedCypressVersion } from '@nx/cypress/src/utils/cypress-version';
+import { getInstalledCypressMajorVersion } from '@nx/cypress/internal';
 import { getProjects, readProjectConfiguration, Tree } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
 
 import { applicationGenerator } from './application';
 // need to mock cypress otherwise it'll use the nx installed version from package.json
 //  which is v9 while we are testing for the new v10 version
-jest.mock('@nx/cypress/src/utils/cypress-version');
-jest.mock('@nx/devkit', () => {
-  return {
-    ...jest.requireActual('@nx/devkit'),
-    ensurePackage: jest.fn((pkg) => jest.requireActual(pkg)),
-  };
-});
+jest.mock('@nx/cypress/internal', () => ({
+  ...jest.requireActual('@nx/cypress/internal'),
+  getInstalledCypressMajorVersion: jest.fn(),
+}));
 describe('web app generator (legacy)', () => {
   let tree: Tree;
   let mockedInstalledCypressVersion: jest.Mock<
-    ReturnType<typeof installedCypressVersion>
-  > = installedCypressVersion as never;
+    ReturnType<typeof getInstalledCypressMajorVersion>
+  > = getInstalledCypressMajorVersion as never;
 
   let originalEnv: string;
 
@@ -38,8 +35,8 @@ describe('web app generator (legacy)', () => {
 
   it('should setup webpack configuration', async () => {
     await applicationGenerator(tree, {
-      name: 'my-app',
-      projectNameAndRootFormat: 'as-provided',
+      linter: 'eslint',
+      directory: 'my-app',
     });
     const project = readProjectConfiguration(tree, 'my-app');
     expect(project).toMatchInlineSnapshot(`
@@ -106,10 +103,20 @@ describe('web app generator (legacy)', () => {
               "buildTarget": "my-app:build",
             },
           },
+          "serve-static": {
+            "dependsOn": [
+              "build",
+            ],
+            "executor": "@nx/web:file-server",
+            "options": {
+              "buildTarget": "my-app:build",
+              "spa": true,
+            },
+          },
           "test": {
             "executor": "@nx/jest:jest",
             "options": {
-              "jestConfig": "my-app/jest.config.ts",
+              "jestConfig": "my-app/jest.config.cts",
             },
             "outputs": [
               "{workspaceRoot}/coverage/{projectRoot}",
@@ -127,6 +134,7 @@ describe('web app generator (legacy)', () => {
       module.exports = composePlugins(withNx(), withWeb(), (config) => {
         // Update the webpack config as needed here.
         // e.g. \`config.plugins.push(new MyPlugin())\`
+        config.output.clean = true;
         return config;
       });
       "
@@ -135,7 +143,8 @@ describe('web app generator (legacy)', () => {
 
   it('should add targets for vite', async () => {
     await applicationGenerator(tree, {
-      name: 'my-vite-app',
+      linter: 'eslint',
+      directory: 'my-vite-app',
       bundler: 'vite',
     });
     const projects = getProjects(tree);
@@ -179,6 +188,9 @@ describe('web app generator (legacy)', () => {
               },
             },
             "defaultConfiguration": "development",
+            "dependsOn": [
+              "build",
+            ],
             "executor": "@nx/vite:preview-server",
             "options": {
               "buildTarget": "my-vite-app:build",
@@ -201,10 +213,20 @@ describe('web app generator (legacy)', () => {
               "buildTarget": "my-vite-app:build",
             },
           },
+          "serve-static": {
+            "dependsOn": [
+              "build",
+            ],
+            "executor": "@nx/web:file-server",
+            "options": {
+              "buildTarget": "my-vite-app:build",
+              "spa": true,
+            },
+          },
           "test": {
             "executor": "@nx/jest:jest",
             "options": {
-              "jestConfig": "my-vite-app/jest.config.ts",
+              "jestConfig": "my-vite-app/jest.config.cts",
             },
             "outputs": [
               "{workspaceRoot}/coverage/{projectRoot}",

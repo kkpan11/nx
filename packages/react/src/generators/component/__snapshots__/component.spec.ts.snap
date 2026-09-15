@@ -1,0 +1,14 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`component --style none should generate component files without styles 1`] = `
+"export function Hello() {
+  return (
+    <div>
+      <h1>Welcome to Hello!</h1>
+    </div>
+  );
+}
+
+export default Hello;
+"
+`;

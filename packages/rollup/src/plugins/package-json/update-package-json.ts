@@ -1,8 +1,7 @@
 import { basename, join, parse } from 'path';
-import { writeJsonFile } from 'nx/src/utils/fileutils';
+import { writeJsonFile, stripIndents, workspaceRoot } from '@nx/devkit';
 import { writeFileSync } from 'fs';
-import { PackageJson } from 'nx/src/utils/package-json';
-import { stripIndents, workspaceRoot } from '@nx/devkit';
+import { PackageJson } from '@nx/devkit/internal';
 
 export function updatePackageJson(
   options: {
@@ -16,6 +15,7 @@ export function updatePackageJson(
   },
   packageJson: PackageJson
 ) {
+  const jsFileRegex = /(\.cjs|\.mjs|\.esm\.js|\.cjs\.js|\.mjs\.js|\.js)$/;
   const hasEsmFormat = options.format.includes('esm');
   const hasCjsFormat = options.format.includes('cjs');
 
@@ -40,12 +40,14 @@ export function updatePackageJson(
 
     if (options.generateExportsField) {
       for (const [exportEntry, filePath] of Object.entries(esmExports)) {
-        packageJson.exports[exportEntry] = hasCjsFormat
-          ? // If CJS format is used, make sure `import` (from Node) points to same instance of the package.
-            // Otherwise, packages that are required to be singletons (like React, RxJS, etc.) will break.
-            // Reserve `module` entry for bundlers to accommodate tree-shaking.
-            { [hasCjsFormat ? 'module' : 'import']: filePath }
-          : filePath;
+        packageJson.exports[exportEntry] =
+          // If CJS format is used, make sure `import` (from Node) points to same instance of the package.
+          // Otherwise, packages that are required to be singletons (like React, RxJS, etc.) will break.
+          // Reserve `module` entry for bundlers to accommodate tree-shaking.
+          {
+            [hasCjsFormat ? 'module' : 'import']: filePath,
+            types: filePath.replace(jsFileRegex, '.d.ts'),
+          };
       }
     }
   }
@@ -72,6 +74,11 @@ export function updatePackageJson(
           const fauxEsmFilePath = filePath.replace(/\.cjs\.js$/, '.cjs.mjs');
           packageJson.exports[exportEntry]['import'] ??= fauxEsmFilePath;
           packageJson.exports[exportEntry]['default'] ??= filePath;
+          // Set `types` field only if it's not already set as the preferred ESM Format.
+          packageJson.exports[exportEntry]['types'] ??= filePath.replace(
+            /\.js$/,
+            '.d.ts'
+          );
           // Re-export from relative CJS file, and Node will synthetically export it as ESM.
           // Make sure both ESM and CJS point to same instance of the package because libs like React, RxJS, etc. requires it.
           // Also need a special .cjs.default.js file that re-exports the `default` from CJS, or else
@@ -100,6 +107,12 @@ export function updatePackageJson(
         }
       }
     }
+  }
+
+  if (packageJson.module) {
+    packageJson.types ??= packageJson.module.replace(jsFileRegex, '.d.ts');
+  } else {
+    packageJson.types ??= packageJson.main.replace(jsFileRegex, '.d.ts');
   }
 
   writeJsonFile(

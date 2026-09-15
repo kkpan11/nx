@@ -1,29 +1,18 @@
 import {
+  eachValueFrom,
+  combineAsyncIterables,
+  createAsyncIterable,
+  mapAsyncIterable,
+} from '@nx/devkit/internal';
+import {
   type ExecutorContext,
   logger,
   readProjectsConfigurationFromProjectGraph,
 } from '@nx/devkit';
+import { assertPackageIsInstalled } from '../utilities/builder-package';
 import { type Schema } from './schema';
-import {
-  buildStaticRemotes,
-  normalizeOptions,
-  parseStaticRemotesConfig,
-  startRemotes,
-  startStaticRemotesFileServer,
-} from './lib';
-import { eachValueFrom } from '@nx/devkit/src/utils/rxjs-for-await';
-import {
-  combineAsyncIterables,
-  createAsyncIterable,
-  mapAsyncIterable,
-} from '@nx/devkit/src/utils/async-iterable';
-import {
-  getModuleFederationConfig,
-  getRemotes,
-} from '@nx/webpack/src/utils/module-federation';
-import { waitForPortOpen } from '@nx/web/src/utils/wait-for-port-open';
-import fileServerExecutor from '@nx/web/src/executors/file-server/file-server.impl';
-import { createBuilderContext } from 'nx/src/adapter/ngcli-adapter';
+import { normalizeOptions, startRemotes } from './lib';
+import { waitForPortOpen, fileServerExecutor } from '@nx/web/internal';
 import { executeDevServerBuilder } from '../../builders/dev-server/dev-server.impl';
 import {
   getDynamicMfManifestFile,
@@ -31,15 +20,42 @@ import {
 } from '../../builders/utilities/module-federation';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
+import { warnAngularMfDevServerExecutorDeprecation } from '../../utils/module-federation-deprecation';
+import { createBuilderContext } from '@nx/devkit/ngcli-adapter';
+
+// This is required to ensure that the webpack version used by the Module Federation is the same as the one used by the builders.
+const Module = require('module');
+
+const originalResolveFilename = Module._resolveFilename;
+const patchedWebpackPath = require.resolve('webpack', {
+  paths: [require.resolve('@angular-devkit/build-angular')],
+});
+
+// Override the resolve function
+Module._resolveFilename = function (request, parent, isMain, options) {
+  // Intercept webpack specifically
+  if (request === 'webpack') {
+    // Force webpack to resolve from your specific path
+    return patchedWebpackPath;
+  }
+
+  // For all other modules, use the original resolver
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
 
 export async function* moduleFederationDevServerExecutor(
   schema: Schema,
   context: ExecutorContext
 ) {
-  // Force Node to resolve to look for the nx binary that is inside node_modules
-  const nxBin = require.resolve('nx/bin/nx');
+  assertPackageIsInstalled(
+    '@nx/module-federation',
+    '@nx/angular:module-federation-dev-server'
+  );
+  const { startRemoteIterators } =
+    await import('@nx/module-federation/internal');
+
+  warnAngularMfDevServerExecutorDeprecation();
   const options = normalizeOptions(schema);
-  options.staticRemotesPort ??= options.port + 1;
 
   const { projects: workspaceProjects } =
     readProjectsConfigurationFromProjectGraph(context.projectGraph);
@@ -56,6 +72,7 @@ export async function* moduleFederationDevServerExecutor(
           spa: false,
           withDeps: false,
           cors: true,
+          cacheSeconds: -1,
         },
         context
       )
@@ -100,69 +117,14 @@ export async function* moduleFederationDevServerExecutor(
 
   validateDevRemotes(options, workspaceProjects);
 
-  const moduleFederationConfig = getModuleFederationConfig(
-    project.targets.build.options.tsConfig,
-    context.root,
-    project.root,
-    'angular'
-  );
-
-  const remoteNames = options.devRemotes.map((r) =>
-    typeof r === 'string' ? r : r.remoteName
-  );
-
-  const remotes = getRemotes(
-    remoteNames,
-    options.skipRemotes,
-    moduleFederationConfig,
-    {
-      projectName: project.name,
-      projectGraph: context.projectGraph,
-      root: context.root,
-    },
-    pathToManifestFile
-  );
-
-  if (remotes.devRemotes.length > 0 && !schema.staticRemotesPort) {
-    options.staticRemotesPort = options.devRemotes.reduce((portToUse, r) => {
-      const remoteName = typeof r === 'string' ? r : r.remoteName;
-      const remotePort =
-        context.projectGraph.nodes[remoteName].data.targets['serve'].options
-          .port;
-      if (remotePort >= portToUse) {
-        return remotePort + 1;
-      } else {
-        return portToUse;
-      }
-    }, options.staticRemotesPort);
-  }
-
-  const staticRemotesConfig = parseStaticRemotesConfig(
-    remotes.staticRemotes,
-    context
-  );
-  await buildStaticRemotes(staticRemotesConfig, nxBin, context, options);
-
-  const devRemoteIters = await startRemotes(
-    remotes.devRemotes,
-    workspaceProjects,
-    options,
-    context,
-    'serve'
-  );
-
-  const dynamicRemoteIters = await startRemotes(
-    remotes.dynamicRemotes,
-    workspaceProjects,
-    options,
-    context,
-    'serve-static'
-  );
-
-  const staticRemotesIter =
-    remotes.staticRemotes.length > 0
-      ? startStaticRemotesFileServer(staticRemotesConfig, context, options)
-      : undefined;
+  const { remotes, staticRemotesIter, devRemoteIters } =
+    await startRemoteIterators(
+      options,
+      context,
+      startRemotes,
+      pathToManifestFile,
+      'angular'
+    );
 
   const removeBaseUrlEmission = (iter: AsyncIterable<unknown>) =>
     mapAsyncIterable(iter, (v) => ({
@@ -173,7 +135,6 @@ export async function* moduleFederationDevServerExecutor(
   return yield* combineAsyncIterables(
     removeBaseUrlEmission(currIter),
     ...devRemoteIters.map(removeBaseUrlEmission),
-    ...dynamicRemoteIters.map(removeBaseUrlEmission),
     ...(staticRemotesIter ? [removeBaseUrlEmission(staticRemotesIter)] : []),
     createAsyncIterable<{ success: true; baseUrl: string }>(
       async ({ next, done }) => {

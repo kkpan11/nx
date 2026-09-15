@@ -1,12 +1,12 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`NgRxRootStoreGenerator NgModule should add a facade when --facade=true 1`] = `
-"import { NgModule } from '@angular/core';
+"import { NgModule, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { RouterModule } from '@angular/router';
-import { AppComponent } from './app.component';
+import { App } from './app';
 import { appRoutes } from './app.routes';
-import { NxWelcomeComponent } from './nx-welcome.component';
+import { NxWelcome } from './nx-welcome';
 import { StoreModule } from '@ngrx/store';
 import { EffectsModule } from '@ngrx/effects';
 import { StoreRouterConnectingModule } from '@ngrx/router-store';
@@ -15,10 +15,11 @@ import { UsersEffects } from './+state/users.effects';
 import { UsersFacade } from './+state/users.facade';
 
 @NgModule({
-  declarations: [AppComponent, NxWelcomeComponent],
+  declarations: [App, NxWelcome],
   imports: [
     BrowserModule,
     RouterModule.forRoot(appRoutes),
+    EffectsModule.forRoot([]),
     StoreModule.forRoot(
       {},
       {
@@ -27,15 +28,14 @@ import { UsersFacade } from './+state/users.facade';
           strictActionImmutability: true,
           strictStateImmutability: true,
         },
-      }
+      },
     ),
-    EffectsModule.forRoot([]),
     StoreRouterConnectingModule.forRoot(),
     StoreModule.forFeature(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),
     EffectsModule.forFeature([UsersEffects]),
   ],
-  providers: [UsersFacade],
-  bootstrap: [AppComponent],
+  providers: [provideBrowserGlobalErrorListeners(), UsersFacade],
+  bootstrap: [App],
 })
 export class AppModule {}
 "
@@ -73,12 +73,12 @@ export class UsersFacade {
 `;
 
 exports[`NgRxRootStoreGenerator NgModule should add a root module and root state when --minimal=false 1`] = `
-"import { NgModule } from '@angular/core';
+"import { NgModule, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { RouterModule } from '@angular/router';
-import { AppComponent } from './app.component';
+import { App } from './app';
 import { appRoutes } from './app.routes';
-import { NxWelcomeComponent } from './nx-welcome.component';
+import { NxWelcome } from './nx-welcome';
 import { StoreModule } from '@ngrx/store';
 import { EffectsModule } from '@ngrx/effects';
 import { StoreRouterConnectingModule } from '@ngrx/router-store';
@@ -86,10 +86,11 @@ import * as fromUsers from './+state/users.reducer';
 import { UsersEffects } from './+state/users.effects';
 
 @NgModule({
-  declarations: [AppComponent, NxWelcomeComponent],
+  declarations: [App, NxWelcome],
   imports: [
     BrowserModule,
     RouterModule.forRoot(appRoutes),
+    EffectsModule.forRoot([]),
     StoreModule.forRoot(
       {},
       {
@@ -98,15 +99,14 @@ import { UsersEffects } from './+state/users.effects';
           strictActionImmutability: true,
           strictStateImmutability: true,
         },
-      }
+      },
     ),
-    EffectsModule.forRoot([]),
     StoreRouterConnectingModule.forRoot(),
     StoreModule.forFeature(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),
     EffectsModule.forFeature([UsersEffects]),
   ],
-  providers: [],
-  bootstrap: [AppComponent],
+  providers: [provideBrowserGlobalErrorListeners()],
+  bootstrap: [App],
 })
 export class AppModule {}
 "
@@ -120,12 +120,12 @@ export const initUsers = createAction('[Users Page] Init');
 
 export const loadUsersSuccess = createAction(
   '[Users/API] Load Users Success',
-  props<{ users: UsersEntity[] }>()
+  props<{ users: UsersEntity[] }>(),
 );
 
 export const loadUsersFailure = createAction(
   '[Users/API] Load Users Failure',
-  props<{ error: any }>()
+  props<{ error: any }>(),
 );
 "
 `;
@@ -148,8 +148,8 @@ export class UsersEffects {
       catchError((error) => {
         console.error('Error', error);
         return of(UsersActions.loadUsersFailure({ error }));
-      })
-    )
+      }),
+    ),
   );
 }
 "
@@ -173,11 +173,7 @@ describe('UsersEffects', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       imports: [],
-      providers: [
-        UsersEffects,
-        provideMockActions(() => actions),
-        provideMockStore(),
-      ],
+      providers: [UsersEffects, provideMockActions(() => actions), provideMockStore()],
     });
 
     effects = TestBed.inject(UsersEffects);
@@ -187,9 +183,7 @@ describe('UsersEffects', () => {
     it('should work', () => {
       actions = hot('-a-|', { a: UsersActions.initUsers() });
 
-      const expected = hot('-a-|', {
-        a: UsersActions.loadUsersSuccess({ users: [] }),
-      });
+      const expected = hot('-a-|', { a: UsersActions.loadUsersSuccess({ users: [] }) });
 
       expect(effects.init$).toBeObservable(expected);
     });
@@ -217,8 +211,7 @@ export interface UsersPartialState {
   readonly [USERS_FEATURE_KEY]: UsersState;
 }
 
-export const usersAdapter: EntityAdapter<UsersEntity> =
-  createEntityAdapter<UsersEntity>();
+export const usersAdapter: EntityAdapter<UsersEntity> = createEntityAdapter<UsersEntity>();
 
 export const initialUsersState: UsersState = usersAdapter.getInitialState({
   // set initial required properties
@@ -227,15 +220,11 @@ export const initialUsersState: UsersState = usersAdapter.getInitialState({
 
 const reducer = createReducer(
   initialUsersState,
-  on(UsersActions.initUsers, (state) => ({
-    ...state,
-    loaded: false,
-    error: null,
-  })),
+  on(UsersActions.initUsers, (state) => ({ ...state, loaded: false, error: null })),
   on(UsersActions.loadUsersSuccess, (state, { users }) =>
-    usersAdapter.setAll(users, { ...state, loaded: true })
+    usersAdapter.setAll(users, { ...state, loaded: true }),
   ),
-  on(UsersActions.loadUsersFailure, (state, { error }) => ({ ...state, error }))
+  on(UsersActions.loadUsersFailure, (state, { error }) => ({ ...state, error })),
 );
 
 export function usersReducer(state: UsersState | undefined, action: Action) {
@@ -249,51 +238,44 @@ exports[`NgRxRootStoreGenerator NgModule should add a root module and root state
 import { USERS_FEATURE_KEY, UsersState, usersAdapter } from './users.reducer';
 
 // Lookup the 'Users' feature state managed by NgRx
-export const selectUsersState =
-  createFeatureSelector<UsersState>(USERS_FEATURE_KEY);
+export const selectUsersState = createFeatureSelector<UsersState>(USERS_FEATURE_KEY);
 
 const { selectAll, selectEntities } = usersAdapter.getSelectors();
 
 export const selectUsersLoaded = createSelector(
   selectUsersState,
-  (state: UsersState) => state.loaded
+  (state: UsersState) => state.loaded,
 );
 
 export const selectUsersError = createSelector(
   selectUsersState,
-  (state: UsersState) => state.error
+  (state: UsersState) => state.error,
 );
 
-export const selectAllUsers = createSelector(
-  selectUsersState,
-  (state: UsersState) => selectAll(state)
+export const selectAllUsers = createSelector(selectUsersState, (state: UsersState) =>
+  selectAll(state),
 );
 
-export const selectUsersEntities = createSelector(
-  selectUsersState,
-  (state: UsersState) => selectEntities(state)
+export const selectUsersEntities = createSelector(selectUsersState, (state: UsersState) =>
+  selectEntities(state),
 );
 
 export const selectSelectedId = createSelector(
   selectUsersState,
-  (state: UsersState) => state.selectedId
+  (state: UsersState) => state.selectedId,
 );
 
 export const selectEntity = createSelector(
   selectUsersEntities,
   selectSelectedId,
-  (entities, selectedId) => (selectedId ? entities[selectedId] : undefined)
+  (entities, selectedId) => (selectedId ? entities[selectedId] : undefined),
 );
 "
 `;
 
 exports[`NgRxRootStoreGenerator NgModule should add a root module and root state when --minimal=false 7`] = `
 "import { UsersEntity } from './users.models';
-import {
-  usersAdapter,
-  UsersPartialState,
-  initialUsersState,
-} from './users.reducer';
+import { usersAdapter, UsersPartialState, initialUsersState } from './users.reducer';
 import * as UsersSelectors from './users.selectors';
 
 describe('Users Selectors', () => {
@@ -303,7 +285,7 @@ describe('Users Selectors', () => {
     ({
       id,
       name: name || \`name-\${id}\`,
-    } as UsersEntity);
+    }) as UsersEntity;
 
   let state: UsersPartialState;
 
@@ -320,7 +302,7 @@ describe('Users Selectors', () => {
           selectedId: 'PRODUCT-BBB',
           error: ERROR_MSG,
           loaded: true,
-        }
+        },
       ),
     };
   });
@@ -358,21 +340,22 @@ describe('Users Selectors', () => {
 `;
 
 exports[`NgRxRootStoreGenerator NgModule should add an empty root module when --minimal=true 1`] = `
-"import { NgModule } from '@angular/core';
+"import { NgModule, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { RouterModule } from '@angular/router';
-import { AppComponent } from './app.component';
+import { App } from './app';
 import { appRoutes } from './app.routes';
-import { NxWelcomeComponent } from './nx-welcome.component';
+import { NxWelcome } from './nx-welcome';
 import { StoreModule } from '@ngrx/store';
 import { EffectsModule } from '@ngrx/effects';
 import { StoreRouterConnectingModule } from '@ngrx/router-store';
 
 @NgModule({
-  declarations: [AppComponent, NxWelcomeComponent],
+  declarations: [App, NxWelcome],
   imports: [
     BrowserModule,
     RouterModule.forRoot(appRoutes),
+    EffectsModule.forRoot([]),
     StoreModule.forRoot({}, {
       metaReducers: [],
       runtimeChecks: {
@@ -380,33 +363,34 @@ import { StoreRouterConnectingModule } from '@ngrx/router-store';
         strictStateImmutability: true
       }
     }),
-    EffectsModule.forRoot([]),
     StoreRouterConnectingModule.forRoot(),
   ],
-  providers: [],
-  bootstrap: [AppComponent],
+  providers: [provideBrowserGlobalErrorListeners()],
+  bootstrap: [App],
 })
 export class AppModule {}
 "
 `;
 
 exports[`NgRxRootStoreGenerator NgModule should instrument the store devtools when "addDevTools: true" 1`] = `
-"import { NgModule, isDevMode } from '@angular/core';
+"import { NgModule, provideBrowserGlobalErrorListeners, isDevMode } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { RouterModule } from '@angular/router';
-import { AppComponent } from './app.component';
+import { App } from './app';
 import { appRoutes } from './app.routes';
-import { NxWelcomeComponent } from './nx-welcome.component';
+import { NxWelcome } from './nx-welcome';
 import { StoreModule } from '@ngrx/store';
 import { EffectsModule } from '@ngrx/effects';
-import { StoreRouterConnectingModule } from '@ngrx/router-store';
 import { StoreDevtoolsModule } from '@ngrx/store-devtools';
+import { StoreRouterConnectingModule } from '@ngrx/router-store';
 
 @NgModule({
-  declarations: [AppComponent, NxWelcomeComponent],
+  declarations: [App, NxWelcome],
   imports: [
     BrowserModule,
     RouterModule.forRoot(appRoutes),
+    EffectsModule.forRoot([]),
+    StoreDevtoolsModule.instrument({ logOnly: !isDevMode() }),
     StoreModule.forRoot({}, {
       metaReducers: [],
       runtimeChecks: {
@@ -414,19 +398,17 @@ import { StoreDevtoolsModule } from '@ngrx/store-devtools';
         strictStateImmutability: true
       }
     }),
-    EffectsModule.forRoot([]),
     StoreRouterConnectingModule.forRoot(),
-    StoreDevtoolsModule.instrument({ logOnly: !isDevMode() }),
   ],
-  providers: [],
-  bootstrap: [AppComponent],
+  providers: [provideBrowserGlobalErrorListeners()],
+  bootstrap: [App],
 })
 export class AppModule {}
 "
 `;
 
 exports[`NgRxRootStoreGenerator Standalone APIs should add a facade when --facade=true 1`] = `
-"import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+"import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { appRoutes } from './app.routes';
 import { provideStore, provideState } from '@ngrx/store';
@@ -436,7 +418,10 @@ import { UsersEffects } from './+state/users.effects';
 import { UsersFacade } from './+state/users.facade';
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideEffects(UsersEffects),provideState(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),UsersFacade,provideEffects(),provideStore(),provideZoneChangeDetection({ eventCoalescing: true }), provideRouter(appRoutes) ]
+  providers: [provideEffects(UsersEffects),provideState(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),UsersFacade,provideStore(),provideEffects(),
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(appRoutes)
+  ]
 };
 "
 `;
@@ -473,7 +458,7 @@ export class UsersFacade {
 `;
 
 exports[`NgRxRootStoreGenerator Standalone APIs should add a root module and root state when --minimal=false 1`] = `
-"import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+"import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { appRoutes } from './app.routes';
 import { provideStore, provideState } from '@ngrx/store';
@@ -482,7 +467,10 @@ import * as fromUsers from './+state/users.reducer';
 import { UsersEffects } from './+state/users.effects';
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideEffects(UsersEffects),provideState(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),provideEffects(),provideStore(),provideZoneChangeDetection({ eventCoalescing: true }), provideRouter(appRoutes) ]
+  providers: [provideEffects(UsersEffects),provideState(fromUsers.USERS_FEATURE_KEY, fromUsers.usersReducer),provideStore(),provideEffects(),
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(appRoutes)
+  ]
 };
 "
 `;
@@ -722,20 +710,23 @@ describe('Users Selectors', () => {
 `;
 
 exports[`NgRxRootStoreGenerator Standalone APIs should add an empty root module when --minimal=true 1`] = `
-"import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+"import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { appRoutes } from './app.routes';
 import { provideStore } from '@ngrx/store';
 import { provideEffects } from '@ngrx/effects';
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideEffects(),provideStore(),provideZoneChangeDetection({ eventCoalescing: true }), provideRouter(appRoutes) ]
+  providers: [provideStore(),provideEffects(),
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(appRoutes)
+  ]
 };
 "
 `;
 
 exports[`NgRxRootStoreGenerator Standalone APIs should instrument the store devtools when "addDevTools: true" 1`] = `
-"import { ApplicationConfig, provideZoneChangeDetection, isDevMode } from '@angular/core';
+"import { ApplicationConfig, provideBrowserGlobalErrorListeners, isDevMode } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { appRoutes } from './app.routes';
 import { provideStore } from '@ngrx/store';
@@ -743,7 +734,10 @@ import { provideEffects } from '@ngrx/effects';
 import { provideStoreDevtools } from '@ngrx/store-devtools';
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideStoreDevtools({ logOnly: !isDevMode() }),provideEffects(),provideStore(),provideZoneChangeDetection({ eventCoalescing: true }), provideRouter(appRoutes) ]
+  providers: [provideStore(),provideStoreDevtools({ logOnly: !isDevMode() }),provideEffects(),
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(appRoutes)
+  ]
 };
 "
 `;

@@ -6,10 +6,10 @@ import {
   Tree,
   updateJson,
 } from '@nx/devkit';
-import { ArrayLiteralExpression } from 'typescript';
 import { insertImport } from '@nx/js';
+import { ensureTypescript, getProjectSourceRoot } from '@nx/js/internal';
+import { ArrayLiteralExpression } from 'typescript';
 import { addRoute } from '../../../utils/nx-devkit/route-utils';
-import { ensureTypescript } from '@nx/js/src/utils/typescript/ensure-typescript';
 
 let tsModule: typeof import('typescript');
 
@@ -47,7 +47,12 @@ export function addRemoteToHost(tree: Tree, options: AddRemoteOptions) {
         isHostUsingTypescriptConfig
       );
     } else if (hostFederationType === 'dynamic') {
-      addRemoteToDynamicHost(tree, options, pathToMFManifest);
+      addRemoteToDynamicHost(
+        tree,
+        options,
+        pathToMFManifest,
+        getProjectSourceRoot(hostProject, tree)
+      );
     }
 
     addLazyLoadedRouteToHostAppModule(tree, options, hostFederationType);
@@ -67,7 +72,7 @@ function getDynamicManifestFile(
   return [
     joinPathFragments(project.root, 'public/module-federation.manifest.json'),
     joinPathFragments(
-      project.sourceRoot,
+      getProjectSourceRoot(project, tree),
       'assets/module-federation.manifest.json'
     ),
   ].find((path) => tree.exists(path));
@@ -93,12 +98,11 @@ function addRemoteToStaticHost(
   }
 
   const hostMFConfig = tree.read(hostMFConfigPath, 'utf-8');
-  const { tsquery } = require('@phenomnomnominal/tsquery');
-  const webpackAst = tsquery.ast(hostMFConfig);
-  const mfRemotesNode = tsquery(
+  const { ast, query } = require('@phenomnomnominal/tsquery');
+  const webpackAst = ast(hostMFConfig);
+  const mfRemotesNode = query(
     webpackAst,
-    'ObjectLiteralExpression > PropertyAssignment:has(Identifier[name=remotes]) > ArrayLiteralExpression',
-    { visitAllChildren: true }
+    'ObjectLiteralExpression > PropertyAssignment:has(Identifier[name=remotes]) > ArrayLiteralExpression'
   )[0] as ArrayLiteralExpression;
 
   const endOfPropertiesPos = mfRemotesNode.getEnd() - 1;
@@ -114,17 +118,23 @@ function addRemoteToStaticHost(
 function addRemoteToDynamicHost(
   tree: Tree,
   options: AddRemoteOptions,
-  pathToMfManifest: string
+  pathToMfManifest: string,
+  hostSourceRoot: string
 ) {
+  // TODO(Colum): Remove for Nx 22
+  const usingLegacyDynamicFederation = tree
+    .read(`${hostSourceRoot}/main.ts`, 'utf-8')
+    .includes('setRemoteDefinitions(');
   updateJson(tree, pathToMfManifest, (manifest) => {
     return {
       ...manifest,
-      [options.appName]: `http://localhost:${options.port}`,
+      [options.appName]: `http://localhost:${options.port}${
+        usingLegacyDynamicFederation ? '' : '/mf-manifest.json'
+      }`,
     };
   });
 }
 
-// TODO(colum): future work: allow dev to pass to path to routing module
 function addLazyLoadedRouteToHostAppModule(
   tree: Tree,
   options: AddRemoteOptions,
@@ -134,8 +144,9 @@ function addLazyLoadedRouteToHostAppModule(
     tsModule = ensureTypescript();
   }
   const hostAppConfig = readProjectConfiguration(tree, options.host);
+  const sourceRoot = getProjectSourceRoot(hostAppConfig, tree);
 
-  const pathToHostRootRouting = `${hostAppConfig.sourceRoot}/app/app.routes.ts`;
+  const pathToHostRootRouting = `${sourceRoot}/app/app.routes.ts`;
 
   if (!tree.exists(pathToHostRootRouting)) {
     return;
@@ -150,13 +161,22 @@ function addLazyLoadedRouteToHostAppModule(
     true
   );
 
+  // TODO(Colum): Remove for Nx 22
+  const usingLegacyDynamicFederation =
+    hostFederationType === 'dynamic' &&
+    tree
+      .read(`${sourceRoot}/main.ts`, 'utf-8')
+      .includes('setRemoteDefinitions(');
+
   if (hostFederationType === 'dynamic') {
     sourceFile = insertImport(
       tree,
       sourceFile,
       pathToHostRootRouting,
-      'loadRemoteModule',
-      '@nx/angular/mf'
+      usingLegacyDynamicFederation ? 'loadRemoteModule' : 'loadRemote',
+      usingLegacyDynamicFederation
+        ? '@nx/angular/mf'
+        : '@module-federation/enhanced/runtime'
     );
   }
 
@@ -164,24 +184,43 @@ function addLazyLoadedRouteToHostAppModule(
   const exportedRemote = options.standalone
     ? 'remoteRoutes'
     : 'RemoteEntryModule';
+  const remoteModulePath = `${options.appName.replace(
+    /-/g,
+    '_'
+  )}/${routePathName}`;
   const routeToAdd =
     hostFederationType === 'dynamic'
-      ? `loadRemoteModule('${options.appName}', './${routePathName}')`
-      : `import('${options.appName}/${routePathName}')`;
+      ? usingLegacyDynamicFederation
+        ? `loadRemoteModule('${options.appName.replace(
+            /-/g,
+            '_'
+          )}', './${routePathName}')`
+        : `loadRemote<typeof import('${remoteModulePath}')>('${remoteModulePath}')`
+      : `import('${remoteModulePath}')`;
 
   addRoute(
     tree,
     pathToHostRootRouting,
     `{
     path: '${options.appName}',
-    loadChildren: () => ${routeToAdd}.then(m => m.${exportedRemote})
+    loadChildren: () => ${routeToAdd}.then(m => m!.${exportedRemote})
     }`
   );
 
-  const pathToAppComponentTemplate = joinPathFragments(
-    hostAppConfig.sourceRoot,
+  let pathToAppComponentTemplate = joinPathFragments(
+    sourceRoot,
     'app/app.component.html'
   );
+  const candidatePaths = [
+    pathToAppComponentTemplate,
+    joinPathFragments(sourceRoot, 'app/app.html'),
+  ];
+  for (const path of candidatePaths) {
+    if (tree.exists(path)) {
+      pathToAppComponentTemplate = path;
+      break;
+    }
+  }
   const appComponent = tree.read(pathToAppComponentTemplate, 'utf-8');
   if (
     appComponent.includes(`<ul class="remote-menu">`) &&

@@ -1,6 +1,7 @@
 import {
   addDependenciesToPackageJson,
   NxJsonConfiguration,
+  output,
   ProjectGraph,
   readJson,
   readNxJson,
@@ -47,6 +48,83 @@ describe('@nx/vite:init', () => {
 
       expect(packageJson).toMatchSnapshot();
     });
+
+    it('should default to vite 8 when no vite is installed', async () => {
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      expect(packageJson.devDependencies['vite']).toEqual('^8.0.0');
+    });
+
+    it('should default to vite 7 when an older esbuild is already installed', async () => {
+      const warnSpy = jest.spyOn(output, 'warn').mockImplementation(() => {
+        // no-op
+      });
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = { esbuild: '^0.19.2' };
+        return json;
+      });
+
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      expect(packageJson.devDependencies['vite']).toEqual('^7.0.0');
+      expect(packageJson.devDependencies['esbuild']).toEqual('^0.19.2');
+      expect(warnSpy).toHaveBeenCalledWith({
+        title: 'Installed esbuild is incompatible with Vite 8. Using Vite 7.',
+        bodyLines: [
+          'Found esbuild version "^0.19.2" in the workspace root package.json.',
+          'Update esbuild to a range compatible with ^0.27.0 if you want newly generated Vite projects to use Vite 8 by default.',
+        ],
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('should preserve vite 7 when already installed', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = { vite: '^7.0.0' };
+        return json;
+      });
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      expect(packageJson.devDependencies['vite']).toEqual('^7.0.0');
+    });
+
+    it('should not bump vite 7.x to vite 8', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = { vite: '^7.8.0' };
+        return json;
+      });
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      // Should stay on v7, not get bumped to v8
+      expect(packageJson.devDependencies['vite']).toMatch(/^\^7\./);
+    });
+
+    it('should preserve vite 6 when already installed', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = { vite: '^6.0.0' };
+        return json;
+      });
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      expect(packageJson.devDependencies['vite']).toEqual('^6.0.0');
+    });
+
+    it('should use vite 7 when useViteV7 flag is set', async () => {
+      await initGenerator(tree, { addPlugin: true, useViteV7: true });
+      const packageJson = readJson(tree, 'package.json');
+      expect(packageJson.devDependencies['vite']).toEqual('^7.0.0');
+    });
+
+    it('should not bump vite 7.1.3 to 8 when keepExistingVersions is false', async () => {
+      updateJson(tree, 'package.json', (json) => {
+        json.devDependencies = { vite: '^7.1.3' };
+        return json;
+      });
+      await initGenerator(tree, { addPlugin: true });
+      const packageJson = readJson(tree, 'package.json');
+      // Should stay on v7, not bump to v8
+      expect(packageJson.devDependencies['vite']).toMatch(/^\^7\./);
+    });
   });
 
   describe('vitest targets', () => {
@@ -73,16 +151,20 @@ describe('@nx/vite:init', () => {
               "default",
               "!{projectRoot}/**/?(*.)+(spec|test).[jt]s?(x)?(.snap)",
               "!{projectRoot}/tsconfig.spec.json",
+              "!{projectRoot}/src/test-setup.[jt]s",
             ],
           },
           "plugins": [
             {
               "options": {
+                "buildDepsTargetName": "build-deps",
                 "buildTargetName": "build",
+                "devTargetName": "dev",
                 "previewTargetName": "preview",
                 "serveStaticTargetName": "serve-static",
                 "serveTargetName": "serve",
-                "testTargetName": "test",
+                "typecheckTargetName": "typecheck",
+                "watchDepsTargetName": "watch-deps",
               },
               "plugin": "@nx/vite/plugin",
             },
@@ -124,6 +206,196 @@ describe('@nx/vite:init', () => {
         plugins: [react(), nxViteTsPaths()],
       });
       "
+    `);
+  });
+
+  it('should ignore vite temp files in gitignore', async () => {
+    await initGenerator(tree, {});
+
+    expect(tree.read('.gitignore', 'utf-8')).toMatchInlineSnapshot(
+      `"vite.config.*.timestamp*"`
+    );
+  });
+
+  it(`should not add multiple instances of the same vite temp file glob to gitignore`, async () => {
+    // ARRANGE
+    tree.write(
+      '.gitignore',
+      `vitest.config.*.timestamp*
+vite.config.*.timestamp*`
+    );
+
+    // ACT
+    await initGenerator(tree, {});
+
+    // ASSERT
+    expect(tree.read('.gitignore', 'utf-8')).toMatchInlineSnapshot(`
+      "vitest.config.*.timestamp*
+      vite.config.*.timestamp*"
+    `);
+  });
+
+  it('should ignore vite temp files in eslint flat config without a block with ignores', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write('eslint.config.mjs', `export default [];`);
+
+    await initGenerator(tree, {});
+
+    expect(tree.read('eslint.config.mjs', 'utf-8')).toMatchInlineSnapshot(`
+      "export default [
+        {
+          ignores: ['**/vite.config.*.timestamp*'],
+        },
+      ];
+      "
+    `);
+  });
+
+  it('should ignore vite temp files in eslint flat config with a block with ignores', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write(
+      'eslint.config.mjs',
+      `export default [
+      {
+        ignores: ['dist'],
+      },
+    ];`
+    );
+
+    await initGenerator(tree, {});
+
+    expect(tree.read('eslint.config.mjs', 'utf-8')).toMatchInlineSnapshot(`
+      "export default [
+        {
+          ignores: ['dist', '**/vite.config.*.timestamp*'],
+        },
+      ];
+      "
+    `);
+  });
+
+  it('should not duplicate vite temp files in eslint flat config', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write(
+      'eslint.config.mjs',
+      `export default [
+      {
+        ignores: ['**/vitest.config.*.timestamp*', '**/vite.config.*.timestamp*'],
+      },
+    ];`
+    );
+
+    await initGenerator(tree, {});
+
+    expect(tree.read('eslint.config.mjs', 'utf-8')).toMatchInlineSnapshot(`
+      "export default [
+        {
+          ignores: ['**/vitest.config.*.timestamp*', '**/vite.config.*.timestamp*'],
+        },
+      ];
+      "
+    `);
+  });
+
+  it('should ignore vite temp files in project eslintrc config without ignorePatterns', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write('.eslintrc.json', JSON.stringify({ ignorePatterns: ['**/*'] }));
+    tree.write('apps/my-app/.eslintrc.json', `{}`);
+
+    await initGenerator(tree, { projectRoot: 'apps/my-app' });
+
+    expect(readJson(tree, '.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "**/*",
+        ],
+      }
+    `);
+    expect(readJson(tree, 'apps/my-app/.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "**/vite.config.*.timestamp*",
+        ],
+      }
+    `);
+  });
+
+  it('should ignore vite temp files in project eslintrc config with ignorePatterns config', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write('.eslintrc.json', JSON.stringify({ ignorePatterns: ['**/*'] }));
+    tree.write(
+      'apps/my-app/.eslintrc.json',
+      JSON.stringify({ ignorePatterns: ['!**/*'] })
+    );
+
+    await initGenerator(tree, { projectRoot: 'apps/my-app' });
+
+    expect(readJson(tree, '.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "**/*",
+        ],
+      }
+    `);
+    expect(readJson(tree, 'apps/my-app/.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "!**/*",
+          "**/vite.config.*.timestamp*",
+        ],
+      }
+    `);
+  });
+
+  it('should not duplicate vite temp files in project eslintrc config', async () => {
+    updateJson(tree, 'package.json', (json) => {
+      json.devDependencies = { eslint: '9.0.0' };
+      return json;
+    });
+    tree.write('.eslintrc.json', JSON.stringify({ ignorePatterns: ['**/*'] }));
+    tree.write(
+      'apps/my-app/.eslintrc.json',
+      JSON.stringify({
+        ignorePatterns: [
+          '!**/*',
+          '**/vitest.config.*.timestamp*',
+          '**/vite.config.*.timestamp*',
+        ],
+      })
+    );
+
+    await initGenerator(tree, { projectRoot: 'apps/my-app' });
+
+    expect(readJson(tree, '.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "**/*",
+        ],
+      }
+    `);
+    expect(readJson(tree, 'apps/my-app/.eslintrc.json')).toMatchInlineSnapshot(`
+      {
+        "ignorePatterns": [
+          "!**/*",
+          "**/vitest.config.*.timestamp*",
+          "**/vite.config.*.timestamp*",
+        ],
+      }
     `);
   });
 });

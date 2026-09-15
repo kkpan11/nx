@@ -1,19 +1,26 @@
 import { existsSync } from 'fs';
 import * as path from 'path';
-import { readJsonFile } from '../utils/fileutils';
 import { ProjectsConfigurations } from '../config/workspace-json-project-json';
-import { NxPluginV2 } from '../project-graph/plugins';
+import { CreateNodes, NxPlugin } from '../project-graph/plugins';
+import { readJsonFile } from '../utils/fileutils';
 
 export const NX_ANGULAR_JSON_PLUGIN_NAME = 'nx-angular-json-plugin';
 
-export const NxAngularJsonPlugin: NxPluginV2 = {
-  name: NX_ANGULAR_JSON_PLUGIN_NAME,
-  createNodes: [
-    'angular.json',
-    (f, _, ctx) => ({
-      projects: readAngularJson(ctx.workspaceRoot),
-    }),
+const createNodes: CreateNodes = [
+  'angular.json',
+  (f, _, ctx) => [
+    [
+      'angular.json',
+      {
+        projects: readAngularJson(ctx.workspaceRoot),
+      },
+    ],
   ],
+];
+
+export const NxAngularJsonPlugin: NxPlugin = {
+  name: NX_ANGULAR_JSON_PLUGIN_NAME,
+  createNodes,
 };
 
 export default NxAngularJsonPlugin;
@@ -27,7 +34,7 @@ export function shouldMergeAngularProjects(
     // Include projects from angular.json if explicitly required.
     // e.g. when invoked from `packages/devkit/src/utils/convert-nx-executor.ts`
     (includeProjectsFromAngularJson ||
-      // Or if a workspace has `@nrwl/angular`/`@nx/angular` installed then projects from `angular.json` to be considered by Nx.
+      // Or if a workspace has `@nx/angular` installed then projects from `angular.json` to be considered by Nx.
       isAngularPluginInstalled())
   ) {
     return true;
@@ -42,12 +49,7 @@ export function isAngularPluginInstalled() {
     require.resolve('@nx/angular');
     return true;
   } catch {
-    try {
-      require.resolve('@nrwl/angular');
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 

@@ -1,23 +1,32 @@
 import type { Tree } from '@nx/devkit';
 import { createTreeWithNestApplication } from '../utils/testing';
-import type { ServiceGeneratorOptions } from './service';
 import { serviceGenerator } from './service';
 
 describe('service generator', () => {
   let tree: Tree;
-  const project = 'api';
-  const options: ServiceGeneratorOptions = {
-    name: 'test',
-    project,
-    unitTestRunner: 'jest',
-  };
 
   beforeEach(() => {
-    tree = createTreeWithNestApplication(project);
-    jest.clearAllMocks();
+    tree = createTreeWithNestApplication('api');
   });
 
   it('should run successfully', async () => {
-    await expect(serviceGenerator(tree, options)).resolves.not.toThrowError();
+    await expect(
+      serviceGenerator(tree, { path: 'api/test' })
+    ).resolves.not.toThrow();
+  });
+
+  it.each(['jest', 'vitest'] as const)(
+    'should generate a spec file for %s',
+    async (unitTestRunner) => {
+      await serviceGenerator(tree, { path: 'api/test', unitTestRunner });
+
+      expect(tree.exists('api/test.service.spec.ts')).toBeTruthy();
+    }
+  );
+
+  it('should not generate a spec file when unitTestRunner is none', async () => {
+    await serviceGenerator(tree, { path: 'api/test', unitTestRunner: 'none' });
+
+    expect(tree.exists('api/test.service.spec.ts')).toBeFalsy();
   });
 });

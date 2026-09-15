@@ -8,23 +8,27 @@ import {
   readProjectConfiguration,
   TargetConfiguration,
   Tree,
+  updateJson,
   updateProjectConfiguration,
   writeJson,
 } from '@nx/devkit';
 
-import type { Schema as EsLintExecutorOptions } from '@nx/eslint/src/executors/lint/schema';
+import type { Schema as EsLintExecutorOptions } from '@nx/eslint/internal';
 
 import { PluginLintChecksGeneratorSchema } from './schema';
-import { NX_PREFIX } from 'nx/src/utils/logger';
-import { PackageJson, readNxMigrateConfig } from 'nx/src/utils/package-json';
 import {
   addOverrideToLintConfig,
   findEslintFile,
   isEslintConfigSupported,
   lintConfigHasOverride,
   updateOverrideInLintConfig,
-} from '@nx/eslint/src/generators/utils/eslint-file';
-import { useFlatConfig } from '@nx/eslint/src/utils/flat-config';
+  useFlatConfig,
+} from '@nx/eslint/internal';
+import {
+  NX_PREFIX,
+  PackageJson,
+  readNxMigrateConfig,
+} from '@nx/devkit/internal';
 
 export default async function pluginLintCheckGenerator(
   host: Tree,
@@ -113,10 +117,21 @@ export function addMigrationJsonChecks(
       fileSet.add(relativeMigrationsJsonPath);
       return {
         ...o,
-        files: Array.from(fileSet),
+        files: formatFilesEntries(host, Array.from(fileSet)),
       };
     }
   );
+}
+
+function formatFilesEntries(tree: Tree, files: string[]): string[] {
+  if (!useFlatConfig(tree)) {
+    return files;
+  }
+  const filesAfter = files.map((f) => {
+    const after = f.startsWith('./') ? f.replace('./', '**/') : f;
+    return after;
+  });
+  return filesAfter;
 }
 
 function updateProjectTarget(
@@ -167,6 +182,30 @@ function updateProjectTarget(
       opts.lintFilePatterns.push(`${project.root}/package.json`);
       opts.lintFilePatterns = [...new Set(opts.lintFilePatterns)];
       project.targets[target].options = opts;
+
+      // Plugin checks read schema/implementation files which may live in the
+      // project's build outputs (and migration prompt files copied as assets).
+      // Ensure lint runs after build and includes the relevant build outputs
+      // as inputs so the sandbox allows the reads and the cache invalidates
+      // when those outputs change.
+      const targetConfig = project.targets[target];
+      const dependsOn = new Set(targetConfig.dependsOn ?? []);
+      dependsOn.add('build');
+      targetConfig.dependsOn = Array.from(dependsOn);
+
+      const inputs = targetConfig.inputs ?? ['...'];
+      const hasDependentOutputs = inputs.some(
+        (input) =>
+          typeof input === 'object' &&
+          input !== null &&
+          'dependentTasksOutputFiles' in input
+      );
+      if (!hasDependentOutputs) {
+        inputs.push({
+          dependentTasksOutputFiles: '**/*.{json,d.ts,js,md}',
+        });
+      }
+      targetConfig.inputs = inputs;
     }
   }
   updateProjectConfiguration(host, options.projectName, project);
@@ -199,12 +238,12 @@ function updateProjectEslintConfig(
       // update it
       updateOverrideInLintConfig(host, options.root, lookup, (o) => ({
         ...o,
-        files: [
+        files: formatFilesEntries(host, [
           ...new Set([
             ...(Array.isArray(o.files) ? o.files : [o.files]),
             ...files,
           ]),
-        ],
+        ]),
         ...parser,
         rules: {
           ...o.rules,
@@ -214,7 +253,7 @@ function updateProjectEslintConfig(
     } else {
       // add it
       addOverrideToLintConfig(host, options.root, {
-        files,
+        files: formatFilesEntries(host, files),
         ...parser,
         rules: {
           '@nx/nx-plugin-checks': 'error',

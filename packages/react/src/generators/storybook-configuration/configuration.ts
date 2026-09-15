@@ -1,38 +1,17 @@
-import { StorybookConfigureSchema } from './schema';
-import storiesGenerator from '../stories/stories';
 import {
+  addDependenciesToPackageJson,
   ensurePackage,
   formatFiles,
-  joinPathFragments,
+  type GeneratorCallback,
   readNxJson,
-  readProjectConfiguration,
-  Tree,
+  runTasksInSerial,
+  type Tree,
 } from '@nx/devkit';
-import { nxVersion } from '../../utils/versions';
-
-async function generateStories(host: Tree, schema: StorybookConfigureSchema) {
-  // TODO(katerina): Nx 19 -> remove Cypress
-  ensurePackage('@nx/cypress', nxVersion);
-  const { getE2eProjectName } = await import(
-    '@nx/cypress/src/utils/project-name'
-  );
-  const projectConfig = readProjectConfiguration(host, schema.project);
-  const cypressProject = getE2eProjectName(
-    schema.project,
-    projectConfig.root,
-    schema.cypressDirectory
-  );
-  await storiesGenerator(host, {
-    project: schema.project,
-    generateCypressSpecs:
-      schema.configureCypress && schema.generateCypressSpecs,
-    js: schema.js,
-    cypressProject,
-    ignorePaths: schema.ignorePaths,
-    skipFormat: true,
-    interactionTests: schema.interactionTests ?? true,
-  });
-}
+import { assertSupportedReactVersion } from '../../utils/assert-supported-react-version';
+import { getUiFramework } from '../../utils/framework';
+import { nxVersion, reactViteVersion } from '../../utils/versions';
+import { storiesGenerator } from '../stories/stories';
+import type { StorybookConfigureSchema } from './schema';
 
 export function storybookConfigurationGenerator(
   host: Tree,
@@ -48,6 +27,9 @@ export async function storybookConfigurationGeneratorInternal(
   host: Tree,
   schema: StorybookConfigureSchema
 ) {
+  assertSupportedReactVersion(host);
+
+  const tasks: GeneratorCallback[] = [];
   const nxJson = readNxJson(host);
   const addPluginDefault =
     process.env.NX_ADD_PLUGINS !== 'false' &&
@@ -57,24 +39,24 @@ export async function storybookConfigurationGeneratorInternal(
     typeof import('@nx/storybook')
   >('@nx/storybook', nxVersion);
 
-  let uiFramework = '@storybook/react-vite';
-  const projectConfig = readProjectConfiguration(host, schema.project);
+  const uiFramework = getUiFramework(host, schema.project);
 
-  if (
-    findWebpackConfig(host, projectConfig.root) ||
-    projectConfig.targets['build']?.executor === '@nx/rollup:rollup' ||
-    projectConfig.targets['build']?.executor === '@nrwl/rollup:rollup' ||
-    projectConfig.targets['build']?.executor === '@nx/expo:build'
-  ) {
-    uiFramework = '@storybook/react-webpack5';
+  if (uiFramework === '@storybook/react-vite') {
+    tasks.push(
+      addDependenciesToPackageJson(
+        host,
+        {},
+        { '@vitejs/plugin-react': reactViteVersion },
+        undefined,
+        true
+      )
+    );
   }
 
   const installTask = await configurationGenerator(host, {
     project: schema.project,
-    configureCypress: schema.configureCypress,
     js: schema.js,
     linter: schema.linter,
-    cypressDirectory: schema.cypressDirectory,
     tsConfiguration: schema.tsConfiguration ?? true, // default is true
     interactionTests: schema.interactionTests ?? true, // default is true
     configureStaticServe: schema.configureStaticServe,
@@ -83,30 +65,22 @@ export async function storybookConfigurationGeneratorInternal(
     addPlugin: schema.addPlugin,
   });
 
+  tasks.push(installTask);
+
   if (schema.generateStories) {
-    await generateStories(host, schema);
+    await storiesGenerator(host, {
+      project: schema.project,
+      js: schema.js,
+      ignorePaths: schema.ignorePaths,
+      skipFormat: true,
+      interactionTests: schema.interactionTests ?? true,
+      uiFramework,
+    });
   }
 
   await formatFiles(host);
 
-  return installTask;
+  return runTasksInSerial(...tasks);
 }
 
 export default storybookConfigurationGenerator;
-
-export function findWebpackConfig(
-  tree: Tree,
-  projectRoot: string
-): string | undefined {
-  const allowsExt = ['js', 'mjs', 'ts', 'cjs', 'mts', 'cts'];
-
-  for (const ext of allowsExt) {
-    const webpackConfigPath = joinPathFragments(
-      projectRoot,
-      `webpack.config.${ext}`
-    );
-    if (tree.exists(webpackConfigPath)) {
-      return webpackConfigPath;
-    }
-  }
-}

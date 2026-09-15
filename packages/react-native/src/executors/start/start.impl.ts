@@ -1,8 +1,10 @@
 import { ExecutorContext, logger } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { ChildProcess, fork } from 'child_process';
 import { resolve as pathResolve } from 'path';
 import { isPackagerRunning } from './lib/is-packager-running';
 import { ReactNativeStartOptions } from './schema';
+import { warnReactNativeExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ReactNativeStartOutput {
   port?: number;
@@ -13,6 +15,8 @@ export default async function* startExecutor(
   options: ReactNativeStartOptions,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeStartOutput> {
+  warnReactNativeExecutorDeprecation('start');
+
   const projectRoot =
     context.projectsConfigurations.projects[context.projectName].root;
 
@@ -74,7 +78,8 @@ function startAsync(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(childProcess);
       } else {

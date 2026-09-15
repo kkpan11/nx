@@ -1,11 +1,20 @@
+import { gte, satisfies } from 'semver';
 import {
   ProjectGraph,
   ProjectGraphExternalNode,
+  ProjectGraphProjectNode,
 } from '../../../config/project-graph';
-import { satisfies, gte } from 'semver';
-import { PackageJson } from '../../../utils/package-json';
-import { ProjectGraphBuilder } from '../../../project-graph/project-graph-builder';
 import { reverse } from '../../../project-graph/operators';
+import { ProjectGraphBuilder } from '../../../project-graph/project-graph-builder';
+import { getCatalogManager } from '../../../utils/catalog';
+import { PackageJson } from '../../../utils/package-json';
+import { PackageManager } from '../../../utils/package-manager';
+import { workspaceRoot } from '../../../utils/workspace-root';
+import { getWorkspacePackagesFromGraph } from '../utils/get-workspace-packages-from-graph';
+import {
+  normalizeLocalPathSpec,
+  uncontainLocalPathSpec,
+} from './pruned-output';
 
 /**
  * Prune project graph's external nodes and their dependencies
@@ -13,13 +22,39 @@ import { reverse } from '../../../project-graph/operators';
  */
 export function pruneProjectGraph(
   graph: ProjectGraph,
-  prunedPackageJson: PackageJson
+  prunedPackageJson: PackageJson,
+  workspaceRootPath: string = workspaceRoot,
+  packageManager?: PackageManager
 ): ProjectGraph {
   const builder = new ProjectGraphBuilder();
+  const workspacePackages = getWorkspacePackagesFromGraph(graph);
+  const { combinedDependencies, localPathNodes } = normalizeDependencies(
+    prunedPackageJson,
+    graph,
+    workspacePackages,
+    workspaceRootPath,
+    packageManager
+  );
 
-  const combinedDependencies = normalizeDependencies(prunedPackageJson, graph);
+  addNodesAndDependencies(
+    graph,
+    combinedDependencies,
+    workspacePackages,
+    builder
+  );
+  // A local-path dependency is keyed in the lockfile by the target's real
+  // package name, which an aliased one does not share with its manifest entry,
+  // so the name-based lookup above cannot reach its node. Add the nodes matched
+  // by target path rather than repeating that match here.
+  for (const node of localPathNodes) {
+    traverseNode(graph, builder, node);
+  }
 
-  addNodesAndDependencies(graph, combinedDependencies, builder);
+  for (const project of workspacePackages.values()) {
+    const node = graph.nodes[project.name];
+    builder.addNode(node);
+  }
+
   // for NPM (as well as the graph consistency)
   // we need to distinguish between hoisted and non-hoisted dependencies
   rehoistNodes(graph, combinedDependencies, builder);
@@ -29,7 +64,18 @@ export function pruneProjectGraph(
 
 // ensure that dependency ranges from package.json (e.g. ^1.0.0)
 // are replaced with the actual version based on the available nodes (e.g. 1.0.1)
-function normalizeDependencies(packageJson: PackageJson, graph: ProjectGraph) {
+// Also returns the external nodes matched for local-path dependencies, whose
+// names the caller cannot re-derive from the returned map.
+function normalizeDependencies(
+  packageJson: PackageJson,
+  graph: ProjectGraph,
+  workspacePackages: Map<string, ProjectGraphProjectNode>,
+  workspaceRootPath: string,
+  packageManager?: PackageManager
+): {
+  combinedDependencies: Record<string, string>;
+  localPathNodes: ProjectGraphExternalNode[];
+} {
   const {
     dependencies,
     devDependencies,
@@ -43,33 +89,137 @@ function normalizeDependencies(packageJson: PackageJson, graph: ProjectGraph) {
     ...optionalDependencies,
     ...peerDependencies,
   };
+  const localPathNodes: ProjectGraphExternalNode[] = [];
 
+  const manager = getCatalogManager(workspaceRootPath);
   Object.entries(combinedDependencies).forEach(
     ([packageName, versionRange]) => {
-      if (graph.externalNodes[`npm:${packageName}@${versionRange}`]) {
+      let resolvedVersionRange = versionRange;
+      if (manager?.isCatalogReference(versionRange)) {
+        resolvedVersionRange = manager.resolveCatalogReference(
+          workspaceRootPath,
+          packageName,
+          versionRange
+        );
+        if (!resolvedVersionRange) {
+          throw new Error(
+            `Could not resolve catalog reference for ${packageName}@${versionRange}.`
+          );
+        }
+      }
+
+      if (graph.externalNodes[`npm:${packageName}@${resolvedVersionRange}`]) {
+        combinedDependencies[packageName] = resolvedVersionRange;
         return;
       }
       if (
         graph.externalNodes[`npm:${packageName}`] &&
-        graph.externalNodes[`npm:${packageName}`].data.version === versionRange
+        graph.externalNodes[`npm:${packageName}`].data.version ===
+          resolvedVersionRange
       ) {
+        combinedDependencies[packageName] = resolvedVersionRange;
         return;
       }
       // otherwise we need to find the correct version
-      const node = findNodeMatchingVersion(graph, packageName, versionRange);
+      const node = findNodeMatchingVersion(
+        graph,
+        packageName,
+        resolvedVersionRange
+      );
+      // A file:/link: local-path dependency (e.g. a vendored tarball) records a
+      // path where a version would go, so the version-based lookups above never
+      // match it; findLocalPathNode matches it on that path instead (pnpm-only,
+      // matching the rest of the local-path handling).
+      const localPathNode =
+        !node &&
+        packageManager === 'pnpm' &&
+        !workspacePackages.has(packageName) &&
+        isLocalPathSpecifier(resolvedVersionRange)
+          ? findLocalPathNode(graph, packageName, resolvedVersionRange)
+          : undefined;
       if (node) {
         combinedDependencies[packageName] = node.data.version;
+      } else if (workspacePackages.has(packageName)) {
+        // workspace module, leave as is
+        combinedDependencies[packageName] = resolvedVersionRange;
+      } else if (localPathNode) {
+        combinedDependencies[packageName] = localPathNode.data.version;
+        localPathNodes.push(localPathNode);
+      } else if (
+        packageManager === 'pnpm' &&
+        resolvedVersionRange.startsWith('link:')
+      ) {
+        // Only a link: is valid importer-only in a pnpm lockfile (see
+        // mapRootSnapshot); a nodeless file: (stale lockfile) or npm/yarn still throw.
+        combinedDependencies[packageName] = resolvedVersionRange;
       } else {
         throw new Error(
-          `Pruned lock file creation failed. The following package was not found in the root lock file: ${packageName}@${versionRange}`
+          `Pruned lock file creation failed. The following package was not found in the root lock file: ${packageName}@${resolvedVersionRange}`
         );
       }
     }
   );
-  return combinedDependencies;
+  return { combinedDependencies, localPathNodes };
 }
 
-function findNodeMatchingVersion(
+/**
+ * A `file:` (local tarball or directory) or `link:` specifier resolves to a
+ * single local package. pnpm records its path relative to the workspace root in
+ * the lockfile, while the manifest records it relative to the declaring package,
+ * so the two never match by string.
+ */
+export function isLocalPathSpecifier(versionExpr: string): boolean {
+  return versionExpr.startsWith('file:') || versionExpr.startsWith('link:');
+}
+
+/**
+ * The external node for a `file:`/`link:` local-path dependency.
+ *
+ * The target path is what identifies one: an aliased dependency (`"alias":
+ * "file:libs/x"`) is keyed in the lockfile by the target's real package name, so
+ * the manifest's own name matches nothing. A manifest the pruned output already
+ * rewrote carries a workspace-root-relative path, relocated under the shipped
+ * output directory, which strips back to the path the lockfile records.
+ *
+ * A manifest that was not rewritten records the path relative to the declaring
+ * package instead, and this has no way to resolve that against the workspace
+ * root, so it falls back to the package name. Two local-path packages sharing a
+ * name cannot be told apart by it, so that throws rather than risking a match to
+ * the wrong one.
+ */
+export function findLocalPathNode(
+  graph: ProjectGraph,
+  packageName: string,
+  versionExpr: string
+): ProjectGraphExternalNode | undefined {
+  const localPathNodes = Object.values(graph.externalNodes).filter((node) =>
+    isLocalPathSpecifier(node.data.version)
+  );
+  // Only the manifest side is read back from its shipped location; the lock
+  // file records the source path, which relocation never touched.
+  const sourceSpec = uncontainLocalPathSpec(versionExpr);
+  const targetMatch = localPathNodes.find(
+    (node) => normalizeLocalPathSpec(node.data.version) === sourceSpec
+  );
+  if (targetMatch) {
+    return targetMatch;
+  }
+  const matches = localPathNodes.filter(
+    (node) => node.data.packageName === packageName
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `Pruned lock file creation failed. Multiple local-path packages named "${packageName}" were found in the lock file (${matches
+        .map((node) => node.data.version)
+        .join(
+          ', '
+        )}), so the manifest's "${packageName}" dependency cannot be matched to one of them. Rename the packages so their names are unique.`
+    );
+  }
+  return matches[0];
+}
+
+export function findNodeMatchingVersion(
   graph: ProjectGraph,
   packageName: string,
   versionExpr: string
@@ -96,16 +246,25 @@ function findNodeMatchingVersion(
   return nodes.find((n) => satisfies(n.data.version, versionExpr));
 }
 
-function addNodesAndDependencies(
+export function addNodesAndDependencies(
   graph: ProjectGraph,
   packageJsonDeps: Record<string, string>,
+  workspacePackages: Map<string, ProjectGraphProjectNode>,
   builder: ProjectGraphBuilder
 ) {
   Object.entries(packageJsonDeps).forEach(([name, version]) => {
     const node =
       graph.externalNodes[`npm:${name}@${version}`] ||
       graph.externalNodes[`npm:${name}`];
-    traverseNode(graph, builder, node);
+    if (node) {
+      traverseNode(graph, builder, node);
+    } else if (workspacePackages.has(name)) {
+      // Workspace Node
+      const workspaceNode = workspacePackages.get(name);
+      if (workspaceNode) {
+        traverseWorkspaceNode(graph, builder, workspaceNode);
+      }
+    }
   });
 }
 
@@ -125,7 +284,28 @@ function traverseNode(
   });
 }
 
-function rehoistNodes(
+function traverseWorkspaceNode(
+  graph: ProjectGraph,
+  builder: ProjectGraphBuilder,
+  node: ProjectGraphProjectNode,
+  visited: Set<string> = new Set()
+) {
+  if (visited.has(node.name)) return;
+  visited.add(node.name);
+  graph.dependencies[node.name]?.forEach((dep) => {
+    const externalDepNode = graph.externalNodes[dep.target];
+    if (externalDepNode) {
+      traverseNode(graph, builder, externalDepNode);
+      return;
+    }
+    const workspaceDepNode = graph.nodes[dep.target];
+    if (workspaceDepNode) {
+      traverseWorkspaceNode(graph, builder, workspaceDepNode, visited);
+    }
+  });
+}
+
+export function rehoistNodes(
   graph: ProjectGraph,
   packageJsonDeps: Record<string, string>,
   builder: ProjectGraphBuilder
@@ -146,6 +326,11 @@ function rehoistNodes(
       }
     }
   });
+
+  if (!packagesToRehoist.size) {
+    return;
+  }
+
   // invert dependencies for easier traversal back
   const invertedGraph = reverse(builder.graph);
   const invBuilder = new ProjectGraphBuilder(invertedGraph, {});
@@ -169,7 +354,9 @@ function rehoistNodes(
           closest = node;
         }
       });
-      switchNodeToHoisted(closest, builder, invBuilder);
+      if (closest) {
+        switchNodeToHoisted(closest, builder, invBuilder);
+      }
     }
   });
 }
@@ -192,18 +379,24 @@ function switchNodeToHoisted(
   builder.removeNode(node.name);
   invBuilder.removeNode(node.name);
 
-  // modify the node and re-add it
-  node.name = `npm:${node.data.packageName}`;
-  builder.addExternalNode(node);
-  invBuilder.addExternalNode(node);
+  // Re-add under the hoisted name as a new object. The node is shared by
+  // reference with the caller's graph, so renaming it in place would leave that
+  // graph with a node keyed `npm:<pkg>@<version>` but named `npm:<pkg>`, and
+  // every later prune of the same graph would fail to resolve the edge.
+  const hoistedNode: ProjectGraphExternalNode = {
+    ...node,
+    name: `npm:${node.data.packageName}`,
+  };
+  builder.addExternalNode(hoistedNode);
+  invBuilder.addExternalNode(hoistedNode);
 
   targets.forEach((target) => {
-    builder.addStaticDependency(node.name, target);
-    invBuilder.addStaticDependency(target, node.name);
+    builder.addStaticDependency(hoistedNode.name, target);
+    invBuilder.addStaticDependency(target, hoistedNode.name);
   });
   sources.forEach((source) => {
-    builder.addStaticDependency(source, node.name);
-    invBuilder.addStaticDependency(node.name, source);
+    builder.addStaticDependency(source, hoistedNode.name);
+    invBuilder.addStaticDependency(hoistedNode.name, source);
   });
 }
 

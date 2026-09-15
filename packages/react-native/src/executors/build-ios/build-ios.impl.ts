@@ -1,10 +1,12 @@
 import { ExecutorContext } from '@nx/devkit';
+import { signalToCode } from '@nx/devkit/internal';
 import { resolve as pathResolve } from 'path';
 import { ChildProcess, fork } from 'child_process';
 import { platform } from 'os';
 
 import { ReactNativeBuildIosOptions } from './schema';
 import { getCliOptions } from '../../utils/get-cli-options';
+import { warnReactNativeExecutorDeprecation } from '../../utils/deprecation';
 
 export interface ReactNativeBuildIosOutput {
   success: boolean;
@@ -14,6 +16,8 @@ export default async function* buildIosExecutor(
   options: ReactNativeBuildIosOptions,
   context: ExecutorContext
 ): AsyncGenerator<ReactNativeBuildIosOutput> {
+  warnReactNativeExecutorDeprecation('build-ios');
+
   if (platform() !== 'darwin') {
     throw new Error(`The run-ios build requires Mac to run`);
   }
@@ -58,7 +62,8 @@ function runCliBuildIOS(
     childProcess.on('error', (err) => {
       reject(err);
     });
-    childProcess.on('exit', (code) => {
+    childProcess.on('exit', (code, signal) => {
+      if (code === null) code = signalToCode(signal);
       if (code === 0) {
         resolve(childProcess);
       } else {

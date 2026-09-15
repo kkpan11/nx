@@ -1,9 +1,8 @@
-import * as ora from 'ora';
+import ora from 'ora';
 import { join } from 'path';
 import { CreateWorkspaceOptions } from './create-workspace-options';
 import { execAndWait } from './utils/child-process-utils';
-import { mapErrorToBodyLines } from './utils/error-utils';
-import { output } from './utils/output';
+import { CnwError } from './utils/error-utils';
 import {
   getPackageManagerCommand,
   getPackageManagerVersion,
@@ -33,15 +32,26 @@ export async function createEmptyWorkspace<T extends CreateWorkspaceOptions>(
 
   const directory = options.name;
 
+  // Cannot skip install for create-nx-workspace or else it'll fail.
+  // Even though --skipInstall is not an option to create-nx-workspace, we pass through extra options to presets.
+  // See: https://github.com/nrwl/nx/issues/31834
+  delete (options as any).skipInstall;
+
+  // workingDir and useCurrentDir are consumed by CNW itself, not passed to `nx new`
+  const { workingDir: _workingDir, useCurrentDir, ...nxNewOptions } = options;
+
   const args = unparse({
-    ...options,
+    ...nxNewOptions,
+    // Scaffolding into the current directory: relax the generator's
+    // empty-directory guard so it can write into a non-empty cwd.
+    ...(useCurrentDir ? { skipEmptyDirCheck: true } : {}),
   }).join(' ');
 
   const pmc = getPackageManagerCommand(packageManager);
 
   const command = `new ${args}`;
 
-  const workingDir = process.cwd().replace(/\\/g, '/');
+  const workingDir = (options.workingDir ?? process.cwd()).replace(/\\/g, '/');
   let nxWorkspaceRoot = `"${workingDir}"`;
 
   // If path contains spaces there is a problem in Windows for npm@6.
@@ -67,19 +77,15 @@ export async function createEmptyWorkspace<T extends CreateWorkspaceOptions>(
     await execAndWait(fullCommand, tmpDir);
 
     workspaceSetupSpinner.succeed(
-      `Successfully created the workspace: ${directory}.`
+      `Successfully created the workspace: ${directory}`
     );
   } catch (e) {
     workspaceSetupSpinner.fail();
-    if (e instanceof Error) {
-      output.error({
-        title: `Failed to create a workspace.`,
-        bodyLines: mapErrorToBodyLines(e),
-      });
-    } else {
-      console.error(e);
-    }
-    process.exit(1);
+    const message = e instanceof Error ? e.message : String(e);
+    throw new CnwError(
+      'WORKSPACE_CREATION_FAILED',
+      `Failed to create a workspace: ${message}`
+    );
   } finally {
     workspaceSetupSpinner.stop();
   }

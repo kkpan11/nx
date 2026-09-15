@@ -1,0 +1,13 @@
+{
+  "name": "docker",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/docker",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "command": "node ./scripts/copy-readme.js docker packages/docker/readme-template.md packages/docker/README.md",
+      "inputs": ["copyReadme"],
+      "outputs": ["{projectRoot}/README.md"]
+    }
+  }
+}

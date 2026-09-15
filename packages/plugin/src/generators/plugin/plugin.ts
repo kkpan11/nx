@@ -8,21 +8,25 @@ import {
   readProjectConfiguration,
   runTasksInSerial,
   Tree,
+  updateJson,
   updateProjectConfiguration,
 } from '@nx/devkit';
-import { libraryGenerator as jsLibraryGenerator } from '@nx/js';
-import { addSwcDependencies } from '@nx/js/src/utils/swc/add-swc-dependencies';
-import { Linter } from '@nx/eslint';
+import {
+  libraryGenerator as jsLibraryGenerator,
+  addTsLibDependencies,
+} from '@nx/js';
+import {
+  addSwcDependencies,
+  addSwcRegisterDependencies,
+  getProjectSourceRoot,
+} from '@nx/js/internal';
 import * as path from 'path';
 import { e2eProjectGenerator } from '../e2e-project/e2e';
 import pluginLintCheckGenerator from '../lint-checks/generator';
-import { NormalizedSchema, normalizeOptions } from './utils/normalize-schema';
-import { addTsLibDependencies } from '@nx/js/src/utils/typescript/add-tslib-dependencies';
-import { addSwcRegisterDependencies } from '@nx/js/src/utils/swc/add-swc-dependencies';
-
 import type { Schema } from './schema';
+import { NormalizedSchema, normalizeOptions } from './utils/normalize-schema';
 
-const nxVersion = require('../../../package.json').version;
+const nxVersion = require(path.join('@nx/plugin', 'package.json')).version;
 
 async function addFiles(host: Tree, options: NormalizedSchema) {
   host.delete(normalizePath(`${options.projectRoot}/src/lib`));
@@ -39,43 +43,45 @@ async function addFiles(host: Tree, options: NormalizedSchema) {
 }
 
 function updatePluginConfig(host: Tree, options: NormalizedSchema) {
-  const project = readProjectConfiguration(host, options.name);
+  const project = readProjectConfiguration(host, options.projectName);
 
   if (project.targets.build) {
-    project.targets.build.options.assets ??= [];
+    if (options.isTsSolutionSetup && options.bundler === 'tsc') {
+      project.targets.build.options.rootDir = getProjectSourceRoot(
+        project,
+        host
+      );
+      project.targets.build.options.generatePackageJson = false;
+    }
 
-    const root = options.projectRoot === '.' ? '.' : './' + options.projectRoot;
     project.targets.build.options.assets = [
-      ...project.targets.build.options.assets,
-      {
-        input: `${root}/src`,
-        glob: '**/!(*.ts)',
-        output: './src',
-      },
-      {
-        input: `${root}/src`,
-        glob: '**/*.d.ts',
-        output: './src',
-      },
-      {
-        input: root,
-        glob: 'generators.json',
-        output: '.',
-      },
-      {
-        input: root,
-        glob: 'executors.json',
-        output: '.',
-      },
+      ...(project.targets.build.options.assets ?? []),
     ];
 
-    updateProjectConfiguration(host, options.name, project);
+    const root = options.projectRoot === '.' ? '.' : './' + options.projectRoot;
+
+    if (options.isTsSolutionSetup) {
+      project.targets.build.options.assets.push(
+        { input: `${root}/src`, glob: '**/!(*.ts)', output: '.' },
+        { input: `${root}/src`, glob: '**/*.d.ts', output: '.' }
+      );
+    } else {
+      project.targets.build.options.assets.push(
+        { input: `${root}/src`, glob: '**/!(*.ts)', output: './src' },
+        { input: `${root}/src`, glob: '**/*.d.ts', output: './src' },
+        { input: root, glob: 'generators.json', output: '.' },
+        { input: root, glob: 'executors.json', output: '.' }
+      );
+    }
+
+    updateProjectConfiguration(host, options.projectName, project);
   }
 }
 
-export async function pluginGenerator(host: Tree, schema: Schema) {
-  return await pluginGeneratorInternal(host, {
-    projectNameAndRootFormat: 'derived',
+export async function pluginGenerator(tree: Tree, schema: Schema) {
+  return await pluginGeneratorInternal(tree, {
+    useProjectJson: true,
+    addPlugin: false,
     ...schema,
   });
 }
@@ -92,11 +98,33 @@ export async function pluginGeneratorInternal(host: Tree, schema: Schema) {
       config: 'project',
       bundler: options.bundler,
       publishable: options.publishable,
-      importPath: options.npmPackageName,
-      projectNameAndRootFormat: 'as-provided',
+      importPath: options.importPath,
+      linter: options.linter,
+      unitTestRunner: options.unitTestRunner,
+      useProjectJson: options.useProjectJson,
+      addPlugin: options.addPlugin,
       skipFormat: true,
+      useTscExecutor: true,
     })
   );
+
+  if (options.isTsSolutionSetup) {
+    updateJson(
+      host,
+      joinPathFragments(options.projectRoot, 'package.json'),
+      (json) => {
+        // Force CommonJS for the plugin package. `jsLibraryGenerator` sets
+        // `type: "module"` for TS-solution libs, but Nx-plugin generators
+        // and executors that get loaded by `nx generate` / `nx run` rely on
+        // CJS globals like `__dirname` (e.g. `path.join(__dirname, 'files')`
+        // in generator factories). Setting `type: "commonjs"` explicitly
+        // overrides Node's content-based ESM detection so the source TS
+        // files load as CJS at runtime.
+        json.type = 'commonjs';
+        return json;
+      }
+    );
+  }
 
   if (options.bundler === 'tsc') {
     tasks.push(addTsLibDependencies(host));
@@ -109,7 +137,13 @@ export async function pluginGeneratorInternal(host: Tree, schema: Schema) {
         '@nx/devkit': nxVersion,
       },
       {
-        '@nx/jest': nxVersion,
+        [options.unitTestRunner === 'vitest' ? '@nx/vitest' : '@nx/jest']:
+          nxVersion,
+        ...(options.e2eTestRunner === 'vitest'
+          ? { '@nx/vitest': nxVersion }
+          : options.e2eTestRunner === 'jest'
+            ? { '@nx/jest': nxVersion }
+            : {}),
         '@nx/js': nxVersion,
         '@nx/plugin': nxVersion,
       }
@@ -127,22 +161,25 @@ export async function pluginGeneratorInternal(host: Tree, schema: Schema) {
   if (options.e2eTestRunner !== 'none') {
     tasks.push(
       await e2eProjectGenerator(host, {
-        pluginName: options.name,
-        projectDirectory: options.projectDirectory,
+        pluginName: options.projectName,
+        projectDirectory: options.e2eProjectDirectory,
         pluginOutputPath: joinPathFragments(
           'dist',
-          options.rootProject ? options.name : options.projectRoot
+          options.rootProject ? options.projectName : options.projectRoot
         ),
-        npmPackageName: options.npmPackageName,
+        npmPackageName: options.importPath,
         skipFormat: true,
         rootProject: options.rootProject,
-        projectNameAndRootFormat: options.projectNameAndRootFormat,
+        linter: options.linter,
+        useProjectJson: options.useProjectJson,
+        addPlugin: options.addPlugin,
+        testRunner: options.e2eTestRunner as 'jest' | 'vitest',
       })
     );
   }
 
-  if (options.linter === Linter.EsLint && !options.skipLintChecks) {
-    await pluginLintCheckGenerator(host, { projectName: options.name });
+  if (options.linter === 'eslint' && !options.skipLintChecks) {
+    await pluginLintCheckGenerator(host, { projectName: options.projectName });
   }
 
   if (!options.skipFormat) {

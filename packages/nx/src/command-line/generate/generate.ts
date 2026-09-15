@@ -1,28 +1,32 @@
-import * as chalk from 'chalk';
-import { prompt } from 'enquirer';
+import * as pc from 'picocolors';
+import { selectPrompt, textPrompt } from '../../utils/prompt-helpers';
 import { relative } from 'path';
 
 import { readNxJson } from '../../config/configuration';
 import { ProjectsConfigurations } from '../../config/workspace-json-project-json';
+import { ProjectGraph } from '../../config/project-graph';
 import { FileChange, flushChanges, FsTree } from '../../generators/tree';
 import {
   createProjectGraphAsync,
   readProjectsConfigurationFromProjectGraph,
 } from '../../project-graph/project-graph';
+import { retrieveProjectConfigurationsWithoutPluginInference } from '../../project-graph/utils/retrieve-workspace-files';
 import { logger, NX_PREFIX } from '../../utils/logger';
 import {
   combineOptionsForGenerator,
-  handleErrors,
   Options,
   Schema,
 } from '../../utils/params';
+import { handleErrors } from '../../utils/handle-errors';
+import { handleImport } from '../../utils/handle-import';
 import { getLocalWorkspacePlugins } from '../../utils/plugins/local-plugins';
 import { printHelp } from '../../utils/print-help';
 import { workspaceRoot } from '../../utils/workspace-root';
-import { NxJsonConfiguration } from '../../config/nx-json';
 import { calculateDefaultProjectName } from '../../config/calculate-default-project-name';
 import { findInstalledPlugins } from '../../utils/plugins/installed-plugins';
 import { getGeneratorInformation } from './generator-utils';
+import { getCwd } from '../../utils/path';
+import { reportNxGenerateCommand } from '../../analytics';
 
 export interface GenerateOptions {
   collectionName: string;
@@ -38,11 +42,11 @@ export interface GenerateOptions {
 export function printChanges(fileChanges: FileChange[]) {
   fileChanges.forEach((f) => {
     if (f.type === 'CREATE') {
-      console.log(`${chalk.green('CREATE')} ${f.path}`);
+      console.log(`${pc.green('CREATE')} ${f.path}`);
     } else if (f.type === 'UPDATE') {
-      console.log(`${chalk.white('UPDATE')} ${f.path}`);
+      console.log(`${pc.white('UPDATE')} ${f.path}`);
     } else if (f.type === 'DELETE') {
-      console.log(`${chalk.yellow('DELETE')} ${f.path}`);
+      console.log(`${pc.yellow('DELETE')} ${f.path}`);
     }
   });
 }
@@ -117,7 +121,7 @@ async function promptForCollection(
         } else {
           choicesFromLocalPlugins.push({
             name: value,
-            message: chalk.bold(value),
+            message: pc.bold(value),
             value,
           });
         }
@@ -142,49 +146,49 @@ async function promptForCollection(
   } else if (!interactive && choices.length > 1) {
     throwInvalidInvocation(Array.from(choicesMap));
   } else if (interactive && choices.length > 1) {
-    const noneOfTheAbove = `\nNone of the above`;
+    const noneOfTheAbove = `None of the above`;
+    // Blank line before the last entry. The newline has to trail the choice
+    // *before* the gap: a leading one would land between the following
+    // choice's radio marker and its text, splitting that row in two.
+    const beforeGap = choices.length - 1;
     choices.push(noneOfTheAbove);
-    let { generator, customCollection } = await prompt<{
-      generator: string;
-      customCollection?: string;
-    }>([
-      {
-        name: 'generator',
-        message: `Which generator would you like to use?`,
-        type: 'autocomplete',
-        // enquirer's typings are incorrect here... It supports (string | Choice)[], but is typed as (string[] | Choice[])
-        choices: choices as string[],
+    const generator = await selectPrompt({
+      message: `Which generator would you like to use?`,
+      // Local-plugin entries carry a separate display label; the rest are
+      // plain collection names. Only the label takes the newline, so the
+      // value still resolves as a collection name.
+      choices: choices.map((c, i) => {
+        const choice =
+          typeof c === 'string'
+            ? { value: c, label: c }
+            : { value: c.value, label: c.message };
+        return i === beforeGap && !choice.label.endsWith('\n')
+          ? { ...choice, label: `${choice.label}\n` }
+          : choice;
+      }),
+    });
+
+    if (generator !== noneOfTheAbove) {
+      return generator;
+    }
+
+    const customCollection = await textPrompt({
+      message: `Which collection would you like to use?`,
+      validate: (value) => {
+        try {
+          getGeneratorInformation(
+            value,
+            generatorName,
+            workspaceRoot,
+            projectsConfiguration.projects
+          );
+          return undefined;
+        } catch {
+          return `Could not find ${value}:${generatorName}`;
+        }
       },
-      {
-        name: 'customCollection',
-        type: 'input',
-        message: `Which collection would you like to use?`,
-        skip: function () {
-          // Skip this question if the user did not answer None of the above
-          return this.state.answers.generator !== noneOfTheAbove;
-        },
-        validate: function (value) {
-          if (this.skipped) {
-            return true;
-          }
-          try {
-            getGeneratorInformation(
-              value,
-              generatorName,
-              workspaceRoot,
-              projectsConfiguration.projects
-            );
-            return true;
-          } catch {
-            logger.error(`\nCould not find ${value}:${generatorName}`);
-            return false;
-          }
-        },
-      },
-    ]);
-    return customCollection
-      ? `${customCollection}:${generatorName}`
-      : generator;
+    });
+    return `${customCollection}:${generatorName}`;
   } else if (deprecatedChoices.size > 0) {
     throw new Error(
       [
@@ -301,17 +305,25 @@ export function printGenHelp(
   );
 }
 
-export async function generate(cwd: string, args: { [k: string]: any }) {
-  if (args['verbose']) {
-    process.env.NX_VERBOSE_LOGGING = 'true';
-  }
-  const verbose = process.env.NX_VERBOSE_LOGGING === 'true';
-
-  return handleErrors(verbose, async () => {
+export async function generate(args: { [k: string]: any }) {
+  return handleErrors(args.verbose, async () => {
     const nxJsonConfiguration = readNxJson();
-    const projectGraph = await createProjectGraphAsync();
-    const projectsConfigurations =
-      readProjectsConfigurationFromProjectGraph(projectGraph);
+
+    let projectGraph: ProjectGraph | undefined;
+    let projectsConfigurations: ProjectsConfigurations;
+
+    if (args.skipProjectGraph) {
+      const projects =
+        await retrieveProjectConfigurationsWithoutPluginInference(
+          workspaceRoot
+        );
+      projectsConfigurations = { version: 2, projects };
+    } else {
+      projectGraph = await createProjectGraphAsync();
+      projectsConfigurations =
+        readProjectsConfigurationFromProjectGraph(projectGraph);
+    }
+
     const opts = await convertToGenerateOptions(
       args,
       'generate',
@@ -354,6 +366,8 @@ export async function generate(cwd: string, args: { [k: string]: any }) {
       return 0;
     }
 
+    const cwd = getCwd();
+
     const combinedOpts = await combineOptionsForGenerator(
       opts.generatorOptions,
       opts.collectionName,
@@ -369,7 +383,11 @@ export async function generate(cwd: string, args: { [k: string]: any }) {
         nxJsonConfiguration
       ),
       relative(workspaceRoot, cwd),
-      verbose
+      args.verbose
+    );
+
+    reportNxGenerateCommand(
+      `${opts.collectionName}:${normalizedGeneratorName}`
     );
 
     if (
@@ -382,7 +400,7 @@ export async function generate(cwd: string, args: { [k: string]: any }) {
     ) {
       const host = new FsTree(
         workspaceRoot,
-        verbose,
+        args.verbose,
         `generating (${opts.collectionName}:${normalizedGeneratorName})`
       );
       const implementation = implementationFactory();
@@ -410,15 +428,23 @@ export async function generate(cwd: string, args: { [k: string]: any }) {
         logger.warn(`\nNOTE: The "dryRun" flag means no changes were made.`);
       }
     } else {
+      if (!projectGraph) {
+        throw new Error(
+          `Cannot run non-Nx generators with --skipProjectGraph. Remove the flag or use an Nx generator.`
+        );
+      }
       require('../../adapter/compat');
-      return (await import('../../adapter/ngcli-adapter')).generate(
+      return (
+        await handleImport('../../adapter/ngcli-adapter.js', __dirname)
+      ).generate(
         workspaceRoot,
         {
           ...opts,
           generatorOptions: combinedOpts,
         },
         projectsConfigurations.projects,
-        verbose
+        args.verbose,
+        projectGraph
       );
     }
   });

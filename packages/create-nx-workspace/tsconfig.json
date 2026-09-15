@@ -2,16 +2,17 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["node", "jest"],
-    "strict": true
+    "strict": true,
+    "ignoreDeprecations": "6.0"
   },
   "include": [],
   "files": [],
   "references": [
     {
       "path": "./tsconfig.lib.json"
-    },
-    {
-      "path": "./tsconfig.spec.json"
     }
-  ]
+  ],
+  "nx": {
+    "addTypecheckTarget": false
+  }
 }

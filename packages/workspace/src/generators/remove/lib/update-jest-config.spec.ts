@@ -1,4 +1,4 @@
-import 'nx/src/internal-testing-utils/mock-project-graph';
+import '@nx/devkit/internal-testing-utils/mock-project-graph';
 
 import { readProjectConfiguration, Tree } from '@nx/devkit';
 import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
@@ -27,9 +27,11 @@ describe('updateRootJestConfig', () => {
 
     await libraryGenerator(tree, {
       name: 'my-lib',
+      directory: 'libs/my-lib',
     });
     await libraryGenerator(tree, {
       name: 'my-other-lib',
+      directory: 'libs/my-other-lib',
     });
 
     tree.write(
@@ -97,7 +99,7 @@ describe('updateRootJestConfig', () => {
     tree.delete('jest.config.ts');
 
     await libraryGenerator(tree, {
-      name: 'test',
+      directory: 'test',
       bundler: 'vite',
       unitTestRunner: 'vitest',
     });

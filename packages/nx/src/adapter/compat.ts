@@ -10,7 +10,6 @@ import { readNxJson } from '../config/configuration';
 import { NxJsonConfiguration } from '../config/nx-json';
 import { toOldFormat } from './angular-json';
 
-/* eslint-disable */
 const Module = require('module');
 const originalRequire: NodeRequire = Module.prototype.require;
 
@@ -45,6 +44,8 @@ export const allowedProjectExtensions = [
   'release',
   'includedScripts',
   'metadata',
+  'owners',
+  'nxCloudImplicitDependencies',
 ] as const;
 
 // If we pass props on the workspace that angular doesn't know about,
@@ -54,6 +55,7 @@ export const allowedProjectExtensions = [
 // There are some props in here (root) that angular already knows about,
 // but it doesn't hurt to have them in here as well to help static analysis.
 export const allowedWorkspaceExtensions = [
+  '$schema',
   'implicitDependencies',
   'affected',
   'defaultBase',
@@ -71,12 +73,21 @@ export const allowedWorkspaceExtensions = [
   'installation',
   'release',
   'nxCloudAccessToken',
+  'nxCloudId',
   'nxCloudUrl',
   'nxCloudEncryptionKey',
   'parallel',
   'cacheDirectory',
   'useDaemonProcess',
   'useInferencePlugins',
+  'neverConnectToCloud',
+  'analytics',
+  'sync',
+  'migrate',
+  'useLegacyCache',
+  'maxCacheSize',
+  'tui',
+  'owners',
 ] as const;
 
 if (!patched) {
@@ -103,6 +114,10 @@ if (!patched) {
   try {
     require('@angular-devkit/build-angular/src/utils/version').assertCompatibleAngularVersion =
       () => {};
+  } catch (e) {}
+
+  try {
+    require('@angular/build/private').assertCompatibleAngularVersion = () => {};
   } catch (e) {}
 
   patched = true;

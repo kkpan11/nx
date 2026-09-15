@@ -1,7 +1,7 @@
-import * as CopyWebpackPlugin from 'copy-webpack-plugin';
-import { normalizePath } from 'nx/src/utils/path';
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 import { basename, dirname, join, relative, resolve } from 'path';
 import { statSync } from 'fs';
+import { normalizePath } from '@nx/devkit';
 
 interface AssetGlobPattern {
   glob: string;
@@ -77,6 +77,7 @@ export function createCopyPlugin(
           ],
           dot: true,
         },
+        noErrorOnMissing: true,
       };
     }),
   });

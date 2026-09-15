@@ -7,18 +7,21 @@ import {
   updateFile,
   expectJestTestsToPass,
   cleanupProject,
-} from '@nx/e2e/utils';
+} from '@nx/e2e-utils';
 
 describe('Jest', () => {
   beforeAll(() => {
-    newProject({ name: uniq('proj-jest'), packages: ['@nx/js', '@nx/node'] });
+    newProject({
+      name: uniq('proj-jest'),
+      packages: ['@nx/js', '@nx/node', '@nx/eslint', '@nx/jest'],
+    });
   });
 
   afterAll(() => cleanupProject());
 
   it('should support multiple `coverageReporters` when using @nx/jest:jest executor', async () => {
     const mylib = uniq('mylib');
-    runCLI(`generate @nx/js:lib ${mylib} --unitTestRunner=jest`, {
+    runCLI(`generate @nx/js:lib libs/${mylib} --unitTestRunner=jest`, {
       env: {
         NX_ADD_PLUGINS: 'false',
       },
